@@ -206,7 +206,12 @@ export function apply(ctx, config) {
             maxTokens: cfg.maxTokens,
           },
           persona: ADVISOR_PERSONA,
-          maxDepth: 0,
+          // Absolute delegation-depth cap: each start requires the child's
+          // computed depth (caller depth + 1) <= maxDepth. 0 forbids ANY
+          // delegation from a top-level session ("child depth 1 exceeds
+          // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
+          // the advisor's own children (depth 2).
+          maxDepth: 1,
           toolFilter: cfg.allowWebSearch ? { allow: ['web_search'] } : { allow: [] },
         })
         try {

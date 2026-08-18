@@ -90,7 +90,7 @@
   - `agentOptions`：覆盖子代理 provider/model/maxTokens；
   - `persona`：顾问人格（spawn provider 支持 `persona` capability）；
   - `toolFilter`：工具白名单（`allow: [web_search]` 或 `[]`）；
-  - `maxDepth: 0`：顾问不得再委派；`enableRunInBackground: false`：同步咨询。
+  - `maxDepth: 1`：绝对委派深度上限，按子代理计算深度（调用方深度 + 1）校验——准入顾问本身（深度 1），禁止顾问再委派（深度 2）；注意 `0` 会连顶层会话的咨询一起拒绝（`subagent depth 1 exceeds maxDepth 0`）。`enableRunInBackground: false`：同步咨询。
 - 指导 section = preset 目录内 `advisor-section.mjs`（`boot-persona.mjs` 先例：注册 `ctx.systemPrompt` section，不发布服务，松散放置）。
 - 追问通道 = 多次调用同一工具，纪律写在 section 文本。
 - 失败降级 = 工具错误结果 + 指导文本明示"顾问不可用时自行规划"。
