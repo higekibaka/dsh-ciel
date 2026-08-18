@@ -33,10 +33,11 @@ window.__ModuleLoader__.load({
       maxCallsPerTurn: 3,
       requireExploration: true,
       enforceFollowupGap: true,
+      planReminderEnabled: true,
       reasoningEffort: 'provider',
       guidanceEnabled: true,
     }
-    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'reasoningEffort', 'guidanceEnabled']
+    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'planReminderEnabled', 'reasoningEffort', 'guidanceEnabled']
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
     const MAX_CALLS_MIN = 1
@@ -275,6 +276,7 @@ window.__ModuleLoader__.load({
         maxCallsPerTurn: String(value.maxCallsPerTurn ?? ''),
         requireExploration: Boolean(value.requireExploration),
         enforceFollowupGap: Boolean(value.enforceFollowupGap),
+        planReminderEnabled: Boolean(value.planReminderEnabled),
         reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
       }
@@ -295,7 +297,7 @@ window.__ModuleLoader__.load({
         if (resets[key]) return true
         if (key === 'maxTokens') return !maxTokensInvalid && maxTokensParsed !== value.maxTokens
         if (key === 'maxCallsPerTurn') return !maxCallsInvalid && maxCallsParsed !== value.maxCallsPerTurn
-        if (key === 'requireExploration' || key === 'enforceFollowupGap' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
+        if (key === 'requireExploration' || key === 'enforceFollowupGap' || key === 'planReminderEnabled' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
         if (key === 'reasoningEffort') return staged[key] !== String(value[key] ?? 'provider')
         return staged[key] !== String(value[key] ?? '')
       }
@@ -529,6 +531,7 @@ window.__ModuleLoader__.load({
               ),
               checkField('requireExploration', '首次咨询前要求先探查', '本会话内首个 ask_advisor 调用前，必须已有至少一次非顾问工具调用（读/搜/跑）。'),
               checkField('enforceFollowupGap', '追问之间要求独立工作', '同一 turn 内两次咨询之间必须至少有一次非顾问工具调用——追问须由新事实驱动。'),
+              checkField('planReminderEnabled', '规划时刻提醒', '检测到本 turn 开始规划（todo_write / exit_plan_mode）且尚未咨询时，在下一步系统提示里注入一次提醒；机制不做任务语义判断。'),
               checkField('guidanceEnabled', '注入使用协议到系统提示词', '触发判据与追问预算；改动即刻生效（影响提示词前缀）。'),
               h('div', { style: css.footer },
                 saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未生效，请重试。') : null,
