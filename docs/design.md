@@ -113,8 +113,13 @@
 ## 6. 路线图
 
 - **M1**：自包含 preset（本仓库 `preset/`）。
-- **M2**：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、直连 `llm.stream`、`/advise` 命令。
-- **M3**：plan mode 自动咨询钩子（`agent/pre-step` / plan 事件）、`outputSchema` 结构化思路、批评者评审角色（参考 dsh-plans）、浏览器 UI。
+- **M2**：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section。
+- **M3**：plan mode 自动咨询钩子（`agent/pre-step` / plan 事件）、`outputSchema` 结构化思路、`/advise` 命令、批评者评审角色（参考 dsh-plans）、浏览器 UI。
+
+### M2 设置面板的两个架构约束（已核实）
+
+1. **settings 命名空间是 host 平面**：preset 挂载的插件不能注册 settings 命名空间（见 `dsh-client-ui-settings-plugins` README），所以设置面板必须由 host 层 bundle 插件承载，不能由 preset 承担。
+2. **命名空间暴露在 apiproxy 是硬编码白名单 + 可配置 provider 目录**：外部插件无法让 apiproxy 直接放行自己的命名空间，但 `ctx.llm.registerConfigurableProviders([{ settingsNs: 'advisor', ... }])` 会让该命名空间随"模型提供方"通道被 serve——dsh-vision-router 用同一 seam 暴露了其设置区。客户端卡片注册进 `settings.plugin.item` 槽位，经 `settingsScope.bind({ namespace })` 读写（修订号围栏写、写后回读确认）。
 
 ## 7. 风险与边界情况
 
