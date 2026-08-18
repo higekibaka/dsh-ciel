@@ -95,9 +95,16 @@
 - 追问通道 = 多次调用同一工具，纪律写在 section 文本。
 - 失败降级 = 工具错误结果 + 指导文本明示"顾问不可用时自行规划"。
 
-### M2 实现（树外 bundle 包）
+### M2 实现（树外 bundle 包，已完成）
 
-官方 [develop/basic](https://deepseek-harness.github.io/deepseek-harness/develop/basic/) 路径：`defineTool`（`@deepseek-ai/dsh-tools`）自写 `ask_advisor`——定制描述、直连 `ctx.llm.stream()`（省子会话开销）、Schemastery `Config` 全配置化；`/advise` 命令走 `ctx.commands`。bundle manifest（`dsh.bundle` + `cordis.patch.yml`），纯 ESM JS 无构建步骤（绕开 git 安装的 prepare/allowBuilds 陷阱）。
+官方 [develop/basic](https://deepseek-harness.github.io/deepseek-harness/develop/basic/) 路径：`defineTool`（`@deepseek-ai/dsh-tools`）自写 `ask_advisor`，bundle manifest（`dsh.bundle` + `cordis.patch.yml`），纯 ESM JS 无构建步骤（绕开 git 安装的 prepare/allowBuilds 陷阱）。已实现形态（与早期设想的两处偏差均有理由）：
+
+- **子代理走 `subagents.start('spawn')`，不直连 `ctx.llm.stream()`**：早期设想用 llm.stream 省子会话开销，但 spawn 路线才提供 persona capability、`toolFilter` 工具白名单、`maxDepth` 委派深度上限、独立子会话日志，以及错误透传依赖的 `run.localAgent.session.events` 回读通道。
+- **`/advise` 命令归 M3**（与 §6 路线图一致），M2 不含命令面。
+- 定制工具描述：触发判据（USE WHEN / SKIP）与归因条款内嵌，是 `complete: true` preset 下唯一不被压掉的模型可见面。
+- Schemastery `Config` 全配置化：provider/model/maxTokens/allowWebSearch/reasoningEffort/guidanceEnabled；`reasoningEffort` 经宿主级 `agent/request` waterfall 精确注入在册顾问子代理（`run.id` 集合过滤）。
+- 指导 section 经 `ctx.inject(['systemPrompt'])` 注册——裸 `ctx.get` 会输掉启动竞速（服务 fiber 未 ACTIVE 时返回 undefined，section 静默丢失，实测发生）。
+- 设置面板由 `plugin/client.js` 注册进 `settings.plugin.item` 槽位，命名空间经 `llm.registerConfigurableProviders` 暴露（见下节架构约束）。
 
 ## 5. 社区对照
 
@@ -112,8 +119,8 @@
 
 ## 6. 路线图
 
-- **M1**：自包含 preset（本仓库 `preset/`）。
-- **M2**：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section。
+- **M1**（已完成）：自包含 preset（本仓库 `preset/`）；`maxDepth: 1` 修复后可用。
+- **M2**（已完成，经真实会话端到端验证）：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section；计划外加固了 `maxDepth`、`reasoningEffort` 注入与错误透传。
 - **M3**：plan mode 自动咨询钩子（`agent/pre-step` / plan 事件）、`outputSchema` 结构化思路、`/advise` 命令、批评者评审角色（参考 dsh-plans）、浏览器 UI。
 
 ### M2 设置面板的两个架构约束（已核实）
