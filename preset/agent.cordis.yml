@@ -255,7 +255,10 @@
     # override the child's provider/model (spawn treats explicit values as
     # overrides of inherited parent options); `persona` fixes the ideas-only
     # output contract (spawn advertises the `persona` capability);
-    # `maxDepth: 0` forbids the advisor from delegating further;
+    # `maxDepth: 1` is the absolute delegation-depth cap checked against the
+    # child's computed depth (caller depth + 1): it admits the advisor itself
+    # (depth 1) while forbidding the advisor's own children (depth 2) — 0
+    # would forbid the consultation outright from a top-level session;
     # `enableRunInBackground: false` keeps every consultation synchronous.
     # Each call is a fresh one-shot child, which is exactly the stateless
     # follow-up channel the consultation protocol requires.
@@ -265,7 +268,7 @@
         provider: spawn
         toolName: ask_advisor
         enableRunInBackground: false
-        maxDepth: 0
+        maxDepth: 1
         agentOptions:
           provider: kimi-coding
           model: kimi-for-coding
