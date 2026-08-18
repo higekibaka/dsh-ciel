@@ -249,11 +249,15 @@ export function apply(ctx, config) {
     tctx.tools.register({
       name: 'ask_advisor',
       description:
-        'Consult a second, knowledge-rich model BEFORE planning. Pass the goal, the ' +
-        'facts already found in the environment, and the constraints; receive ' +
-        'framings, prior art, pitfalls, and evaluation dimensions — ideas only, ' +
-        'never steps. Follow-ups are separate calls: each must carry new facts ' +
-        'and one specific question (never a draft plan).',
+        'Consult a second, knowledge-rich model BEFORE planning. USE WHEN the task has an ' +
+        'open design space (architecture, scene/aesthetic composition, technology selection — ' +
+        'several fundamentally different routes exist), touches an unfamiliar domain, or ' +
+        'carries an irreversible decision; SKIP mechanical, fully-specified, or tiny tasks. ' +
+        'Pass the goal, the facts already found in the environment, and the constraints; ' +
+        'receive framings, prior art, pitfalls, and evaluation dimensions — ideas only, ' +
+        'never steps. Follow-ups are separate calls: each must carry new facts and one ' +
+        'specific question (never a draft plan). When you use its ideas, state which you ' +
+        'adopted or rejected.',
       parameters: {
         type: 'object',
         properties: {

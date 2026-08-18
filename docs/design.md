@@ -129,5 +129,6 @@
 - **KV cache**：新增 section 与工具 schema 改变 prompt 前缀（一次性成本）。
 - **安全边界**：spawn 子代理自动继承 sandbox override、审批固定 never；顾问允许 `web_search` 无需审批。
 - **压缩丢失**：顾问输出作为工具结果可能被 `tool-result-pruner` 裁剪——协议要求计划正文注明采纳思路，形成第二载体。
-- **子代理思考级别缺省**（已修）：`AgentOptions` 不带 effort，显式选型的子代理请求退回 provider 默认思考行为——pi-ai 对"无 effort"的 Gemini-3-Flash 映射出 `MINIMAL` thinkingLevel，而 gemini-3.7-flash 的 API 拒绝该级别（400）。M2 的 `reasoningEffort` 配置通过宿主级 `agent/request` waterfall 精确注入在册顾问子代理（payload 携带 subject agent，`run.id` 集合过滤）；`provider` 档位不触碰请求。M1（tool-subagent 实例）无此注入通道，只能靠 provider profile 的 `reasoning` 默认值兜底。
+- **子代理思考级别缺省**（已修）：`AgentOptions` 不带 effort，显式选型的子代理请求退回 provider 默认思考行为——pi-ai 对"无 effort"的 Gemini-3-Flash 映射出 `MINIMAL` thinkingLevel，而 gemini-3.7-flash 的 API 拒绝该级别（400）。M2 的 `reasoningEffort` 配置通过宿主级 `agent/request` waterfall 精确注入在册顾问子代理（payload 携带 subject agent，`run.id` 集合过滤）；`provider` 档位不触碰请求。M1（tool-subagent 实例）无此注入通道，只能靠 provider profile 的 `reasoning` 默认值兜底；M1 同样无法定制工具描述（tool-subagent 的 description 由 providerWording 固定生成），触发判据只在 M2 的描述文本里。
+- **触发依赖工具描述**（已加固）：`complete: true` 的 preset（如 minimal-v5）会丢弃 guidance section，模型只能看到工具描述——实测"创建 3D 体素场景"这类开放设计任务未触发咨询。因此触发判据（USE WHEN 开放设计空间/陌生领域/不可逆决策，SKIP 机械任务）与归因条款直接写进 M2 的工具描述：工具 schema 是唯一不被 complete prompt 压掉的模型可见面。
 - **错误透传**（已增强）：`SubagentResult` 只有 `stopReason`，模型/传输 400 细节原本丢失；M2 在 `stopReason === 'error'` 时经 `run.localAgent.session.events` 回读子代理末次 `turn/end` 的错误消息（嵌套 JSON 信封逐层解开、截断 300 字符），拼进工具错误。
