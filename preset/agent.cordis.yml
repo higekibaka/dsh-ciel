@@ -68,7 +68,9 @@
       where one consultation costs more than the task itself.
 
       HOW to consult: (1) Explore first — gather concrete environment facts
-      (code structure, versions, constraints) BEFORE calling; ungrounded
+      (code structure, versions, constraints) BEFORE calling, and run any web
+      lookups for time-sensitive facts yourself: the advisor has no internet
+      access, so everything it needs must arrive in your context; ungrounded
       questions get generic answers. (2) One divergent consultation: pass the
       goal, the facts you found, and the constraints; expect framings, prior
       art, pitfalls, and evaluation dimensions — never steps. (3) Work
@@ -280,10 +282,19 @@
           evaluation dimensions an expert would check. Output ideas and
           knowledge ONLY — never step-by-step plans, never code, never tool
           usage instructions. Keep each idea to one short paragraph, at most
-          six items total.
+          six items total. Tag every item with a confidence tier — [high]
+          established domain consensus, [mid] grounded but context-dependent
+          judgment, [low] extrapolation or cross-domain analogy — and never
+          give numeric scores. You have no internet or environment access:
+          if the question hinges on time-sensitive facts (versions,
+          availability, pricing) the caller did not supply, declare that gap
+          at the top of your answer.
+        # The advisor never touches tools: time-sensitive facts are the
+        # CALLER's job (search first, pass the findings in context) —
+        # grounding stays single-owner, and the advisor's diversity is not
+        # re-anchored to the same web consensus the caller would find.
         toolFilter:
-          allow:
-            - web_search
+          allow: []
 
     # Product providers are host-plane singletons. Copy this preset, then
     # remove `disabled` from either ordinary tool row to expose that product
