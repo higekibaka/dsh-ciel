@@ -31,11 +31,25 @@ window.__ModuleLoader__.load({
       model: 'kimi-for-coding',
       maxTokens: 4096,
       allowWebSearch: true,
+      reasoningEffort: 'provider',
       guidanceEnabled: true,
     }
-    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'allowWebSearch', 'guidanceEnabled']
+    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'allowWebSearch', 'reasoningEffort', 'guidanceEnabled']
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
+
+    /** Reasoning-effort levels the host schema admits, in escalation order. */
+    const EFFORT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    const EFFORT_LABELS = {
+      provider: '跟随提供方默认',
+      off: '关闭',
+      minimal: '极简',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '极高',
+      max: '最大',
+    }
 
     const css = {
       card: {
@@ -255,6 +269,7 @@ window.__ModuleLoader__.load({
         model: String(value.model ?? ''),
         maxTokens: String(value.maxTokens ?? ''),
         allowWebSearch: Boolean(value.allowWebSearch),
+        reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
       }
       if (drafts === null) setDrafts(staged)
@@ -269,6 +284,7 @@ window.__ModuleLoader__.load({
         if (resets[key]) return true
         if (key === 'maxTokens') return !maxTokensInvalid && maxTokensParsed !== value.maxTokens
         if (key === 'allowWebSearch' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
+        if (key === 'reasoningEffort') return staged[key] !== String(value[key] ?? 'provider')
         return staged[key] !== String(value[key] ?? '')
       }
       const dirty = FIELD_KEYS.some(dirtyKey)
@@ -325,6 +341,26 @@ window.__ModuleLoader__.load({
             label: model.name ? `${model.name}（${model.id}）` : model.id,
           }))
         : []
+
+      // Reasoning-effort options follow the SELECTED model's declared levels
+      // when the catalog advertises them; otherwise the full host-schema set
+      // stays offered so the field remains usable without the catalog.
+      const selectedModel = selectedGroup && Array.isArray(selectedGroup.models)
+        ? selectedGroup.models.find((model) => model.id === staged.model)
+        : undefined
+      const declaredEfforts = selectedModel && selectedModel.reasoning && Array.isArray(selectedModel.reasoning.efforts)
+        ? selectedModel.reasoning.efforts
+        : []
+      const effortLevels = declaredEfforts.length > 0
+        ? declaredEfforts.map((effort) => effort.id)
+        : EFFORT_LEVELS
+      const effortOptions = [
+        { value: 'provider', label: EFFORT_LABELS.provider },
+        ...effortLevels.map((level) => ({
+          value: level,
+          label: `${EFFORT_LABELS[level] || level}（${level}）`,
+        })),
+      ]
 
       const selectStyle = { ...css.input, appearance: 'auto' }
 
@@ -384,6 +420,35 @@ window.__ModuleLoader__.load({
           h('p', { style: css.hint }, hint),
         )
 
+      /** The reasoning-effort dropdown: always a select, options track the model. */
+      const effortField = () => {
+        const key = 'reasoningEffort'
+        const options = effortOptions.some((option) => option.value === staged[key])
+          ? effortOptions
+          : [...effortOptions, { value: staged[key], label: `${staged[key]}（自定义）` }]
+        const hint = catalog.status === 'ready'
+          ? declaredEfforts.length > 0
+            ? '注入该次咨询每个请求的思考深度；选项与所选模型声明的档位一致。'
+            : '所选模型未声明思考档位；显式选择不支持的档位会在咨询时报错。'
+          : '注入该次咨询每个请求的思考深度；模型目录不可用，未校验档位支持。'
+        return h('div', { key, style: { ...css.field, ...css.fieldBorder } },
+          h(FieldHead, {
+            label: '思考深度',
+            overridden: overridden(key) && !resets[key],
+            disabled,
+            onReset: () => resetField(key),
+          }),
+          h('select', {
+            style: selectStyle,
+            value: staged[key],
+            disabled,
+            onChange: (event) => edit(key, event.target.value),
+          }, options.map((option) =>
+            h('option', { key: option.value, value: option.value }, option.label))),
+          h('p', { style: css.hint }, hint),
+        )
+      }
+
       const blocked = !dirty || maxTokensInvalid || saving
 
       return h('li', { style: css.card },
@@ -406,6 +471,7 @@ window.__ModuleLoader__.load({
               !snap.writable ? h('p', { style: css.readOnly, role: 'status' }, '当前设置为只读。') : null,
               routeField('provider', '提供方路由', '须是「设置 → 模型」中已注册的 provider 路由。', providerOptions),
               routeField('model', '顾问模型', '与主模型跨家族时多样性收益最大。', modelOptions),
+              effortField(),
               h('div', { key: 'maxTokens', style: { ...css.field, ...css.fieldBorder } },
                 h(FieldHead, {
                   label: '输出上限（tokens）',

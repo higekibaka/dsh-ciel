@@ -66,6 +66,9 @@ export const Config = Schema.object({
     .description('顾问单次回答的输出上限'),
   allowWebSearch: Schema.boolean().default(true)
     .description('允许顾问使用 web_search 查证资料；关闭则为纯参数知识'),
+  reasoningEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .default('provider')
+    .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
   guidanceEnabled: Schema.boolean().default(true)
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
 })
@@ -84,6 +87,69 @@ function outputText(blocks) {
     .map((block) => block.text)
     .join('\n')
     .trim()
+}
+
+/** Collapse whitespace and clip a diagnostic string to one readable line. */
+function clip(text, max = 300) {
+  const oneLine = String(text).replace(/\s+/g, ' ').trim()
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
+}
+
+/**
+ * Unwrap nested provider envelopes (`{"error":{"message":"{\"error":…"}}}` —
+ * adapters sometimes stringify an upstream body into their own message) down
+ * to the innermost plain message, then clip it.
+ */
+function unwrapErrorMessage(message) {
+  let text = String(message === undefined || message === null ? '' : message)
+  for (let depth = 0; depth < 3; depth += 1) {
+    const trimmed = text.trim()
+    if (!trimmed.startsWith('{')) break
+    let parsed
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      break
+    }
+    const inner = parsed && typeof parsed === 'object'
+      ? (parsed.error && parsed.error.message !== undefined ? parsed.error.message : parsed.message)
+      : undefined
+    if (typeof inner !== 'string' || inner === text) break
+    text = inner
+  }
+  return clip(text)
+}
+
+/**
+ * Best-effort terminal-error detail from a one-shot child's own log. The run
+ * result carries only a stopReason, but the child records `turn/end` with the
+ * model/transport failure before the run settles, and `run.localAgent` keeps
+ * the session reachable until disposal. Reads leaf fields only; any shape
+ * surprise degrades to the bare stopReason, never to a secondary failure.
+ */
+function childErrorDetail(run) {
+  const agent = run.localAgent
+  if (agent === undefined) return ''
+  let events
+  try {
+    events = agent.session.events
+  } catch {
+    return ''
+  }
+  if (!Array.isArray(events)) return ''
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (!event || event.type !== 'turn/end') continue
+    const reason = event.data && event.data.reason
+    if (reason && reason.kind === 'error' && reason.error !== undefined) {
+      const message = typeof reason.error === 'object' && reason.error !== null
+        ? reason.error.message
+        : reason.error
+      return unwrapErrorMessage(message)
+    }
+    return ''
+  }
+  return ''
 }
 
 export function apply(ctx, config) {
@@ -157,6 +223,25 @@ export function apply(ctx, config) {
     }
   })
 
+  // ── reasoning-effort injection. AgentOptions carries no effort field, so a
+  // child built with an explicit provider/model selection runs at the
+  // provider's default thinking behavior — which is what made
+  // google/gemini-3.7-flash fail (pi-ai maps "no effort" to a MINIMAL
+  // thinkingLevel that model rejects). The `agent/request` waterfall reaches
+  // every agent from this host scope and its payload carries the subject
+  // agent, so one listener can pin the configured effort onto exactly the
+  // live advisor children tracked below. `provider` (or an empty value)
+  // leaves the request untouched.
+  const liveAdvisorChildren = new Set()
+  ctx.on('agent/request', async (payload, next) => {
+    const agent = payload && payload.agent
+    if (agent === undefined || !liveAdvisorChildren.has(agent.id)) return next()
+    const effort = current().reasoningEffort
+    if (effort === undefined || effort === '' || effort === 'provider') return next()
+    const resolved = await next()
+    return { ...resolved, reasoningEffort: effort }
+  })
+
   // ── the ask_advisor tool. Each call is a fresh one-shot child on the spawn
   // provider: the stateless follow-up channel the consultation protocol
   // requires. Settings are read per call, so panel edits hot-apply.
@@ -214,17 +299,23 @@ export function apply(ctx, config) {
           maxDepth: 1,
           toolFilter: cfg.allowWebSearch ? { allow: ['web_search'] } : { allow: [] },
         })
+        // Track before the first child request can race: publication resolves
+        // start() before the prompt followup reaches the child's loop.
+        liveAdvisorChildren.add(run.id)
         try {
           const result = await run.result
           const text = outputText(result.output)
           if (result.stopReason !== 'completed') {
+            const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
             throw new Error(
               `advisor consultation ended with "${result.stopReason}"` +
+                (detail === '' ? '' : `: ${detail}`) +
                 (text === '' ? '' : `; partial answer:\n${text}`),
             )
           }
           return text === '' ? 'The advisor returned an empty answer.' : text
         } finally {
+          liveAdvisorChildren.delete(run.id)
           await run.dispose()
         }
       },
