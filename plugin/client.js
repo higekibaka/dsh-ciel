@@ -205,5 +205,8 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = ['settingsScope', 'slots']
+    // The module system materializes the factory's RETURN VALUE as the plugin
+    // exports — assigning without returning leaves the kernel `undefined`.
+    return module.exports
   },
 })
