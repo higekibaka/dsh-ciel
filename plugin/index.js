@@ -173,9 +173,12 @@ export function apply(ctx, config) {
 
   // ── guidance prompt section, gated by the guidanceEnabled setting. Host-layer
   // registration makes the protocol visible to every agent; toggling the
-  // setting re-registers the section without a restart.
-  const systemPrompt = ctx.get('systemPrompt')
-  if (systemPrompt !== undefined) {
+  // setting re-registers the section without a restart. Like every sibling
+  // service this composition shares, systemPrompt's readiness at our apply()
+  // is not ours to know: a bare ctx.get can lose the boot race (observed live
+  // — the section silently never registered while the inject-fed tool worked),
+  // so this waits through ctx.inject exactly like the llm seam below.
+  ctx.inject(['systemPrompt'], (spctx) => {
     let dispose = null
     resyncGuidance = () => {
       if (dispose !== null) {
@@ -183,7 +186,7 @@ export function apply(ctx, config) {
         dispose = null
       }
       if (current().guidanceEnabled) {
-        dispose = systemPrompt.section({
+        dispose = spctx.systemPrompt.section({
           name: 'advisor:guidance',
           order: 40,
           text: GUIDANCE_TEXT,
@@ -191,13 +194,13 @@ export function apply(ctx, config) {
       }
     }
     resyncGuidance()
-    ctx.effect(
+    spctx.effect(
       () => () => {
         if (dispose !== null) dispose()
       },
       'dsh-advisor: guidance section',
     )
-  }
+  })
 
   // ── namespace exposure: the API proxy serves settings describe/mutate only
   // for configurable-provider namespaces (plus a fixed product allowlist), so
