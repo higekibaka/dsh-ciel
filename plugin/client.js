@@ -3,12 +3,12 @@
 // (no bundler): the client module system wraps this file in a CJS factory and
 // the kernel adopts { apply, inject } as a client plugin.
 //
-// The card writes through the client settings scope: every commit is fenced
-// by the namespace revision, and the host remains the only authority on
-// whether a value was accepted — the card re-reads the snapshot after writes
-// and shows the last accepted values. Provider/model fields are dropdowns fed
-// by the same catalog RPC the Models settings page uses (connection.api
-// .llm.models); when the catalog is unreachable they degrade to free text.
+// The card mirrors the shipped plugin cards (PluginCard/fields in
+// dsh-client-ui-settings-plugins): collapsed by default, name-over-description
+// header, staged drafts with one save point, per-field override badge and
+// reset, and a save that writes through the revision-fenced settings scope.
+// Provider/model are dropdowns fed by the same catalog RPC the Models page
+// uses, degrading to text inputs when the catalog is unreachable.
 
 window.__ModuleLoader__.load({
   id: 'dsh-advisor',
@@ -25,72 +25,139 @@ window.__ModuleLoader__.load({
     /** Lazy connection reader: a hard inject would park the card's registration. */
     let getConnection = () => undefined
 
+    /** Mirror of the host schema defaults — what a reset stages. */
+    const DEFAULTS = {
+      provider: 'kimi-coding',
+      model: 'kimi-for-coding',
+      maxTokens: 4096,
+      allowWebSearch: true,
+      guidanceEnabled: true,
+    }
+    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'allowWebSearch', 'guidanceEnabled']
+    const MAX_TOKENS_MIN = 256
+    const MAX_TOKENS_MAX = 32768
+
     const css = {
       card: {
-        border: '1px solid var(--border, #3a3a3a)',
-        borderRadius: '8px',
-        display: 'flex',
-        flexDirection: 'column',
+        listStyle: 'none',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: '12px',
+        background: 'var(--dsw-alias-bg-layer-3)',
+        transition: 'border-color .16s, background .16s',
       },
       header: {
+        width: '100%',
+        appearance: 'none',
+        border: 0,
+        background: 'none',
+        font: 'inherit',
+        color: 'inherit',
+        textAlign: 'left',
+        cursor: 'pointer',
         display: 'flex',
         alignItems: 'center',
-        gap: '8px',
-        width: '100%',
-        padding: '10px 16px',
-        background: 'transparent',
-        border: 'none',
-        color: 'inherit',
-        cursor: 'pointer',
-        textAlign: 'left',
-        fontSize: '14px',
+        gap: '12px',
+        padding: '14px 16px',
+        borderRadius: '12px',
       },
-      title: { fontWeight: 600 },
-      summary: { opacity: 0.55, fontSize: '12px', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      chevron: { opacity: 0.6, fontSize: '12px' },
-      body: {
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-        padding: '0 16px 12px',
-      },
-      desc: { opacity: 0.75, fontSize: '12px', lineHeight: 1.6 },
-      field: { display: 'flex', flexDirection: 'column', gap: '4px' },
-      labelRow: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' },
-      overridden: {
+      headText: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px' },
+      name: { fontSize: '15px', fontWeight: 600, lineHeight: 1.4, color: 'var(--dsw-alias-label-primary)' },
+      description: { fontSize: '13px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
+      pending: {
+        flex: 'none',
+        borderRadius: '999px',
+        padding: '1px 8px',
         fontSize: '11px',
-        opacity: 0.65,
-        border: '1px solid currentColor',
-        borderRadius: '4px',
-        padding: '0 4px',
+        lineHeight: '17px',
+        fontWeight: 500,
+        whiteSpace: 'nowrap',
+        background: 'var(--dsw-alias-bg-module-platform)',
+        color: 'var(--dsw-alias-label-secondary)',
+      },
+      body: {
+        borderTop: '1px solid var(--dsw-alias-border-l2)',
+        margin: '0 16px',
+        paddingBottom: '8px',
+      },
+      readOnly: { margin: '12px 0 0', fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
+      field: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '12px 0' },
+      fieldBorder: { borderTop: '1px solid var(--dsw-alias-border-l2)' },
+      head: { display: 'flex', alignItems: 'center', gap: '8px' },
+      label: { flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 500, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)' },
+      badges: { display: 'inline-flex', alignItems: 'center', gap: '8px' },
+      badge: {
+        borderRadius: '999px',
+        padding: '1px 8px',
+        fontSize: '11px',
+        lineHeight: '17px',
+        whiteSpace: 'nowrap',
+        fontWeight: 500,
+        background: 'var(--dsw-alias-bg-module-platform)',
+        color: 'var(--dsw-alias-label-secondary)',
+      },
+      reset: {
+        border: 'none',
+        background: 'none',
+        padding: 0,
+        font: 'inherit',
+        fontSize: '12px',
+        lineHeight: 1.5,
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
       },
       input: {
-        background: 'var(--input-bg, transparent)',
-        border: '1px solid var(--border, #3a3a3a)',
-        borderRadius: '6px',
-        padding: '6px 8px',
+        height: '34px',
+        padding: '0 12px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: '8px',
+        background: 'var(--dsw-alias-bg-layer-3)',
+        font: 'inherit',
         fontSize: '13px',
-        color: 'inherit',
+        color: 'var(--dsw-alias-label-primary)',
+        width: '100%',
+        boxSizing: 'border-box',
       },
-      checkRow: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' },
-      footer: { display: 'flex', alignItems: 'center', gap: '12px', fontSize: '12px', opacity: 0.8 },
-      button: {
-        border: '1px solid var(--border, #3a3a3a)',
-        borderRadius: '6px',
-        padding: '4px 10px',
-        fontSize: '12px',
+      inputInvalid: {
+        border: '1px solid var(--dsw-alias-label-error)',
+      },
+      hint: { margin: 0, fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
+      invalidText: { margin: 0, fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-error)' },
+      checkRow: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--dsw-alias-label-primary)' },
+      footer: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        gap: '8px',
+        padding: '12px 0 4px',
+        borderTop: '1px solid var(--dsw-alias-border-l2)',
+      },
+      failed: { flex: 1, minWidth: 0, margin: 0, fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-error)' },
+      discard: {
+        appearance: 'none',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: '8px',
+        padding: '5px 14px',
+        font: 'inherit',
+        fontSize: '13px',
+        lineHeight: 1.5,
         cursor: 'pointer',
-        background: 'transparent',
-        color: 'inherit',
+        background: 'none',
+        color: 'var(--dsw-alias-label-secondary)',
       },
-      status: { opacity: 0.6 },
-      error: { color: 'var(--error, #e06c75)', fontSize: '12px' },
+      save: {
+        appearance: 'none',
+        border: '1px solid transparent',
+        borderRadius: '8px',
+        padding: '5px 14px',
+        font: 'inherit',
+        fontSize: '13px',
+        lineHeight: 1.5,
+        cursor: 'pointer',
+        background: 'var(--dsw-alias-label-primary)',
+        color: 'var(--dsw-alias-bg-layer-3)',
+      },
+      disabled: { opacity: 0.4, cursor: 'default' },
     }
-
-    const TOGGLE_FIELDS = [
-      { key: 'allowWebSearch', label: '允许顾问联网搜索', desc: '开启后顾问可使用 web_search 查证；关闭为纯参数知识。' },
-      { key: 'guidanceEnabled', label: '注入使用协议到系统提示词', desc: '触发判据与追问预算；改动即刻生效（影响提示词前缀）。' },
-    ]
 
     /** Unwrap the client RPC envelope: { rpcId, result: { ok, value } }. */
     function unwrapRpc(body) {
@@ -104,87 +171,49 @@ window.__ModuleLoader__.load({
       return body
     }
 
-    function commit(key, value, setError) {
-      Promise.resolve(scope.set(key, value)).catch((error) => {
-        setError(error && error.message ? error.message : String(error))
-      })
+    function Chevron({ open }) {
+      return h('svg', {
+        width: 14,
+        height: 14,
+        viewBox: '0 0 14 14',
+        'aria-hidden': true,
+        style: {
+          flex: 'none',
+          color: 'var(--dsw-alias-label-tertiary)',
+          transition: 'transform .16s',
+          transform: open ? 'rotate(180deg)' : 'none',
+        },
+      }, h('path', {
+        d: 'M3.5 5.25 7 8.75l3.5-3.5',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }))
     }
 
-    function OverriddenTag() {
-      return h('span', { style: css.overridden }, '已覆盖')
-    }
-
-    /** Dropdown fed by the model catalog; the current value always stays
-     * selectable even when absent from the catalog (custom route). */
-    function SelectField({ fieldKey, label, value, options, writable, setError, desc, overridden }) {
-      const has = options.some((option) => option.value === value)
-      const all = has || value === undefined || value === ''
-        ? options
-        : [...options, { value, label: `${value}（自定义）` }]
-      return h('label', { style: css.field },
-        h('span', { style: css.labelRow }, h('span', null, label), overridden ? h(OverriddenTag) : null),
-        h('select', {
-          style: css.input,
-          value: value ?? '',
-          disabled: !writable,
-          onChange: (event) => commit(fieldKey, event.target.value, setError),
-        }, all.map((option) => h('option', { key: option.value, value: option.value }, option.label))),
-        desc ? h('span', { style: css.desc }, desc) : null,
-      )
-    }
-
-    function NumberField({ label, value, min, max, writable, setError, desc, overridden }) {
-      const [draft, setDraft] = useState(value === undefined || value === null ? '' : String(value))
-      useEffect(() => {
-        setDraft(value === undefined || value === null ? '' : String(value))
-      }, [value])
-      const flush = () => {
-        if (draft.trim() === '') return
-        const parsed = Math.round(Number(draft))
-        if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
-          setError(`${label} 须是 ${min}–${max} 之间的数字`)
-          return
-        }
-        if (parsed !== value) commit('maxTokens', parsed, setError)
-      }
-      return h('label', { style: css.field },
-        h('span', { style: css.labelRow }, h('span', null, label), overridden ? h(OverriddenTag) : null),
-        h('input', {
-          style: css.input,
-          value: draft,
-          inputMode: 'numeric',
-          disabled: !writable,
-          onChange: (event) => setDraft(event.target.value),
-          onBlur: flush,
-          onKeyDown: (event) => {
-            if (event.key === 'Enter') event.target.blur()
-          },
-        }),
-        desc ? h('span', { style: css.desc }, desc) : null,
-      )
-    }
-
-    function CheckField({ field, value, overridden, writable, setError }) {
-      return h('div', { style: css.field },
-        h('label', { style: css.checkRow },
-          h('input', {
-            type: 'checkbox',
-            checked: Boolean(value),
-            disabled: !writable,
-            onChange: (event) => commit(field.key, event.target.checked, setError),
-          }),
-          h('span', null, field.label),
-          overridden ? h(OverriddenTag) : null,
-        ),
-        field.desc ? h('span', { style: css.desc }, field.desc) : null,
+    /** Field head row: label plus the override badge and reset link. */
+    function FieldHead({ label, overridden, disabled, onReset }) {
+      return h('div', { style: css.head },
+        h('span', { style: css.label }, label),
+        overridden
+          ? h('span', { style: css.badges },
+              h('span', { style: css.badge }, '已覆盖'),
+              h('button', { type: 'button', style: css.reset, disabled, onClick: onReset }, '重置'))
+          : null,
       )
     }
 
     function AdvisorCard() {
       const [, setTick] = useState(0)
-      const [error, setError] = useState('')
       const [open, setOpen] = useState(false)
+      const [drafts, setDrafts] = useState(null)
+      const [resets, setResets] = useState({})
+      const [saving, setSaving] = useState(false)
+      const [saveFailed, setSaveFailed] = useState(false)
       const [catalog, setCatalog] = useState({ status: 'idle', groups: [] })
+
       useEffect(() => {
         if (scope === null) return undefined
         return scope.subscribe(() => setTick((tick) => tick + 1))
@@ -207,129 +236,217 @@ window.__ModuleLoader__.load({
             const groups = value && Array.isArray(value.groups) ? value.groups : []
             setCatalog({ status: 'ready', groups })
           })
-          .catch((loadError) => {
-            setCatalog({
-              status: 'unavailable',
-              groups: [],
-              error: loadError && loadError.message ? loadError.message : String(loadError),
-            })
-          })
+          .catch(() => setCatalog({ status: 'unavailable', groups: [] }))
       }, [open, catalog.status])
 
-      if (scope === null) {
-        return h('div', { style: css.card }, h('span', { style: css.error }, 'settingsScope 服务不可用'))
-      }
+      if (scope === null) return null
       const snap = scope.getSnapshot()
+      // Like the shipped cards, an unavailable (or still-loading) namespace
+      // renders nothing rather than a disabled shell.
+      if (snap.status !== 'ready') return null
       const value = snap.value || {}
-      const summary = `${value.provider ?? '…'}/${value.model ?? '…'}`
+      const user = snap.user && typeof snap.user === 'object' ? snap.user : {}
+      const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key)
 
-      const children = [
-        h('button', {
-          key: 'header',
-          style: css.header,
-          'aria-expanded': open,
-          onClick: () => setOpen(!open),
-        },
-          h('span', { style: css.title }, '顾问（规划前咨询）'),
-          h('span', { style: css.summary }, summary),
-          h('span', { style: css.chevron }, open ? '▾' : '▸'),
-        ),
-      ]
+      // Stage drafts from the first ready snapshot; user edits own them until
+      // a save lands or a discard re-stages.
+      const staged = drafts || {
+        provider: String(value.provider ?? ''),
+        model: String(value.model ?? ''),
+        maxTokens: String(value.maxTokens ?? ''),
+        allowWebSearch: Boolean(value.allowWebSearch),
+        guidanceEnabled: Boolean(value.guidanceEnabled),
+      }
+      if (drafts === null) setDrafts(staged)
 
-      if (open) {
-        if (snap.status === 'loading') {
-          children.push(h('div', { key: 'body', style: css.body }, h('span', { style: css.status }, '读取顾问设置…')))
-        } else if (snap.status === 'unavailable') {
-          children.push(h('div', { key: 'body', style: css.body },
-            h('span', { style: css.error }, 'advisor 设置命名空间未向浏览器暴露（插件未挂载或目录注册失败）。')))
-        } else {
-          const user = snap.user && typeof snap.user === 'object' ? snap.user : {}
-          const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key)
-          const anyOverride = ['provider', 'model', 'maxTokens', 'allowWebSearch', 'guidanceEnabled'].some(overridden)
-          const resetAll = () => {
-            setError('')
-            for (const key of ['provider', 'model', 'maxTokens', 'allowWebSearch', 'guidanceEnabled']) {
-              if (overridden(key)) {
-                Promise.resolve(scope.unset(key)).catch((err) => {
-                  setError(err && err.message ? err.message : String(err))
-                })
-              }
+      const maxTokensParsed = Math.round(Number(staged.maxTokens))
+      const maxTokensInvalid = staged.maxTokens.trim() === ''
+        || !Number.isFinite(maxTokensParsed)
+        || maxTokensParsed < MAX_TOKENS_MIN
+        || maxTokensParsed > MAX_TOKENS_MAX
+
+      const dirtyKey = (key) => {
+        if (resets[key]) return true
+        if (key === 'maxTokens') return !maxTokensInvalid && maxTokensParsed !== value.maxTokens
+        if (key === 'allowWebSearch' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
+        return staged[key] !== String(value[key] ?? '')
+      }
+      const dirty = FIELD_KEYS.some(dirtyKey)
+
+      const edit = (key, next) => {
+        setDrafts({ ...staged, [key]: next })
+        if (resets[key]) {
+          const rest = { ...resets }
+          delete rest[key]
+          setResets(rest)
+        }
+        setSaveFailed(false)
+      }
+      const resetField = (key) => {
+        setDrafts({ ...staged, [key]: DEFAULTS[key] })
+        setResets({ ...resets, [key]: true })
+        setSaveFailed(false)
+      }
+      const discard = () => {
+        setDrafts(null)
+        setResets({})
+        setSaveFailed(false)
+      }
+      const save = async () => {
+        setSaving(true)
+        setSaveFailed(false)
+        try {
+          for (const key of FIELD_KEYS) {
+            if (resets[key]) {
+              await scope.unset(key)
+            } else if (dirtyKey(key)) {
+              await scope.set(key, key === 'maxTokens' ? maxTokensParsed : staged[key])
             }
           }
-
-          const groups = catalog.status === 'ready' ? catalog.groups : []
-          const providerOptions = groups.map((group) => ({
-            value: group.id,
-            label: group.displayName || group.name || group.id,
-          }))
-          const selectedGroup = groups.find((group) => group.id === value.provider)
-          const modelOptions = selectedGroup && Array.isArray(selectedGroup.models)
-            ? selectedGroup.models.map((model) => ({
-                value: model.id,
-                label: model.name ? `${model.name}（${model.id}）` : model.id,
-              }))
-            : []
-          const catalogNote = catalog.status === 'loading'
-            ? '正在加载模型目录…'
-            : catalog.status === 'unavailable'
-              ? '模型目录不可用，请直接输入路由/模型 id。'
-              : null
-
-          children.push(h('div', { key: 'body', style: css.body },
-            h('span', { style: css.desc },
-              'ask_advisor 工具使用的第二模型：规划前提供思路、领域知识与陷阱，不输出步骤。改动即刻生效，无需重启。'),
-            providerOptions.length > 0
-              ? h(SelectField, {
-                  key: 'provider', fieldKey: 'provider', label: '提供方路由', value: value.provider,
-                  options: providerOptions, writable: snap.writable, setError,
-                  desc: '须是「设置 → 模型」中已注册的 provider 路由。',
-                  overridden: overridden('provider'),
-                })
-              : h(SelectField, {
-                  key: 'provider', fieldKey: 'provider', label: '提供方路由', value: value.provider,
-                  options: [{ value: value.provider ?? '', label: value.provider || '（未选择）' }],
-                  writable: false, setError,
-                  desc: catalogNote || '模型目录为空。',
-                  overridden: overridden('provider'),
-                }),
-            modelOptions.length > 0
-              ? h(SelectField, {
-                  key: 'model', fieldKey: 'model', label: '顾问模型', value: value.model,
-                  options: modelOptions, writable: snap.writable, setError,
-                  desc: '与主模型跨家族时多样性收益最大。',
-                  overridden: overridden('model'),
-                })
-              : h(SelectField, {
-                  key: 'model', fieldKey: 'model', label: '顾问模型', value: value.model,
-                  options: [{ value: value.model ?? '', label: value.model || '（未选择）' }],
-                  writable: false, setError,
-                  desc: catalogNote || '所选路由下没有目录模型。',
-                  overridden: overridden('model'),
-                }),
-            catalogNote && providerOptions.length > 0
-              ? h('span', { style: css.status }, catalogNote)
-              : null,
-            h(NumberField, {
-              key: 'maxTokens', label: '输出上限（tokens）', value: value.maxTokens,
-              min: 256, max: 32768, writable: snap.writable, setError,
-              desc: '顾问单次回答的长度上限。',
-              overridden: overridden('maxTokens'),
-            }),
-            TOGGLE_FIELDS.map((field) =>
-              h(CheckField, {
-                key: field.key, field, value: value[field.key],
-                overridden: overridden(field.key), writable: snap.writable, setError,
-              })),
-            h('div', { style: css.footer },
-              h('button', { style: css.button, disabled: !anyOverride || !snap.writable, onClick: resetAll }, '全部重置为默认'),
-              h('span', { style: css.status }, snap.writable ? '改动即时保存' : '当前设置为只读'),
-            ),
-            error === '' ? null : h('span', { style: css.error }, error),
-          ))
+          setDrafts(null)
+          setResets({})
+        } catch {
+          setSaveFailed(true)
+        } finally {
+          setSaving(false)
         }
       }
 
-      return h('div', { style: css.card }, children)
+      const disabled = !snap.writable || saving
+      const groups = catalog.status === 'ready' ? catalog.groups : []
+      const providerOptions = groups.map((group) => ({
+        value: group.id,
+        label: group.displayName || group.name || group.id,
+      }))
+      const selectedGroup = groups.find((group) => group.id === staged.provider)
+      const modelOptions = selectedGroup && Array.isArray(selectedGroup.models)
+        ? selectedGroup.models.map((model) => ({
+            value: model.id,
+            label: model.name ? `${model.name}（${model.id}）` : model.id,
+          }))
+        : []
+
+      const selectStyle = { ...css.input, appearance: 'auto' }
+
+      /** One dropdown or text fallback field for provider/model. */
+      const routeField = (key, label, hint, options) => {
+        const selectOptions = options.some((option) => option.value === staged[key])
+          ? options
+          : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }]
+        return h('div', { key, style: { ...css.field, ...css.fieldBorder } },
+          h(FieldHead, {
+            label,
+            overridden: overridden(key) && !resets[key],
+            disabled,
+            onReset: () => resetField(key),
+          }),
+          options.length > 0
+            ? h('select', {
+                style: selectStyle,
+                value: staged[key],
+                disabled,
+                onChange: (event) => edit(key, event.target.value),
+              }, selectOptions.map((option) =>
+                h('option', { key: option.value, value: option.value }, option.label)))
+            : h('input', {
+                style: css.input,
+                type: 'text',
+                value: staged[key],
+                disabled,
+                onChange: (event) => edit(key, event.target.value),
+              }),
+          h('p', { style: css.hint },
+            catalog.status === 'loading'
+              ? '正在加载模型目录（与「设置 → 模型」同源）…'
+              : catalog.status === 'unavailable'
+                ? '模型目录不可用，请直接输入 id。' + hint
+                : hint),
+        )
+      }
+
+      const checkField = (key, label, hint) =>
+        h('div', { key, style: { ...css.field, ...css.fieldBorder } },
+          h(FieldHead, {
+            label,
+            overridden: overridden(key) && !resets[key],
+            disabled,
+            onReset: () => resetField(key),
+          }),
+          h('label', { style: css.checkRow },
+            h('input', {
+              type: 'checkbox',
+              checked: Boolean(staged[key]),
+              disabled,
+              onChange: (event) => edit(key, event.target.checked),
+            }),
+            h('span', null, Boolean(staged[key]) ? '已开启' : '已关闭'),
+          ),
+          h('p', { style: css.hint }, hint),
+        )
+
+      const blocked = !dirty || maxTokensInvalid || saving
+
+      return h('li', { style: css.card },
+        h('button', {
+          type: 'button',
+          style: css.header,
+          'aria-expanded': open,
+          'aria-label': `${open ? '收起' : '展开'}: 顾问`,
+          onClick: () => setOpen(!open),
+        },
+          h('span', { style: css.headText },
+            h('span', { style: css.name }, '顾问'),
+            h('span', { style: css.description }, '规划前咨询的第二模型：提供思路、领域知识与陷阱，不输出步骤。'),
+          ),
+          dirty ? h('span', { style: css.pending }, '未保存') : null,
+          h(Chevron, { open }),
+        ),
+        open
+          ? h('div', { style: css.body },
+              !snap.writable ? h('p', { style: css.readOnly, role: 'status' }, '当前设置为只读。') : null,
+              routeField('provider', '提供方路由', '须是「设置 → 模型」中已注册的 provider 路由。', providerOptions),
+              routeField('model', '顾问模型', '与主模型跨家族时多样性收益最大。', modelOptions),
+              h('div', { key: 'maxTokens', style: { ...css.field, ...css.fieldBorder } },
+                h(FieldHead, {
+                  label: '输出上限（tokens）',
+                  overridden: overridden('maxTokens') && !resets.maxTokens,
+                  disabled,
+                  onReset: () => resetField('maxTokens'),
+                }),
+                h('input', {
+                  style: maxTokensInvalid ? { ...css.input, ...css.inputInvalid } : css.input,
+                  type: 'text',
+                  inputMode: 'numeric',
+                  value: staged.maxTokens,
+                  disabled,
+                  'aria-invalid': maxTokensInvalid || undefined,
+                  onChange: (event) => edit('maxTokens', event.target.value),
+                }),
+                h('p', { style: maxTokensInvalid ? css.invalidText : css.hint },
+                  maxTokensInvalid
+                    ? `须是 ${MAX_TOKENS_MIN}–${MAX_TOKENS_MAX} 之间的数字`
+                    : '顾问单次回答的长度上限。'),
+              ),
+              checkField('allowWebSearch', '允许顾问联网搜索', '开启后顾问可使用 web_search 查证；关闭为纯参数知识。'),
+              checkField('guidanceEnabled', '注入使用协议到系统提示词', '触发判据与追问预算；改动即刻生效（影响提示词前缀）。'),
+              h('div', { style: css.footer },
+                saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未生效，请重试。') : null,
+                h('button', {
+                  type: 'button',
+                  style: !dirty || saving ? { ...css.discard, ...css.disabled } : css.discard,
+                  disabled: !dirty || saving,
+                  onClick: discard,
+                }, '放弃'),
+                h('button', {
+                  type: 'button',
+                  style: blocked ? { ...css.save, ...css.disabled } : css.save,
+                  disabled: blocked,
+                  onClick: save,
+                }, saving ? '保存中…' : '保存'),
+              ),
+            )
+          : null,
+      )
     }
 
     function apply(ctx) {
