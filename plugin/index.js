@@ -28,10 +28,24 @@ const ADVISOR_PERSONA =
   'short paragraph, at most six items total. Tag every item with a confidence ' +
   'tier — [high] established domain consensus, [mid] grounded but ' +
   'context-dependent judgment, [low] extrapolation or cross-domain analogy — ' +
-  'and never give numeric scores. You have no internet or environment access: ' +
+  'and never give numeric scores. If the question lies outside your reliable ' +
+  'knowledge, say so plainly, tag the affected items [low], and never invent ' +
+  'specific names, links, version numbers, or studies — cross-domain analogies ' +
+  'from fields you do know remain welcome. You have no internet or environment ' +
+  'access: ' +
   'if the question hinges on time-sensitive facts (versions, availability, ' +
   'pricing) the caller did not supply, declare that gap at the top of your ' +
   'answer.'
+
+/** One-shot reminder appended to an assembly when planning starts unconsulted. */
+const PLAN_REMINDER_TEXT =
+  'advisor: planning has started in this turn and the advisor has not been ' +
+  'consulted. If this task involves an open design space, an unfamiliar ' +
+  'domain, an irreversible decision, or a difficult diagnosis — and the task ' +
+  'is bigger than one consultation round-trip — call ask_advisor now with ' +
+  'the facts you have gathered. Judge the decision space, not the prompt ' +
+  'length: a one-line request can hide a large open design. If the task is ' +
+  'mechanical or fully specified, ignore this reminder.'
 
 /** Guidance prompt section text: the consultation protocol for the caller. */
 const GUIDANCE_TEXT =
@@ -40,17 +54,26 @@ const GUIDANCE_TEXT =
   'diversity — directions your own priors would not sample first.\n\n' +
   'WHEN to consult (at most once per planning phase, and only for ' +
   'knowledge-heavy tasks): an open solution space (architecture, technology ' +
-  'selection, data modeling — several fundamentally different routes exist); ' +
+  'selection, data modeling, scene/aesthetic composition — several ' +
+  'fundamentally different routes exist); ' +
   'an unfamiliar domain where your training knowledge is thin; a highly ' +
   'irreversible decision (migrations, external contracts); or a difficult ' +
   'diagnosis where ordinary approaches have already failed twice.\n\n' +
   'Do NOT consult when the answer is inside the environment (inspect the ' +
   'code instead), for mechanical pattern-fixed tasks, or for small tasks ' +
-  'where one consultation costs more than the task itself.\n\n' +
+  'where one consultation costs more than the task itself. Judge the ' +
+  'decision space, not the prompt length: a one-line request can hide a ' +
+  'large open design, and a long spec can hide zero decisions. Do NOT ' +
+  'consult about errors in a spec: factual conflicts go to evidence ' +
+  '(inspect or verify yourself), tradeoff conflicts go to the user (ask or ' +
+  'note in the plan); the advisor enters only when fixing the error reopens ' +
+  'a design space.\n\n' +
   'HOW to consult: (1) Explore first — gather concrete environment facts ' +
   '(code structure, versions, constraints) BEFORE calling, and run any web ' +
   'lookups for time-sensitive facts yourself: the advisor has no internet ' +
-  'access, so everything it needs must arrive in your context; ungrounded ' +
+  'access, so everything it needs must arrive in your context; if the domain ' +
+  'is unfamiliar to you, do a short research pass first and pass the digest; ' +
+  'ungrounded ' +
   'questions get generic answers. (2) One divergent consultation: pass the ' +
   'goal, the facts you found, and the constraints; expect framings, prior ' +
   'art, pitfalls, and evaluation dimensions — never steps. (3) Work ' +
@@ -78,6 +101,8 @@ export const Config = Schema.object({
     .description('首次咨询前要求本会话已有至少一次非顾问工具调用（先探查后咨询）'),
   enforceFollowupGap: Schema.boolean().default(true)
     .description('同一 turn 内两次咨询之间要求至少一次独立工作动作（追问须由新事实驱动）'),
+  planReminderEnabled: Schema.boolean().default(true)
+    .description('检测到本 turn 开始规划（todo_write / exit_plan_mode）且尚未咨询时，在下一步装配里注入一次提醒；机制零语义判断'),
   reasoningEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     .default('provider')
     .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
@@ -271,6 +296,56 @@ export function apply(ctx, config) {
       },
       'dsh-advisor: guidance section',
     )
+
+    // ── plan-moment reminder (option B): the mechanism never judges task
+    // content; it watches the caller's BEHAVIOR. When this turn shows a
+    // planning signal (todo_write / exit_plan_mode) and no advisor call yet,
+    // the NEXT assembly carries one extra context entry with the reminder —
+    // the criteria re-appear at the decision point instead of lying buried in
+    // the system prompt. AssembleContext carries the assembling agent
+    // (assembleContextFor: { agent, scope: agent }), so per-turn conditions
+    // read the agent's own session events; "reminded already" is a small
+    // in-memory marker (a restart may re-remind once — harmless).
+    const remindedTurns = new Map()
+    spctx.on('system-prompt/assemble', async (assembly, asmbCtx, next) => {
+      const assembled = await next()
+      try {
+        if (!current().planReminderEnabled) return assembled
+        const agent = asmbCtx && asmbCtx.agent
+        const events = agent && agent.session && agent.session.events
+        if (!Array.isArray(events)) return assembled
+        let turnStart = -1
+        let turnNo = 0
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index]
+          if (event && event.type === 'turn/start') {
+            turnStart = index
+            turnNo = event.data && Number.isInteger(event.data.turn) ? event.data.turn : 0
+            break
+          }
+        }
+        if (turnStart < 0 || remindedTurns.get(agent.id) === turnNo) return assembled
+        let planning = false
+        let consulted = false
+        for (let index = turnStart; index < events.length; index += 1) {
+          const event = events[index]
+          if (!event || event.type !== 'tool/call' || !event.data) continue
+          if (event.data.name === 'ask_advisor') consulted = true
+          if (event.data.name === 'todo_write' || event.data.name === 'exit_plan_mode') planning = true
+        }
+        if (!planning || consulted) return assembled
+        remindedTurns.set(agent.id, turnNo)
+        return {
+          ...assembled,
+          contexts: [
+            ...assembled.contexts,
+            { name: 'advisor:plan-reminder', text: PLAN_REMINDER_TEXT },
+          ],
+        }
+      } catch {
+        return assembled
+      }
+    })
   })
 
   // ── namespace exposure: the API proxy serves settings describe/mutate only
@@ -324,14 +399,21 @@ export function apply(ctx, config) {
       name: 'ask_advisor',
       description:
         'Consult a second, knowledge-rich model BEFORE planning. USE WHEN the task has an ' +
-        'open design space (architecture, scene/aesthetic composition, technology selection — ' +
-        'several fundamentally different routes exist), touches an unfamiliar domain, or ' +
-        'carries an irreversible decision; SKIP mechanical, fully-specified, or tiny tasks. ' +
-        'Pass the goal, the facts already found in the environment, and the constraints; ' +
-        'receive framings, prior art, pitfalls, and evaluation dimensions — ideas only, ' +
-        'never steps. Follow-ups are separate calls: each must carry new facts and one ' +
-        'specific question (never a draft plan). When you use its ideas, state which you ' +
-        'adopted or rejected.',
+        'open design space (architecture, scene/aesthetic composition, technology ' +
+        'selection, data modeling — several fundamentally different routes exist), ' +
+        'touches an unfamiliar domain, carries an irreversible decision, or is a ' +
+        'difficult diagnosis after ordinary approaches failed twice; SKIP mechanical, ' +
+        'fully-specified, or small-scope tasks — judge the decision space, not the ' +
+        'prompt length (a one-line request can hide a large open design). Do NOT ' +
+        'consult about errors in a spec: factual conflicts go to evidence (inspect or ' +
+        'verify yourself), tradeoff conflicts go to the user. The advisor has no ' +
+        'internet: research unfamiliar domains and time-sensitive facts yourself ' +
+        'first, then pass the goal, the established facts, and the constraints; ' +
+        'receive framings, prior art, pitfalls, and evaluation dimensions — ideas ' +
+        'only, never steps. At most one consultation per planning phase plus two ' +
+        'follow-ups; follow-ups are separate calls, each with new facts and one ' +
+        'specific question (never a draft plan). When you use its ideas, state ' +
+        'which you adopted or rejected.',
       parameters: {
         type: 'object',
         properties: {

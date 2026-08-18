@@ -121,7 +121,7 @@
 
 - **M1**（已完成）：自包含 preset（本仓库 `preset/`）；`maxDepth: 1` 修复后可用。
 - **M2**（已完成，经真实会话端到端验证）：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section；计划外加固了 `maxDepth`、`reasoningEffort` 注入与错误透传。
-- **M3**：plan mode 自动咨询钩子（`agent/pre-step` / plan 事件）、`outputSchema` 结构化思路、`/advise` 命令、批评者评审角色（参考 dsh-plans）、浏览器 UI。
+- **M3**：`outputSchema` 结构化思路、`/advise` 命令与一键触发（人类触发面）、批评者评审角色（参考 dsh-plans）、浏览器 UI。规划时刻提醒已提前在 M2 落地（assemble waterfall 行为信号版，见 §7"肯定判定的落点"）。
 
 ### M2 设置面板的两个架构约束（已核实）
 
@@ -138,6 +138,9 @@
 - **顾问不联网**（已决策）：时效性事实由主模型先自行查证、作为已探明事实经 `context` 传入——grounding 单一归属，顾问的分布外多样性不被与主模型相同的 web 共识重新锚定，时延与上下文成本也随之消除。顾问幻觉风险被压到只剩框架层，而那层的验证本来就走主模型的批判筛选。persona 要求顾问在问题依赖未供给的时效事实时于开头声明局限。
 - **置信度分档**（已决策）：persona 要求每条思路带 `[high]/[mid]/[low]` 标签（共识 / 有依据但依情境 / 推测或类比迁移），禁止数字分数——LLM 口头概率系统性过度自信，虚假精度比没有更糟；标签的用途是帮主模型分配验证精力，不是精确概率。logprob 级真置信在 spawn 管道与 Gemini 路由上均不可得；自一致性采样违背多样性目标，均不采用。
 - **机制化否定判定**（M2 已实现，M1 无此通道）：四条门把协议形状变成硬约束——`context` 必填（schema required）、每 turn 调用额度（`maxCallsPerTurn` 默认 3 = 1 发散 + 2 追问）、探索门（`requireExploration`：会话内首次咨询前须已有非顾问工具调用）、追问间隔门（`enforceFollowupGap`：同 turn 两次咨询间须有独立工作动作）。门状态从调用方 `session.events` **无状态回读**（以 settled 的 tool/result 计数，在途调用不自锁；失败咨询照计额度防重试风暴），遥测不可读时 fail-open 退回 prompt 纪律。"该不该问"仍是语义判断、留在 prompt 层——机制只强制"什么时候不许问"。规格错误不经顾问：事实冲突交给证据，取舍冲突交给用户，顾问只在修正重新打开设计空间时进场。
+- **肯定判定的落点**（已决策 B，M2 已实现）：机制读不懂任务内容，改判调用方**行为**——`system-prompt/assemble` waterfall（`AssembleContext` 经 `assembleContextFor` 携带 agent）检测到本 turn 出现规划信号（`todo_write` / `exit_plan_mode`）且无 `ask_advisor` 调用时，给下一次装配追加一次性 context 提醒，每 turn 至多一次（内存标记，进程重启可能重复一次，无害）。判据不消失，只是从静态系统提示移到决策点动态出现。升级路径：C（便宜分类器判任务、必要时宿主代跑顾问注入结果）留作实测仍漏触发后的选项——注意那是"常驻评审"的哲学转向；D（`/advise` 命令等人类触发面）在 M3。
+- **陌生领域协议**（③ 决定的残余风险，已补）：陌生领域不需要顾问联网，需要**调用方先研究**——guidance HOW(1) 要求"领域陌生时先做一次研究并把摘要经 context 传入"（黑洞 GR 光线追踪咨询实测：主模型自备推导公式与积分器验证，顾问零工具输出六条正确思路）；persona 诚实条款兜底垃圾进：知识范围外明说、相关条目挂 `[low]`、禁编造具体名称/链接/版本/文献。逃生门：若实测出现陌生领域幻觉，加 per-call `research` 布尔临时放开该次咨询的 web_search——无知领域里 web 共识好过编造，多样性损失在那里最小。
+- **触发边界文本**（已统一，随 B 同批落地）：工具描述与 guidance 判据取并集（开放设计空间=架构/场景美学构图/技术选型/数据建模；陌生领域；不可逆决策；困难诊断失败两轮）；消歧"判决策空间、不判 prompt 篇幅"（一句话可藏大设计，长规格可藏零决策）；a′ 条款（规格错误不经顾问）；频次上限（每规划阶段一次 + 至多两追问）进入工具描述——complete preset 下唯一可见面现在自带全部判据与预算。
 - **压缩丢失**：顾问输出作为工具结果可能被 `tool-result-pruner` 裁剪——协议要求计划正文注明采纳思路，形成第二载体。
 - **子代理思考级别缺省**（已修）：`AgentOptions` 不带 effort，显式选型的子代理请求退回 provider 默认思考行为——pi-ai 对"无 effort"的 Gemini-3-Flash 映射出 `MINIMAL` thinkingLevel，而 gemini-3.7-flash 的 API 拒绝该级别（400）。M2 的 `reasoningEffort` 配置通过宿主级 `agent/request` waterfall 精确注入在册顾问子代理（payload 携带 subject agent，`run.id` 集合过滤）；`provider` 档位不触碰请求。M1（tool-subagent 实例）无此注入通道，只能靠 provider profile 的 `reasoning` 默认值兜底；M1 同样无法定制工具描述（tool-subagent 的 description 由 providerWording 固定生成），触发判据只在 M2 的描述文本里。
 - **触发依赖工具描述**（已加固）：`complete: true` 的 preset（如 minimal-v5）会丢弃 guidance section，模型只能看到工具描述——实测"创建 3D 体素场景"这类开放设计任务未触发咨询。因此触发判据（USE WHEN 开放设计空间/陌生领域/不可逆决策，SKIP 机械任务）与归因条款直接写进 M2 的工具描述：工具 schema 是唯一不被 complete prompt 压掉的模型可见面。
