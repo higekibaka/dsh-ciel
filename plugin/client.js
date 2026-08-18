@@ -30,13 +30,17 @@ window.__ModuleLoader__.load({
       provider: 'kimi-coding',
       model: 'kimi-for-coding',
       maxTokens: 4096,
-      allowWebSearch: true,
+      maxCallsPerTurn: 3,
+      requireExploration: true,
+      enforceFollowupGap: true,
       reasoningEffort: 'provider',
       guidanceEnabled: true,
     }
-    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'allowWebSearch', 'reasoningEffort', 'guidanceEnabled']
+    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'reasoningEffort', 'guidanceEnabled']
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
+    const MAX_CALLS_MIN = 1
+    const MAX_CALLS_MAX = 20
 
     /** Reasoning-effort levels the host schema admits, in escalation order. */
     const EFFORT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -268,7 +272,9 @@ window.__ModuleLoader__.load({
         provider: String(value.provider ?? ''),
         model: String(value.model ?? ''),
         maxTokens: String(value.maxTokens ?? ''),
-        allowWebSearch: Boolean(value.allowWebSearch),
+        maxCallsPerTurn: String(value.maxCallsPerTurn ?? ''),
+        requireExploration: Boolean(value.requireExploration),
+        enforceFollowupGap: Boolean(value.enforceFollowupGap),
         reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
       }
@@ -279,11 +285,17 @@ window.__ModuleLoader__.load({
         || !Number.isFinite(maxTokensParsed)
         || maxTokensParsed < MAX_TOKENS_MIN
         || maxTokensParsed > MAX_TOKENS_MAX
+      const maxCallsParsed = Math.round(Number(staged.maxCallsPerTurn))
+      const maxCallsInvalid = staged.maxCallsPerTurn.trim() === ''
+        || !Number.isFinite(maxCallsParsed)
+        || maxCallsParsed < MAX_CALLS_MIN
+        || maxCallsParsed > MAX_CALLS_MAX
 
       const dirtyKey = (key) => {
         if (resets[key]) return true
         if (key === 'maxTokens') return !maxTokensInvalid && maxTokensParsed !== value.maxTokens
-        if (key === 'allowWebSearch' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
+        if (key === 'maxCallsPerTurn') return !maxCallsInvalid && maxCallsParsed !== value.maxCallsPerTurn
+        if (key === 'requireExploration' || key === 'enforceFollowupGap' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
         if (key === 'reasoningEffort') return staged[key] !== String(value[key] ?? 'provider')
         return staged[key] !== String(value[key] ?? '')
       }
@@ -316,7 +328,8 @@ window.__ModuleLoader__.load({
             if (resets[key]) {
               await scope.unset(key)
             } else if (dirtyKey(key)) {
-              await scope.set(key, key === 'maxTokens' ? maxTokensParsed : staged[key])
+              const parsed = key === 'maxTokens' ? maxTokensParsed : key === 'maxCallsPerTurn' ? maxCallsParsed : undefined
+              await scope.set(key, parsed !== undefined ? parsed : staged[key])
             }
           }
           setDrafts(null)
@@ -449,7 +462,7 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const blocked = !dirty || maxTokensInvalid || saving
+      const blocked = !dirty || maxTokensInvalid || maxCallsInvalid || saving
 
       return h('li', { style: css.card },
         h('button', {
@@ -493,7 +506,29 @@ window.__ModuleLoader__.load({
                     ? `须是 ${MAX_TOKENS_MIN}–${MAX_TOKENS_MAX} 之间的数字`
                     : '顾问单次回答的长度上限。'),
               ),
-              checkField('allowWebSearch', '允许顾问联网搜索', '开启后顾问可使用 web_search 查证；关闭为纯参数知识。'),
+              h('div', { key: 'maxCallsPerTurn', style: { ...css.field, ...css.fieldBorder } },
+                h(FieldHead, {
+                  label: '每轮咨询额度',
+                  overridden: overridden('maxCallsPerTurn') && !resets.maxCallsPerTurn,
+                  disabled,
+                  onReset: () => resetField('maxCallsPerTurn'),
+                }),
+                h('input', {
+                  style: maxCallsInvalid ? { ...css.input, ...css.inputInvalid } : css.input,
+                  type: 'text',
+                  inputMode: 'numeric',
+                  value: staged.maxCallsPerTurn,
+                  disabled,
+                  'aria-invalid': maxCallsInvalid || undefined,
+                  onChange: (event) => edit('maxCallsPerTurn', event.target.value),
+                }),
+                h('p', { style: maxCallsInvalid ? css.invalidText : css.hint },
+                  maxCallsInvalid
+                    ? `须是 ${MAX_CALLS_MIN}–${MAX_CALLS_MAX} 之间的数字`
+                    : '一个 turn（≈一个规划阶段）内允许的顾问调用上限：1 次发散 + 追问预算；超出即被拒绝。'),
+              ),
+              checkField('requireExploration', '首次咨询前要求先探查', '本会话内首个 ask_advisor 调用前，必须已有至少一次非顾问工具调用（读/搜/跑）。'),
+              checkField('enforceFollowupGap', '追问之间要求独立工作', '同一 turn 内两次咨询之间必须至少有一次非顾问工具调用——追问须由新事实驱动。'),
               checkField('guidanceEnabled', '注入使用协议到系统提示词', '触发判据与追问预算；改动即刻生效（影响提示词前缀）。'),
               h('div', { style: css.footer },
                 saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未生效，请重试。') : null,

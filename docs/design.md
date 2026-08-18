@@ -89,7 +89,7 @@
 - `ask_advisor` 工具 = `@deepseek-ai/dsh-tool-subagent` 的第二个实例（README 明确"另一种模型/人格/工具面 = 另一个独立命名的工具实例"）：
   - `agentOptions`：覆盖子代理 provider/model/maxTokens；
   - `persona`：顾问人格（spawn provider 支持 `persona` capability）；
-  - `toolFilter`：工具白名单（`allow: [web_search]` 或 `[]`）；
+  - `toolFilter`：固定 `allow: []`——顾问不联网（见 §7"顾问不联网"）；
   - `maxDepth: 1`：绝对委派深度上限，按子代理计算深度（调用方深度 + 1）校验——准入顾问本身（深度 1），禁止顾问再委派（深度 2）；注意 `0` 会连顶层会话的咨询一起拒绝（`subagent depth 1 exceeds maxDepth 0`）。`enableRunInBackground: false`：同步咨询。
 - 指导 section = preset 目录内 `advisor-section.mjs`（`boot-persona.mjs` 先例：注册 `ctx.systemPrompt` section，不发布服务，松散放置）。
 - 追问通道 = 多次调用同一工具，纪律写在 section 文本。
@@ -102,7 +102,7 @@
 - **子代理走 `subagents.start('spawn')`，不直连 `ctx.llm.stream()`**：早期设想用 llm.stream 省子会话开销，但 spawn 路线才提供 persona capability、`toolFilter` 工具白名单、`maxDepth` 委派深度上限、独立子会话日志，以及错误透传依赖的 `run.localAgent.session.events` 回读通道。
 - **`/advise` 命令归 M3**（与 §6 路线图一致），M2 不含命令面。
 - 定制工具描述：触发判据（USE WHEN / SKIP）与归因条款内嵌，是 `complete: true` preset 下唯一不被压掉的模型可见面。
-- Schemastery `Config` 全配置化：provider/model/maxTokens/allowWebSearch/reasoningEffort/guidanceEnabled；`reasoningEffort` 经宿主级 `agent/request` waterfall 精确注入在册顾问子代理（`run.id` 集合过滤）。
+- Schemastery `Config` 全配置化：provider/model/maxTokens/maxCallsPerTurn/requireExploration/enforceFollowupGap/reasoningEffort/guidanceEnabled；`reasoningEffort` 经宿主级 `agent/request` waterfall 精确注入在册顾问子代理（`run.id` 集合过滤）。
 - 指导 section 经 `ctx.inject(['systemPrompt'])` 注册——裸 `ctx.get` 会输掉启动竞速（服务 fiber 未 ACTIVE 时返回 undefined，section 静默丢失，实测发生）。
 - 设置面板由 `plugin/client.js` 注册进 `settings.plugin.item` 槽位，命名空间经 `llm.registerConfigurableProviders` 暴露（见下节架构约束）。
 
@@ -134,7 +134,10 @@
 - **选择过载**：思路太多稀释注意力——输出契约限制条数与长度，`maxTokens` 硬上限。
 - **同质化**：顾问与主模型同家族时边际收益小——配置项允许换跨家族路由。
 - **KV cache**：新增 section 与工具 schema 改变 prompt 前缀（一次性成本）。
-- **安全边界**：spawn 子代理自动继承 sandbox override、审批固定 never；顾问允许 `web_search` 无需审批。
+- **安全边界**：spawn 子代理自动继承 sandbox override、审批固定 never；顾问 `toolFilter` 固定空表，不持有任何工具。
+- **顾问不联网**（已决策）：时效性事实由主模型先自行查证、作为已探明事实经 `context` 传入——grounding 单一归属，顾问的分布外多样性不被与主模型相同的 web 共识重新锚定，时延与上下文成本也随之消除。顾问幻觉风险被压到只剩框架层，而那层的验证本来就走主模型的批判筛选。persona 要求顾问在问题依赖未供给的时效事实时于开头声明局限。
+- **置信度分档**（已决策）：persona 要求每条思路带 `[high]/[mid]/[low]` 标签（共识 / 有依据但依情境 / 推测或类比迁移），禁止数字分数——LLM 口头概率系统性过度自信，虚假精度比没有更糟；标签的用途是帮主模型分配验证精力，不是精确概率。logprob 级真置信在 spawn 管道与 Gemini 路由上均不可得；自一致性采样违背多样性目标，均不采用。
+- **机制化否定判定**（M2 已实现，M1 无此通道）：四条门把协议形状变成硬约束——`context` 必填（schema required）、每 turn 调用额度（`maxCallsPerTurn` 默认 3 = 1 发散 + 2 追问）、探索门（`requireExploration`：会话内首次咨询前须已有非顾问工具调用）、追问间隔门（`enforceFollowupGap`：同 turn 两次咨询间须有独立工作动作）。门状态从调用方 `session.events` **无状态回读**（以 settled 的 tool/result 计数，在途调用不自锁；失败咨询照计额度防重试风暴），遥测不可读时 fail-open 退回 prompt 纪律。"该不该问"仍是语义判断、留在 prompt 层——机制只强制"什么时候不许问"。规格错误不经顾问：事实冲突交给证据，取舍冲突交给用户，顾问只在修正重新打开设计空间时进场。
 - **压缩丢失**：顾问输出作为工具结果可能被 `tool-result-pruner` 裁剪——协议要求计划正文注明采纳思路，形成第二载体。
 - **子代理思考级别缺省**（已修）：`AgentOptions` 不带 effort，显式选型的子代理请求退回 provider 默认思考行为——pi-ai 对"无 effort"的 Gemini-3-Flash 映射出 `MINIMAL` thinkingLevel，而 gemini-3.7-flash 的 API 拒绝该级别（400）。M2 的 `reasoningEffort` 配置通过宿主级 `agent/request` waterfall 精确注入在册顾问子代理（payload 携带 subject agent，`run.id` 集合过滤）；`provider` 档位不触碰请求。M1（tool-subagent 实例）无此注入通道，只能靠 provider profile 的 `reasoning` 默认值兜底；M1 同样无法定制工具描述（tool-subagent 的 description 由 providerWording 固定生成），触发判据只在 M2 的描述文本里。
 - **触发依赖工具描述**（已加固）：`complete: true` 的 preset（如 minimal-v5）会丢弃 guidance section，模型只能看到工具描述——实测"创建 3D 体素场景"这类开放设计任务未触发咨询。因此触发判据（USE WHEN 开放设计空间/陌生领域/不可逆决策，SKIP 机械任务）与归因条款直接写进 M2 的工具描述：工具 schema 是唯一不被 complete prompt 压掉的模型可见面。

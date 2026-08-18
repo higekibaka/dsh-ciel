@@ -25,7 +25,13 @@ const ADVISOR_PERSONA =
   'common pitfalls, cross-domain analogies, and the evaluation dimensions an ' +
   'expert would check. Output ideas and knowledge ONLY — never step-by-step ' +
   'plans, never code, never tool usage instructions. Keep each idea to one ' +
-  'short paragraph, at most six items total.'
+  'short paragraph, at most six items total. Tag every item with a confidence ' +
+  'tier — [high] established domain consensus, [mid] grounded but ' +
+  'context-dependent judgment, [low] extrapolation or cross-domain analogy — ' +
+  'and never give numeric scores. You have no internet or environment access: ' +
+  'if the question hinges on time-sensitive facts (versions, availability, ' +
+  'pricing) the caller did not supply, declare that gap at the top of your ' +
+  'answer.'
 
 /** Guidance prompt section text: the consultation protocol for the caller. */
 const GUIDANCE_TEXT =
@@ -42,7 +48,9 @@ const GUIDANCE_TEXT =
   'code instead), for mechanical pattern-fixed tasks, or for small tasks ' +
   'where one consultation costs more than the task itself.\n\n' +
   'HOW to consult: (1) Explore first — gather concrete environment facts ' +
-  '(code structure, versions, constraints) BEFORE calling; ungrounded ' +
+  '(code structure, versions, constraints) BEFORE calling, and run any web ' +
+  'lookups for time-sensitive facts yourself: the advisor has no internet ' +
+  'access, so everything it needs must arrive in your context; ungrounded ' +
   'questions get generic answers. (2) One divergent consultation: pass the ' +
   'goal, the facts you found, and the constraints; expect framings, prior ' +
   'art, pitfalls, and evaluation dimensions — never steps. (3) Work ' +
@@ -64,8 +72,12 @@ export const Config = Schema.object({
     .description('顾问模型 id；跨家族模型多样性收益更大'),
   maxTokens: Schema.number().min(256).max(32768).default(4096)
     .description('顾问单次回答的输出上限'),
-  allowWebSearch: Schema.boolean().default(true)
-    .description('允许顾问使用 web_search 查证资料；关闭则为纯参数知识'),
+  maxCallsPerTurn: Schema.number().min(1).max(20).default(3)
+    .description('每个 turn（≈一个规划阶段）的顾问调用硬上限：1 次发散 + 追问预算；超出即拒绝'),
+  requireExploration: Schema.boolean().default(true)
+    .description('首次咨询前要求本会话已有至少一次非顾问工具调用（先探查后咨询）'),
+  enforceFollowupGap: Schema.boolean().default(true)
+    .description('同一 turn 内两次咨询之间要求至少一次独立工作动作（追问须由新事实驱动）'),
   reasoningEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     .default('provider')
     .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
@@ -150,6 +162,65 @@ function childErrorDetail(run) {
     return ''
   }
   return ''
+}
+
+/**
+ * Consultation-gate facts, read STATELESSLY from the caller's own session log
+ * (no plugin-side ledger to leak or reset): how many advisor calls already
+ * settled this turn, whether any non-advisor tool ever ran in the session,
+ * and whether independent work happened after the last settled consultation.
+ * A call counts once its tool/result lands, so the in-flight call never gates
+ * itself, and failed consultations still consume budget (no retry storms).
+ * Telemetry surprises degrade to `undefined` — gates fail OPEN to the
+ * prompt-layer protocol, never to a phantom rejection.
+ */
+function gateFacts(parent) {
+  try {
+    const session = parent && parent.session
+    const events = session && session.events
+    if (!Array.isArray(events)) return undefined
+    let turnStart = -1
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index] && events[index].type === 'turn/start') {
+        turnStart = index
+        break
+      }
+    }
+    const thisTurn = turnStart < 0 ? events : events.slice(turnStart)
+    const callName = (event) =>
+      event && event.type === 'tool/call' && event.data ? event.data.name : undefined
+    const isAdvisorCall = (event) => callName(event) === 'ask_advisor'
+    const isWorkCall = (event) => {
+      const name = callName(event)
+      return name !== undefined && name !== 'ask_advisor'
+    }
+    const settledIds = new Set()
+    for (const event of events) {
+      if (!event || event.type !== 'tool/result') continue
+      const content = event.data && event.data.message && event.data.message.content
+      if (!Array.isArray(content)) continue
+      for (const part of content) {
+        if (part && part.type === 'tool-result' && typeof part.toolCallId === 'string') {
+          settledIds.add(part.toolCallId)
+        }
+      }
+    }
+    let settledThisTurn = 0
+    let lastSettledAdvisor = -1
+    thisTurn.forEach((event, index) => {
+      if (isAdvisorCall(event) && settledIds.has(event.data.callId)) {
+        settledThisTurn += 1
+        lastSettledAdvisor = index
+      }
+    })
+    return {
+      settledThisTurn,
+      explorationDone: events.some(isWorkCall),
+      workSinceLast: lastSettledAdvisor < 0 || thisTurn.slice(lastSettledAdvisor + 1).some(isWorkCall),
+    }
+  } catch {
+    return undefined
+  }
 }
 
 export function apply(ctx, config) {
@@ -270,10 +341,10 @@ export function apply(ctx, config) {
           },
           context: {
             type: 'string',
-            description: 'Environment facts and constraints already established (explore first).',
+            description: 'Environment facts and constraints already established (explore first; REQUIRED).',
           },
         },
-        required: ['question'],
+        required: ['question', 'context'],
         additionalProperties: false,
       },
       output: stringOutput,
@@ -283,10 +354,42 @@ export function apply(ctx, config) {
           throw new Error('ask_advisor requires a calling agent (exec.agent was undefined)')
         }
         const cfg = current()
-        const consultation =
-          typeof args.context === 'string' && args.context.trim() !== ''
-            ? `Established facts and constraints:\n${args.context}\n\nQuestion:\n${args.question}`
-            : String(args.question)
+        // ── Mechanized negative gates (prompt text advises; these decide).
+        // Gate order is cheapest-first; each error teaches the remedy.
+        if (typeof args.context !== 'string' || args.context.trim() === '') {
+          throw new Error(
+            'context is required: pass the facts already established in the ' +
+              'environment (explore first — ungrounded questions get generic answers)',
+          )
+        }
+        const facts = gateFacts(parent)
+        if (facts === undefined) {
+          if (ctx.logger && typeof ctx.logger.warn === 'function') {
+            ctx.logger.warn('dsh-advisor: session telemetry unreadable; consultation gates fail open')
+          }
+        } else {
+          if (cfg.requireExploration && !facts.explorationDone) {
+            throw new Error(
+              'explore first: no non-advisor tool call has run in this session yet. ' +
+                'Inspect the environment (read/search/run) before consulting, then ' +
+                'pass what you found in context',
+            )
+          }
+          if (facts.settledThisTurn >= cfg.maxCallsPerTurn) {
+            throw new Error(
+              `advisor budget for this planning phase is exhausted ` +
+                `(${facts.settledThisTurn}/${cfg.maxCallsPerTurn} consultations settled this turn). ` +
+                'Work independently now; consult again in a later turn if genuinely new facts surface',
+            )
+          }
+          if (cfg.enforceFollowupGap && facts.settledThisTurn > 0 && !facts.workSinceLast) {
+            throw new Error(
+              'follow-ups must be driven by NEW facts: run at least one independent ' +
+                'step (read/search/run) since the last consultation before calling again',
+            )
+          }
+        }
+        const consultation = `Established facts and constraints:\n${args.context.trim()}\n\nQuestion:\n${args.question}`
         const run = await tctx.subagents.start('spawn', {
           label: 'advisor',
           parent,
@@ -304,7 +407,11 @@ export function apply(ctx, config) {
           // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
           // the advisor's own children (depth 2).
           maxDepth: 1,
-          toolFilter: cfg.allowWebSearch ? { allow: ['web_search'] } : { allow: [] },
+          // The advisor never touches tools: time-sensitive facts are the
+          // CALLER's job (search first, pass findings in context) — grounding
+          // stays single-owner, and the advisor's diversity is not re-anchored
+          // to the same web consensus the caller would find.
+          toolFilter: { allow: [] },
         })
         // Track before the first child request can race: publication resolves
         // start() before the prompt followup reaches the child's loop.
