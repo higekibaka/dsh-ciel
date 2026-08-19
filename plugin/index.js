@@ -185,10 +185,16 @@ function childErrorDetail(run) {
  * settled this turn, whether any non-advisor tool ever ran in the session,
  * and whether independent work happened after the last settled consultation.
  * A call counts once its tool/result lands, so the in-flight call never gates
- * itself, and failed consultations still consume budget (no retry storms).
- * Telemetry surprises degrade to `undefined` — gates fail OPEN to the
+ * itself. Only REAL consultations count: a call rejected by one of these
+ * gates (a form error, not a consultation) neither burns budget nor arms the
+ * follow-up gap — observed live, where an empty-context rejection poisoned
+ * the model's immediate, correctly-filled retry. A call that passed the gates
+ * and then failed at the provider still counts (no retry storms). Telemetry
+ * surprises degrade to `undefined` — gates fail OPEN to the
  * prompt-layer protocol, never to a phantom rejection.
  */
+const GATE_REJECTION_HEAD = /^(?:Error: )?(?:context is required:|explore first:|follow-ups must be driven by NEW facts:|advisor budget for this planning phase is exhausted)/
+
 function gateFacts(parent) {
   try {
     const session = parent && parent.session
@@ -209,24 +215,28 @@ function gateFacts(parent) {
       const name = callName(event)
       return name !== undefined && name !== 'ask_advisor'
     }
-    const settledIds = new Set()
+    const resultHeads = new Map()
     for (const event of events) {
       if (!event || event.type !== 'tool/result') continue
       const content = event.data && event.data.message && event.data.message.content
       if (!Array.isArray(content)) continue
       for (const part of content) {
         if (part && part.type === 'tool-result' && typeof part.toolCallId === 'string') {
-          settledIds.add(part.toolCallId)
+          const text = (Array.isArray(part.content) ? part.content : [])
+            .map((block) => (block && typeof block.text === 'string' ? block.text : ''))
+            .join('')
+          resultHeads.set(part.toolCallId, text.slice(0, 160))
         }
       }
     }
     let settledThisTurn = 0
     let lastSettledAdvisor = -1
     thisTurn.forEach((event, index) => {
-      if (isAdvisorCall(event) && settledIds.has(event.data.callId)) {
-        settledThisTurn += 1
-        lastSettledAdvisor = index
-      }
+      if (!isAdvisorCall(event)) return
+      const head = resultHeads.get(event.data.callId)
+      if (head === undefined || GATE_REJECTION_HEAD.test(head)) return
+      settledThisTurn += 1
+      lastSettledAdvisor = index
     })
     return {
       settledThisTurn,
