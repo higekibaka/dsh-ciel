@@ -9,16 +9,17 @@ DeepSeek Harness（DSH）的**规划前顾问 + 收敛批评者**能力：在主
 ## 仓库结构
 
 ```
-preset/       M1：自包含 agent preset（复制安装到 ~/.dsh/.agent-presets/advisor/）
 plugin/       M2+M3③：树外 bundle 插件包（ask_advisor + 设置面板 + 批注评审）
 prototypes/   原型快照（annotation-review = 批注评审的动态插件前身 + DOM 测试台）
-scripts/      安装与同步脚本
+scripts/      开发实例脚本
 docs/         设计文档
 ```
 
+> **M1 preset 轨道已暂停**（2026-08-20）：`preset/` 目录与 `scripts/install-preset.sh` 已从工作区移除（git 历史保留，恢复见 `git log --oneline -- preset/`），线上 `~/.dsh/.agent-presets/advisor/` 已卸载。当前只维护 bundle 形态；preset 的静态 `ask_advisor` 行会遮蔽 bundle 的全局工具，两者本就不可同用。
+
 ## 安装
 
-### 方式一：插件包（推荐，带设置面板）
+### 插件包（带设置面板）
 
 ```sh
 # 已安装的 dsh：
@@ -31,16 +32,6 @@ pnpm dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
 
 **批注评审（M3-③，0.3.0 起）**：每条助手回复的操作区出现「批注评审」按钮——点击后批评者子代理（`google/gemini-3.7-flash`，effort 固定 low）对该回复做收敛型红线评审；批注以 severity 波浪下划线 + 角标长在原文上，点击弹出批注卡，回复下方另有完整卡片面板。评审记录作为 `advisor/review` 事件持久化在会话日志里，跨重启水合。host↔browser 走 typert Remote（host 注册 strict descriptor，client `$mount` 后调 `remote.advisorReview`）——两个 `@deepseek-ai/*` 导入（cordis / typert-protocol）经 `plugin/node_modules` 里指向共享 profiles 回退图的 symlink 解析，**不要往 package.json 里加这两个依赖**（重复副本会带自己的 registry 状态）。
 
-### 方式二：preset（零安装包的静态形态）
-
-```sh
-./scripts/install-preset.sh
-```
-
-然后在新建会话时选择 **顾问模式** preset。改配置需编辑 `preset/agent.cordis.yml` 后重新运行该脚本。
-
-> **两种方式不要同时用**：advisor preset 内的静态 `ask_advisor` 行会在其作用域内遮蔽插件的全局工具，导致设置面板对该 preset 的会话不生效。
-
 ## 配置项（设置面板 / settings.yaml 的 `advisor` 节）
 
 | 字段 | 默认 | 说明 |
@@ -50,8 +41,6 @@ pnpm dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
 | `maxTokens` | `4096` | 顾问单次输出上限（256–32768） |
 | `allowWebSearch` | `true` | 允许顾问使用 web_search 查证 |
 | `guidanceEnabled` | `true` | 注入顾问使用协议到系统提示词 |
-
-preset 静态形态的同名字段在 `preset/agent.cordis.yml` 的 `tool-advisor` 行。
 
 ## 开发验证（独立测试实例，不动主 GUI）
 
@@ -64,8 +53,8 @@ cd /home/hgk/deepseek-harness && pnpm dsh --profile advisor-test --patch /home/h
 
 ## 路线图
 
-- **M1**：自包含 preset——`ask_advisor` 工具（`dsh-tool-subagent` 实例）+ 指导 prompt section，零安装包。
-- **M2**（当前）：`plugin/` 树外 bundle——定制工具描述、设置面板（host settings 命名空间 + `settings.plugin.item` 卡片）、全局指导 section。
+- **M1**（⏸️ 已暂停）：自包含 preset——`ask_advisor` 工具（`dsh-tool-subagent` 实例）+ 指导 prompt section，零安装包。源码保留在 git 历史（最后见于暂停前提交），线上 roster 已卸载。
+- **M2**（当前焦点）：`plugin/` 树外 bundle——定制工具描述、设置面板（host settings 命名空间 + `settings.plugin.item` 卡片）、全局指导 section。
 - **M3**：plan mode 自动咨询钩子、结构化思路输出、`/advise` 命令、批评者评审角色（③ 已有实测原型：[`prototypes/annotation-review/`](prototypes/annotation-review/)——按钮触发 + 锚定批注 + 行内波浪线/角标/弹出卡，DOM 测试台 14 断言全绿）。
 
 ## 社区对照
