@@ -119,7 +119,7 @@
 
 ## 6. 路线图
 
-- **M1**（已完成）：自包含 preset（本仓库 `preset/`）；`maxDepth: 1` 修复后可用。
+- **M1**（已完成 → ⏸️ 2026-08-20 起暂停）：自包含 preset（原 `preset/`，已从工作区移除、git 历史保留，线上 `~/.dsh/.agent-presets/advisor/` 已卸载）；`maxDepth: 1` 修复后可用。暂停期间只维护 M2 bundle 形态。
 - **M2**（已完成，经真实会话端到端验证）：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section；计划外加固了 `maxDepth`、`reasoningEffort` 注入与错误透传。
 - **M3**：`outputSchema` 结构化思路、`/advise` 命令与一键触发（人类触发面）、批评者评审角色（参考 dsh-plans）、浏览器 UI。规划时刻提醒已提前在 M2 落地（agent 级 context 行为信号版，见 §7"肯定判定的落点"）。
 
