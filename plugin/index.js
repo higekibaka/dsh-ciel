@@ -37,16 +37,6 @@ const ADVISOR_PERSONA =
   'pricing) the caller did not supply, declare that gap at the top of your ' +
   'answer.'
 
-/** One-shot reminder appended to an assembly when planning starts unconsulted. */
-const PLAN_REMINDER_TEXT =
-  'advisor: planning has started in this turn and the advisor has not been ' +
-  'consulted. If this task involves an open design space, an unfamiliar ' +
-  'domain, an irreversible decision, or a difficult diagnosis — and the task ' +
-  'is bigger than one consultation round-trip — call ask_advisor now with ' +
-  'the facts you have gathered. Judge the decision space, not the prompt ' +
-  'length: a one-line request can hide a large open design. If the task is ' +
-  'mechanical or fully specified, ignore this reminder.'
-
 /** Guidance prompt section text: the consultation protocol for the caller. */
 const GUIDANCE_TEXT =
   'You have an `ask_advisor` tool connected to a second model chosen for ' +
@@ -248,6 +238,63 @@ function gateFacts(parent) {
   }
 }
 
+/** One-shot reminder rendered by the agent-scoped context when planning starts unconsulted. */
+const PLAN_REMINDER_TEXT =
+  '[advisor:plan-reminder] Planning has started in this turn and the advisor ' +
+  'has not been consulted. If this task involves an open design space, an ' +
+  'unfamiliar domain, an irreversible decision, or a difficult diagnosis — ' +
+  'and the task is bigger than one consultation round-trip — call ' +
+  'ask_advisor now with the facts you have gathered. Judge the decision ' +
+  'space, not the prompt length: a one-line request can hide a large open ' +
+  'design. If the task is mechanical or fully specified, ignore this reminder.'
+
+/**
+ * Self-evaluating text for the per-agent reminder context: the reminder string
+ * exactly when this turn shows a planning signal with no consultation and no
+ * reminder yet, `''` (excluded from the snapshot) otherwise. Every condition
+ * reads the durable session log, including the reminder's own
+ * `[advisor:plan-reminder]` marker in an earlier snapshot — at-most-once per
+ * turn, immune to compaction and process restarts; any surprise hides the
+ * reminder rather than blocking a request.
+ */
+function reminderTextFor(agent, current) {
+  try {
+    if (!current().planReminderEnabled) return ''
+    const events = agent.session && agent.session.events
+    if (!Array.isArray(events)) return ''
+    let turnStart = -1
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index] && events[index].type === 'turn/start') {
+        turnStart = index
+        break
+      }
+    }
+    if (turnStart < 0) return ''
+    let planning = false
+    for (let index = turnStart; index < events.length; index += 1) {
+      const event = events[index]
+      if (!event) continue
+      if (event.type === 'tool/call' && event.data) {
+        if (event.data.name === 'ask_advisor') return ''
+        if (event.data.name === 'todo_write' || event.data.name === 'exit_plan_mode') planning = true
+      } else if (event.type === 'user/message') {
+        const content = event.data && event.data.content
+        if (
+          Array.isArray(content) &&
+          content.some(
+            (part) => part && typeof part.text === 'string' && part.text.includes('[advisor:plan-reminder]'),
+          )
+        ) {
+          return ''
+        }
+      }
+    }
+    return planning ? PLAN_REMINDER_TEXT : ''
+  } catch {
+    return ''
+  }
+}
+
 export function apply(ctx, config) {
   // ── settings seam: the resolved `advisor` section (schema defaults over the
   // composition entry over the user document) feeds every later consultation.
@@ -296,55 +343,29 @@ export function apply(ctx, config) {
       },
       'dsh-advisor: guidance section',
     )
+  })
 
-    // ── plan-moment reminder (option B): the mechanism never judges task
-    // content; it watches the caller's BEHAVIOR. When this turn shows a
-    // planning signal (todo_write / exit_plan_mode) and no advisor call yet,
-    // the NEXT assembly carries one extra context entry with the reminder —
-    // the criteria re-appear at the decision point instead of lying buried in
-    // the system prompt. AssembleContext carries the assembling agent
-    // (assembleContextFor: { agent, scope: agent }), so per-turn conditions
-    // read the agent's own session events; "reminded already" is a small
-    // in-memory marker (a restart may re-remind once — harmless).
-    const remindedTurns = new Map()
-    spctx.on('system-prompt/assemble', async (assembly, asmbCtx, next) => {
-      const assembled = await next()
-      try {
-        if (!current().planReminderEnabled) return assembled
-        const agent = asmbCtx && asmbCtx.agent
-        const events = agent && agent.session && agent.session.events
-        if (!Array.isArray(events)) return assembled
-        let turnStart = -1
-        let turnNo = 0
-        for (let index = events.length - 1; index >= 0; index -= 1) {
-          const event = events[index]
-          if (event && event.type === 'turn/start') {
-            turnStart = index
-            turnNo = event.data && Number.isInteger(event.data.turn) ? event.data.turn : 0
-            break
-          }
-        }
-        if (turnStart < 0 || remindedTurns.get(agent.id) === turnNo) return assembled
-        let planning = false
-        let consulted = false
-        for (let index = turnStart; index < events.length; index += 1) {
-          const event = events[index]
-          if (!event || event.type !== 'tool/call' || !event.data) continue
-          if (event.data.name === 'ask_advisor') consulted = true
-          if (event.data.name === 'todo_write' || event.data.name === 'exit_plan_mode') planning = true
-        }
-        if (!planning || consulted) return assembled
-        remindedTurns.set(agent.id, turnNo)
-        return {
-          ...assembled,
-          contexts: [
-            ...assembled.contexts,
-            { name: 'advisor:plan-reminder', text: PLAN_REMINDER_TEXT },
-          ],
-        }
-      } catch {
-        return assembled
-      }
+  // ── plan-moment reminder (option B): the mechanism never judges task
+  // content; it watches the caller's BEHAVIOR. Each agent gets an AGENT-SCOPED
+  // prompt context whose text self-evaluates on every assembly: when this turn
+  // shows a planning signal (todo_write / exit_plan_mode) and no advisor call
+  // yet, the runtime-context snapshot carries the reminder — the criteria
+  // re-appear at the decision point instead of lying buried in the system
+  // prompt. This must be per-agent, not a host waterfall: the
+  // system-prompt/assemble dispatch is scope-filtered, so a host listener
+  // never sees preset-mounted agents' assemblies (verified live by probe),
+  // while an agent-scoped context rides the agent's own layer — and contexts
+  // survive complete presets where sections do not. All conditions read the
+  // agent's durable session log (including the reminder's own marker, so it
+  // fires at most once per turn and survives compaction/restart), and the
+  // registration unwinds with the agent.
+  ctx.on('agent/created', ({ agent }) => {
+    const sp = agent && agent.ctx && agent.ctx.get('systemPrompt')
+    if (sp === undefined) return
+    sp.context({
+      name: 'advisor:plan-reminder',
+      order: 90,
+      text: () => reminderTextFor(agent, current),
     })
   })
 
