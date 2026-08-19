@@ -63,7 +63,7 @@ cd /home/hgk/deepseek-harness && pnpm dsh --profile advisor-test --patch /home/h
 
 - **M1**：自包含 preset——`ask_advisor` 工具（`dsh-tool-subagent` 实例）+ 指导 prompt section，零安装包。
 - **M2**（当前）：`plugin/` 树外 bundle——定制工具描述、设置面板（host settings 命名空间 + `settings.plugin.item` 卡片）、全局指导 section。
-- **M3**：plan mode 自动咨询钩子、结构化思路输出、`/advise` 命令、批评者评审角色。
+- **M3**：plan mode 自动咨询钩子、结构化思路输出、`/advise` 命令、批评者评审角色（③ 已有实测原型：[`prototypes/annotation-review/`](prototypes/annotation-review/)——按钮触发 + 锚定批注 + 行内波浪线/角标/弹出卡，DOM 测试台 14 断言全绿）。
 
 ## 社区对照
 
