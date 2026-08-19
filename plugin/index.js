@@ -14,6 +14,10 @@
 // whose settingsNs is this namespace (the same seam dsh-vision-router uses).
 
 import Schema from '@deepseek-ai/schemastery'
+// Resolved through the shared profiles node_modules fallback (the app's own
+// dependency graph) — deliberately NOT declared in package.json so no second
+// copy with its own registry state gets installed beside the app's.
+import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 
 /** Cordis plugin name. */
 export const name = 'dsh-advisor'
@@ -305,6 +309,256 @@ function reminderTextFor(agent, current) {
   }
 }
 
+// ═══════════════════════ M3-③ 批评者：锚定批注评审 ═══════════════════════
+// Ported from the live-tested annrev dynamic prototype (prototypes/
+// annotation-review). The browser button calls the `advisorReview` Remote
+// namespace below; every review persists as an `advisor/review` session event
+// and hydrates back across restarts.
+
+/** Critic route: cross-family by design (the caller's own family纠错收益最低). */
+const CRITIC_PROVIDER = 'google'
+const CRITIC_MODEL = 'gemini-3.7-flash'
+
+/** Critic persona: convergent red-line annotations, visible text only. */
+const CRITIC_PERSONA =
+  'You are a convergent plan critic. You receive a DRAFT (a plan or answer a ' +
+  'model is about to act on) and your only job is to find what is wrong, ' +
+  'missing, or unverified in it — red-line annotations, never a rewrite, ' +
+  'never an alternative plan of your own. You have NO tools and NO way to ' +
+  'verify anything externally: never plan or attempt tool calls; judge the ' +
+  'draft from its text and your own knowledge, and say so inside the comment ' +
+  'when a claim cannot be verified. Your deliverable is your VISIBLE reply ' +
+  'text — private reasoning without a visible answer is a failed review. ' +
+  'For every issue output one annotation in EXACTLY this Markdown shape, ' +
+  'with the fields on their own lines:\n\n' +
+  '### [blocker] short title\n' +
+  'anchor: a verbatim quote copied character-for-character from the draft\n' +
+  'comment: what is wrong or missing, and why it matters\n\n' +
+  'Severity: [blocker] means acting on the draft without fixing this is ' +
+  'likely to fail or cause real damage; [nit] means worth fixing but not ' +
+  'blocking. Rules: at most 8 annotations; every anchor MUST be an exact ' +
+  'substring of the draft (copy it, never paraphrase, never translate); ' +
+  'critique the draft itself, not the topic in general; no compliments, no ' +
+  'summaries, no step-by-step fixes — name the problem and the reason, the ' +
+  'author owns the remedy. If the draft is sound, output one line starting ' +
+  'with "SOUND:" followed by a single sentence, plus at most 3 [nit] ' +
+  'annotations for residual risks.'
+
+const CRITIC_PROMPT_SUFFIX =
+  '\n\nWrite the annotations now as your visible reply. You have no tools; ' +
+  'judge from the text alone.'
+
+/** A codec that passes values through — both halves are first-party here. */
+const PASS_CODEC = { parse: (value) => value }
+
+/** Build one strict invocation descriptor for the advisorReview namespace. */
+function reviewInvocation(method) {
+  return {
+    id: `dsh-advisor#advisorReview/${method}`,
+    service: 'advisorReview',
+    namespace: 'advisorReview',
+    method,
+    invocation: { kind: 'direct' },
+    parameters: [
+      {
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: { mode: 'strict', typeSymbol: `dsh-advisor/${method}Request`, schema: PASS_CODEC },
+      },
+    ],
+    result: { mode: 'strict', typeSymbol: `dsh-advisor/${method}Result`, schema: PASS_CODEC },
+  }
+}
+
+/**
+ * Mark one prototype method as a direct Remote endpoint without decorator
+ * syntax: the Remote decorator only schedules an initializer through the
+ * standard decorator context, so we synthesize that context, collect the
+ * initializer, and the constructor runs it against the instance (it marks the
+ * shared prototype — Map-keyed, idempotent across constructions).
+ */
+function remoteMarker(prototype, name) {
+  let initializer
+  Remote(prototype[name], {
+    name,
+    private: false,
+    static: false,
+    addInitializer(fn) { initializer = fn },
+  })
+  return initializer
+}
+
+/** Extract the reviewable draft text from an assistant/message event. */
+function draftText(event) {
+  const content = event.data && event.data.message && event.data.message.content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+/** Anchor fidelity check against the raw markdown draft (display hint only — the DOM side matches normalized text). */
+function anchorInDraft(anchor, draft) {
+  if (anchor === '') return false
+  if (draft.includes(anchor)) return true
+  const squash = (s) => s.replace(/\s+/g, ' ')
+  return squash(draft).includes(squash(anchor))
+}
+
+/** Parse the critic's visible answer into structured annotations. */
+function parseAnnotations(text, draft) {
+  const heads = []
+  const re = /^### \[(blocker|nit)\][ \t]*(.*)$/gm
+  let m
+  while ((m = re.exec(text)) !== null) {
+    heads.push({ severity: m[1], title: (m[2] || '').trim(), at: m.index, end: re.lastIndex })
+  }
+  const annotations = []
+  for (let i = 0; i < heads.length; i += 1) {
+    const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
+    const anchorMatch = /(?:^|\n)[ \t]*anchor:[ \t]*(.*)/.exec(body)
+    const commentMatch = /(?:^|\n)[ \t]*comment:[ \t]*([\s\S]*)/.exec(body)
+    let anchor = anchorMatch ? anchorMatch[1].trim() : ''
+    anchor = anchor.replace(/^["'`「『“‘]+|["'`」』”’]+$/g, '').trim()
+    const comment = commentMatch ? commentMatch[1].trim() : body.trim()
+    annotations.push({
+      severity: heads[i].severity,
+      title: heads[i].title.slice(0, 120),
+      anchor: anchor.slice(0, 400),
+      comment: comment.slice(0, 1200),
+      matched: anchorInDraft(anchor, draft),
+    })
+  }
+  return annotations.slice(0, 8)
+}
+
+/**
+ * The advisorReview Remote service: one list + one start method, callable from
+ * the browser card through the Typert gateway (strict descriptors registered
+ * by apply below; the gateway resolves receiver contexts itself). The binding
+ * comes from the TypertRemoteService base — the exact shape validateBinding
+ * requires.
+ */
+class AdvisorReviewService extends TypertRemoteService {
+  /**
+   * @param ctx - host context (agents/subagents are read lazily per call).
+   * @param liveCriticChildren - shared set for the effort pin listener.
+   */
+  constructor(ctx, liveCriticChildren) {
+    super(ctx, 'advisorReview')
+    this.liveCriticChildren = liveCriticChildren
+    this.inFlight = new Set()
+    // SRC-fallback markers: let the gateway claim these endpoints even if the
+    // strict descriptor registration lost a boot race.
+    remoteMarker(Object.getPrototypeOf(this), 'list').call(this)
+    remoteMarker(Object.getPrototypeOf(this), 'start').call(this)
+  }
+
+  /** List every persisted review of one live session. */
+  async list(request) {
+    const agents = this.ctx.get('agents')
+    const agent = agents && agents.get(request.sessionId)
+    const events = agent && agent.session && agent.session.events
+    if (!Array.isArray(events)) return { reviews: [] }
+    const reviews = []
+    for (const event of events) {
+      if (event && event.type === 'advisor/review' && event.data && typeof event.data === 'object') {
+        reviews.push({ ...event.data, time: event.time })
+      }
+    }
+    return { reviews }
+  }
+
+  /** Run the critic over one assistant message and persist the review. */
+  async start(request) {
+    const sessionId = request.sessionId
+    const messageId = request.messageId
+    const agents = this.ctx.get('agents')
+    const subagents = this.ctx.get('subagents')
+    if (agents === undefined || subagents === undefined) {
+      return { ok: false, error: 'agents/subagents service unavailable' }
+    }
+    const agent = agents.get(sessionId)
+    if (agent === undefined) return { ok: false, error: 'session is not live: ' + sessionId }
+    const events = agent.session && agent.session.events
+    if (!Array.isArray(events)) return { ok: false, error: 'session events unreadable' }
+    let target
+    for (const event of events) {
+      if (event && event.type === 'assistant/message' && event.data && event.data.message && event.data.message.id === messageId) {
+        target = event
+      }
+    }
+    if (target === undefined) return { ok: false, error: 'no assistant message with id ' + messageId }
+    const draft = draftText(target)
+    if (draft === '') return { ok: false, error: 'that message has no reviewable text' }
+    if (this.inFlight.has(messageId)) return { ok: false, error: 'review already in flight for this message' }
+    this.inFlight.add(messageId)
+    const reviewId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const fail = (error) => {
+      this.ctx.logger?.warn('dsh-advisor: review.start failed: %s', String(error))
+      const entry = { reviewId, messageId, anchorSeq: target.seq, status: 'error', error: String(error), annotations: [], createdAt: Date.now() }
+      try { agent.session.append('advisor/review', entry) } catch (e) { this.ctx.logger?.warn('dsh-advisor: append failed: %s', e && e.message) }
+      return { ok: false, error: entry.error, review: entry }
+    }
+    try {
+      let run
+      try {
+        run = await subagents.start('spawn', {
+          label: 'critic',
+          parent: agent,
+          signal: new AbortController().signal,
+          prompt: [{ type: 'text', text: 'Draft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX }],
+          agentOptions: { provider: CRITIC_PROVIDER, model: CRITIC_MODEL, maxTokens: 4096 },
+          persona: CRITIC_PERSONA,
+          maxDepth: 1,
+          toolFilter: { allow: [] },
+        })
+      } catch (spawnError) {
+        return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+      }
+      this.liveCriticChildren.add(run.id)
+      let text = ''
+      try {
+        const result = await run.result
+        text = outputText(result.output)
+        if (result.stopReason !== 'completed') {
+          const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
+          return fail('critic ended with "' + result.stopReason + '"' + (detail === '' ? '' : ': ' + detail))
+        }
+        if (text === '') {
+          return fail('critic returned an empty answer (reasoning only, no visible text)')
+        }
+      } finally {
+        this.liveCriticChildren.delete(run.id)
+        await run.dispose()
+      }
+      const annotations = parseAnnotations(text, draft)
+      const sound = /^SOUND:/m.test(text)
+      const entry = {
+        reviewId, messageId, anchorSeq: target.seq,
+        status: annotations.length > 0 ? 'completed' : sound ? 'sound' : 'completed-unparsed',
+        sound,
+        annotations,
+        createdAt: Date.now(),
+      }
+      if (annotations.length === 0) entry.raw = text.slice(0, 2000)
+      try {
+        agent.session.append('advisor/review', entry)
+      } catch (appendError) {
+        return fail('session.append rejected advisor/review: ' + String(appendError && appendError.message || appendError))
+      }
+      return { ok: true, review: entry }
+    } catch (error) {
+      return fail('unexpected: ' + String(error && error.message || error))
+    } finally {
+      this.inFlight.delete(messageId)
+    }
+  }
+}
+
 export function apply(ctx, config) {
   // ── settings seam: the resolved `advisor` section (schema defaults over the
   // composition entry over the user document) feeds every later consultation.
@@ -421,6 +675,34 @@ export function apply(ctx, config) {
     const resolved = await next()
     return { ...resolved, reasoningEffort: effort }
   })
+
+  // ── M3-③ critic: the same effort pin for critic children (gemini rejects
+  // pi-ai's no-effort MINIMAL thinkingLevel; 'low' keeps the review fast), the
+  // strict Remote descriptors, and the service itself.
+  const liveCriticChildren = new Set()
+  ctx.on('agent/request', async (payload, next) => {
+    const agent = payload && payload.agent
+    if (agent === undefined || !liveCriticChildren.has(agent.id)) return next()
+    if (CRITIC_PROVIDER !== 'google') return next()
+    const resolved = await next()
+    return { ...resolved, reasoningEffort: 'low' }
+  })
+  // Strict descriptors into the typert registry — through ctx.inject because
+  // the registry's mount time is not ours to know (bare ctx.get loses boot
+  // races; observed live on this very composition).
+  ctx.inject(['typert'], (tctx) => {
+    tctx.effect(
+      () => tctx.typert.register({
+        package: 'dsh-advisor',
+        face: 'host',
+        schemas: [],
+        model: { services: [], events: [], objects: [] },
+        invocations: [reviewInvocation('list'), reviewInvocation('start')],
+      }),
+      'dsh-advisor: review remote descriptors',
+    )
+  })
+  new AdvisorReviewService(ctx, liveCriticChildren)
 
   // ── the ask_advisor tool. Each call is a fresh one-shot child on the spawn
   // provider: the stateless follow-up channel the consultation protocol
