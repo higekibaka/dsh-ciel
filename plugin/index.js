@@ -404,6 +404,34 @@ const CRITIC_PERSONA =
   'with "SOUND:" followed by a single sentence in the draft\'s language, ' +
   'plus at most 3 [nit] annotations for residual risks.'
 
+/**
+ * ③深化 persona 增补（0.9.0）：清单驱动批注免于 ≤2 条配给（grounding 来自
+ * 事前指定的清单，不是现场猜测）。两种形态——「声称已验证但无对应工具动作」
+ * 可事实语气；「依赖建议结论但未见验证动作」保持条件句式。证据摘要只覆盖草案
+ * 同轮：引用更早轮次验证的断言按条件风险处理（advrub 原型实测教训——跨轮引用
+ * 在本摘要中天然不可见，误升事实级会制造错报）。自带 when-present 门，无清单时
+ * 不改变基线行为。
+ */
+const RUBRIC_ADDENDUM =
+  '\n\nADVISOR VERIFICATION LIST: when one is provided after the tool ' +
+  'activity section, it is the checklist the consulted advisor PRE-DECLARED ' +
+  '— what the author should verify against the environment before relying ' +
+  'on each suggestion. Cross-check every listed target against the tool ' +
+  'activity digest. Two annotation forms, both EXEMPT from the 2-item ' +
+  'unverifiable-claim ration because their grounding is the pre-declared ' +
+  'list, not your own guessing: (1) the draft asserts or implies a listed ' +
+  'verification was performed but NO tool activity corresponds — phrase as ' +
+  'fact, citing which digest line should have existed; (2) the draft relies ' +
+  'on a listed suggestion\'s conclusion yet no verification-shaped tool ' +
+  'activity appears — keep conditional phrasing ("若未验证…先核实"). When ' +
+  'the digest shows a matching verification action, do NOT annotate that ' +
+  'target. Never annotate a listed target the draft neither claims nor ' +
+  'relies on — a pending verification is normal, not an error. The digest ' +
+  'covers ONLY the draft\'s own turn: a draft claim that cites verification ' +
+  'performed in an EARLIER turn (e.g. "早些时候已验证") cannot match this ' +
+  'digest by construction — treat such claims as conditional risks (form 2), ' +
+  'never as form-1 facts.'
+
 const CRITIC_PROMPT_SUFFIX =
   '\n\nWrite the annotations now as your visible reply. You have no tools; ' +
   'judge from the draft and the provided request/tool evidence.'
@@ -536,6 +564,39 @@ function parseAdvisorItems(text) {
   return { items, issues }
 }
 
+/**
+ * ③深化（0.9.0，advrub 原型 A/B 确认后静态化）：捞「当时的顾问输出」的
+ * 验证目标清单。ask_advisor 的结构化 items 随 tool/result 事件的 data.meta
+ * 落盘（presentationMeta 通道，{v:1, items}）。取清单的优先级：草案同轮的
+ * 最近一次咨询 > 更早轮的最近一次咨询。A/B 实测（同消息双跑）：清单驱动批注
+ * 锚定顾问事前指定的风险点、敢下事实语气；无清单基线靠现场猜。
+ */
+function advisorTargets(events, target) {
+  const callIds = new Set()
+  const withMeta = []
+  for (const event of events) {
+    if (!event || event.seq >= target.seq) break
+    if (event.type === 'tool/call' && event.data && event.data.name === 'ask_advisor') {
+      callIds.add(String(event.data.callId))
+    } else if (event.type === 'tool/result' && event.data) {
+      const meta = event.data.meta
+      if (meta === null || typeof meta !== 'object' || meta.v !== 1 || !Array.isArray(meta.items)) continue
+      const message = event.data.message || {}
+      const block = Array.isArray(message.content) ? message.content[0] : undefined
+      if (!callIds.has(String(block && block.toolCallId))) continue
+      withMeta.push({ seq: event.seq, turn: event.data.turn, items: meta.items })
+    }
+  }
+  if (withMeta.length === 0) return { items: [], from: 'none' }
+  const targetTurn = target.data && target.data.turn
+  const sameTurn = withMeta.filter((r) => r.turn === targetTurn)
+  const chosen = sameTurn.length > 0 ? sameTurn[sameTurn.length - 1] : withMeta[withMeta.length - 1]
+  const items = chosen.items.filter(
+    (it) => it && typeof it === 'object' && typeof it.verificationTarget === 'string' && it.verificationTarget !== '',
+  )
+  return { items, from: (sameTurn.length > 0 ? 'same-turn' : 'earlier-turn') + ' seq ' + chosen.seq }
+}
+
 /** Extract the visible text of a user/message event. */
 function userText(event) {
   const content = event.data && event.data.content
@@ -555,8 +616,7 @@ function userText(event) {
  * (an omniscient critic converges with the author's framing and the
  * diversity the second model exists for evaporates). Slicing by seq range
  * stays correct even for event payloads that carry no turn field.
- */
-function turnEvidence(events, target) {
+ */function turnEvidence(events, target) {
   const turn = target.data && target.data.turn
   let startSeq = 0
   for (const event of events) {
@@ -770,11 +830,19 @@ class AdvisorReviewService extends TypertRemoteService {
       let run
       try {
         const evidence = turnEvidence(events, target)
+        const targets = advisorTargets(events, target)
         let promptText = ''
         if (evidence.request !== '') {
           promptText += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
         }
         promptText += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
+        if (targets.items.length > 0) {
+          promptText += 'Advisor verification list (pre-declared by the consulted advisor; cross-check per your instructions):\n'
+          for (const it of targets.items) {
+            promptText += '- [' + String(it.tier || 'low') + '] ' + String(it.title || '（无标题）') + ' — 验证目标: ' + String(it.verificationTarget) + '\n'
+          }
+          promptText += '\n'
+        }
         promptText += 'Draft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX
         run = await subagents.start('spawn', {
           label: 'critic',
@@ -782,7 +850,7 @@ class AdvisorReviewService extends TypertRemoteService {
           signal: new AbortController().signal,
           prompt: [{ type: 'text', text: promptText }],
           agentOptions: { provider: CRITIC_PROVIDER, model: CRITIC_MODEL, maxTokens: 4096 },
-          persona: CRITIC_PERSONA,
+          persona: CRITIC_PERSONA + RUBRIC_ADDENDUM,
           maxDepth: 1,
           toolFilter: { allow: [] },
         })
@@ -812,6 +880,9 @@ class AdvisorReviewService extends TypertRemoteService {
         status: annotations.length > 0 ? 'completed' : sound ? 'sound' : 'completed-unparsed',
         sound,
         annotations,
+        // ③深化：本次评审携带的顾问验证目标条数（0 = 无清单，基线行为）——
+        // 评估回路的地面真值：回传数据可与清单有无交叉分析批注质量。
+        targetsProvided: targets.items.length,
         createdAt: Date.now(),
       }
       if (annotations.length === 0) entry.raw = text.slice(0, 2000)
