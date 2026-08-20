@@ -31,15 +31,20 @@ const ADVISOR_PERSONA =
   'Offer: alternative problem framings, relevant domain knowledge and prior art, ' +
   'common pitfalls, cross-domain analogies, and the evaluation dimensions an ' +
   'expert would check. Output ideas and knowledge ONLY — never step-by-step ' +
-  'plans, never code, never tool usage instructions. Keep each idea to one ' +
-  'short paragraph, at most six items total. Tag every item with a confidence ' +
-  'tier — [high] established domain consensus, [mid] grounded but ' +
-  'context-dependent judgment, [low] extrapolation or cross-domain analogy — ' +
-  'and never give numeric scores. If the question lies outside your reliable ' +
-  'knowledge, say so plainly, tag the affected items [low], and never invent ' +
-  'specific names, links, version numbers, or studies — cross-domain analogies ' +
-  'from fields you do know remain welcome. You have no internet or environment ' +
-  'access: ' +
+  'plans, never code, never tool usage instructions. Output at most six items, ' +
+  'each in EXACTLY this Markdown shape — field keys stay English verbatim, ' +
+  'the content goes in the question\'s language:\n\n' +
+  '## [high] short title\n' +
+  'framing: the core direction or mechanism — one short paragraph\n' +
+  'pitfalls: known failure modes of this direction — one short paragraph\n' +
+  'verification_target: what the caller should verify against the environment\n\n' +
+  'The tier tag is mandatory: [high] established domain consensus, [mid] ' +
+  'grounded but context-dependent judgment, [low] extrapolation or ' +
+  'cross-domain analogy — and never give numeric scores. If the question ' +
+  'lies outside your reliable knowledge, say so plainly, tag the affected ' +
+  'items [low], and never invent specific names, links, version numbers, or ' +
+  'studies — cross-domain analogies from fields you do know remain welcome. ' +
+  'You have no internet or environment access: ' +
   'if the question hinges on time-sensitive facts (versions, availability, ' +
   'pricing) the caller did not supply, declare that gap at the top of your ' +
   'answer.'
@@ -107,10 +112,41 @@ export const Config = Schema.object({
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
 })
 
-/** Shared string-output contract for the tool definition. */
-const stringOutput = {
-  schema: { type: 'string' },
-  render: (_args, value) => [{ type: 'text', text: value }],
+/**
+ * ask_advisor canonical output: the caller model receives the raw prose
+ * verbatim (render below — byte-identical to the pre-0.6.0 string result),
+ * while the parsed structure rides tool/result.meta via presentationMeta.
+ * Parse once in execute(); UI cards (M3-④) and the critic's rubric input
+ * (M3-③ 输入三件套之"当时的顾问输出") then read the same items without
+ * re-parsing — the UIR spine on the harness's own channel.
+ */
+const advisorOutput = {
+  schema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string' },
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            tier: { type: 'string', enum: ['high', 'mid', 'low'] },
+            title: { type: 'string' },
+            framing: { type: 'string' },
+            pitfalls: { type: 'string' },
+            verificationTarget: { type: 'string' },
+          },
+          required: ['tier', 'title', 'framing', 'pitfalls', 'verificationTarget'],
+          additionalProperties: false,
+        },
+      },
+      issues: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['text', 'items', 'issues'],
+    additionalProperties: false,
+  },
+  render: (_args, value) => [{ type: 'text', text: value.text }],
+  presentationMeta: (_args, value) => ({ v: 1, items: value.items, issues: value.issues }),
 }
 
 /** Flatten a subagent result's output blocks into one plain-text answer. */
@@ -457,6 +493,47 @@ function parseAnnotations(text, draft) {
     })
   }
   return annotations.slice(0, 8)
+}
+
+/**
+ * Parse the advisor's structured-Markdown reply into items. Sister of
+ * parseAnnotations: tolerant by design — a missing field is an issue, never
+ * a dropped item; zero heads means the reply predates or broke the contract
+ * and the caller simply gets the raw text (structure is an enhancement,
+ * never a gate — M3-②'s core discipline).
+ */
+function parseAdvisorItems(text) {
+  const heads = []
+  const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm
+  let m
+  while ((m = re.exec(text)) !== null) {
+    heads.push({ tier: m[1], title: (m[2] || '').trim(), at: m.index, end: re.lastIndex })
+  }
+  if (heads.length === 0) return { items: [], issues: [] }
+  const issues = []
+  if (heads.length > 6) issues.push('item count ' + heads.length + ' exceeds the 6-item cap')
+  const FIELD_NAMES = ['framing', 'pitfalls', 'verification_target']
+  const items = []
+  for (let i = 0; i < heads.length; i += 1) {
+    const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
+    const field = (name) => {
+      const match = new RegExp(
+        '(?:^|\\n)[ \\t]*' + name + '[ \\t]*:[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:' + FIELD_NAMES.join('|') + ')[ \\t]*:|$)',
+      ).exec(body)
+      return match ? match[1].trim() : ''
+    }
+    const item = {
+      tier: heads[i].tier,
+      title: heads[i].title.slice(0, 120),
+      framing: field('framing').slice(0, 1200),
+      pitfalls: field('pitfalls').slice(0, 1200),
+      verificationTarget: field('verification_target').slice(0, 600),
+    }
+    if (item.framing === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks framing')
+    if (item.verificationTarget === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks verification_target')
+    items.push(item)
+  }
+  return { items, issues }
 }
 
 /** Extract the visible text of a user/message event. */
@@ -872,7 +949,7 @@ export function apply(ctx, config) {
         required: ['question', 'context'],
         additionalProperties: false,
       },
-      output: stringOutput,
+      output: advisorOutput,
       async execute(args, exec) {
         const parent = exec && exec.agent
         if (parent === undefined) {
@@ -952,7 +1029,9 @@ export function apply(ctx, config) {
                 (text === '' ? '' : `; partial answer:\n${text}`),
             )
           }
-          return text === '' ? 'The advisor returned an empty answer.' : text
+          const answer = text === '' ? 'The advisor returned an empty answer.' : text
+          const parsed = parseAdvisorItems(answer)
+          return { text: answer, items: parsed.items, issues: parsed.issues }
         } finally {
           liveAdvisorChildren.delete(run.id)
           await run.dispose()

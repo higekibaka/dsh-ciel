@@ -121,7 +121,7 @@
 
 - **M1**（已完成 → ⏸️ 2026-08-20 起暂停）：自包含 preset（原 `preset/`，已从工作区移除、git 历史保留，线上 `~/.dsh/.agent-presets/advisor/` 已卸载）；`maxDepth: 1` 修复后可用。暂停期间只维护 M2 bundle 形态。
 - **M2**（已完成，经真实会话端到端验证）：树外 bundle 包（本仓库 `plugin/`）：定制工具描述、设置面板、全局指导 section；计划外加固了 `maxDepth`、`reasoningEffort` 注入与错误透传。
-- **M3**：`outputSchema` 结构化思路、`/advise` 命令与一键触发（人类触发面）、批评者评审角色（参考 dsh-plans）、浏览器 UI。规划时刻提醒已提前在 M2 落地（agent 级 context 行为信号版，见 §7"肯定判定的落点"）。
+- **M3**：~~`outputSchema` 结构化思路~~（② 已落地 0.6.0：结构化 Markdown 契约——`## [tier]` 头 + framing/pitfalls/verification_target 字段；harness 工具契约的 canonical value + `presentationMeta` 通道让结构随 `tool/result.meta` 直达 UI 与批评者 rubric，解析一次处处可用；失败回退原文，结构是增强不是门槛。llm 层仍无 responseSchema，输出端维持 persona 指令 + 插件容错解析）、`/advise` 命令与一键触发（人类触发面）、批评者评审角色（③ 已交付并硬化，见下节）、浏览器 UI。规划时刻提醒已提前在 M2 落地（agent 级 context 行为信号版，见 §7"肯定判定的落点"）。
 
 ### 批评者定位：注意力提示，不是审计（M3-③ 交付后经 15 条真实评审实测收敛，2026-08-20）
 
