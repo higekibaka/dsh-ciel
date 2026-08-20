@@ -36,8 +36,11 @@ window.__ModuleLoader__.load({
       planReminderEnabled: true,
       reasoningEffort: 'provider',
       guidanceEnabled: true,
+      criticProvider: 'google',
+      criticModel: 'gemini-3.7-flash',
+      criticEffort: 'medium',
     }
-    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'planReminderEnabled', 'reasoningEffort', 'guidanceEnabled']
+    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'planReminderEnabled', 'reasoningEffort', 'guidanceEnabled', 'criticProvider', 'criticModel', 'criticEffort']
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
     const MAX_CALLS_MIN = 1
@@ -279,6 +282,9 @@ window.__ModuleLoader__.load({
         planReminderEnabled: Boolean(value.planReminderEnabled),
         reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
+        criticProvider: String(value.criticProvider ?? ''),
+        criticModel: String(value.criticModel ?? ''),
+        criticEffort: String(value.criticEffort ?? 'medium'),
       }
       if (drafts === null) setDrafts(staged)
 
@@ -299,6 +305,7 @@ window.__ModuleLoader__.load({
         if (key === 'maxCallsPerTurn') return !maxCallsInvalid && maxCallsParsed !== value.maxCallsPerTurn
         if (key === 'requireExploration' || key === 'enforceFollowupGap' || key === 'planReminderEnabled' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
         if (key === 'reasoningEffort') return staged[key] !== String(value[key] ?? 'provider')
+        if (key === 'criticEffort') return staged[key] !== String(value[key] ?? 'medium')
         return staged[key] !== String(value[key] ?? '')
       }
       const dirty = FIELD_KEYS.some(dirtyKey)
@@ -356,26 +363,42 @@ window.__ModuleLoader__.load({
             label: model.name ? `${model.name}（${model.id}）` : model.id,
           }))
         : []
+      // 批评者路由（0.9.1）：独立于顾问路由的第二条子代理管道。
+      const criticGroup = groups.find((group) => group.id === staged.criticProvider)
+      const criticModelOptions = criticGroup && Array.isArray(criticGroup.models)
+        ? criticGroup.models.map((model) => ({
+            value: model.id,
+            label: model.name ? `${model.name}（${model.id}）` : model.id,
+          }))
+        : []
 
       // Reasoning-effort options follow the SELECTED model's declared levels
       // when the catalog advertises them; otherwise the full host-schema set
       // stays offered so the field remains usable without the catalog.
-      const selectedModel = selectedGroup && Array.isArray(selectedGroup.models)
-        ? selectedGroup.models.find((model) => model.id === staged.model)
-        : undefined
-      const declaredEfforts = selectedModel && selectedModel.reasoning && Array.isArray(selectedModel.reasoning.efforts)
-        ? selectedModel.reasoning.efforts
-        : []
-      const effortLevels = declaredEfforts.length > 0
-        ? declaredEfforts.map((effort) => effort.id)
-        : EFFORT_LEVELS
-      const effortOptions = [
-        { value: 'provider', label: EFFORT_LABELS.provider },
-        ...effortLevels.map((level) => ({
-          value: level,
-          label: `${EFFORT_LABELS[level] || level}（${level}）`,
-        })),
-      ]
+      // 0.9.1: generalized — the critic route (criticProvider/criticModel)
+      // resolves its own option set through the same builder.
+      const effortOptionsFor = (providerKey, modelKey, withProviderOption) => {
+        const group = groups.find((g) => g.id === staged[providerKey])
+        const sel = group && Array.isArray(group.models)
+          ? group.models.find((model) => model.id === staged[modelKey])
+          : undefined
+        const declared = sel && sel.reasoning && Array.isArray(sel.reasoning.efforts)
+          ? sel.reasoning.efforts
+          : []
+        const levels = declared.length > 0 ? declared.map((effort) => effort.id) : EFFORT_LEVELS
+        return {
+          declared,
+          options: [
+            ...(withProviderOption ? [{ value: 'provider', label: EFFORT_LABELS.provider }] : []),
+            ...levels.map((level) => ({
+              value: level,
+              label: `${EFFORT_LABELS[level] || level}（${level}）`,
+            })),
+          ],
+        }
+      }
+      const advisorEffort = effortOptionsFor('provider', 'model', true)
+      const criticEffortOpts = effortOptionsFor('criticProvider', 'criticModel', false)
 
       const selectStyle = { ...css.input, appearance: 'auto' }
 
@@ -436,19 +459,18 @@ window.__ModuleLoader__.load({
         )
 
       /** The reasoning-effort dropdown: always a select, options track the model. */
-      const effortField = () => {
-        const key = 'reasoningEffort'
-        const options = effortOptions.some((option) => option.value === staged[key])
-          ? effortOptions
-          : [...effortOptions, { value: staged[key], label: `${staged[key]}（自定义）` }]
+      const effortField = (key, label, opts, hintReady, hintFallback) => {
+        const options = opts.options.some((option) => option.value === staged[key])
+          ? opts.options
+          : [...opts.options, { value: staged[key], label: `${staged[key]}（自定义）` }]
         const hint = catalog.status === 'ready'
-          ? declaredEfforts.length > 0
-            ? '注入该次咨询每个请求的思考深度；选项与所选模型声明的档位一致。'
-            : '所选模型未声明思考档位；显式选择不支持的档位会在咨询时报错。'
-          : '注入该次咨询每个请求的思考深度；模型目录不可用，未校验档位支持。'
+          ? opts.declared.length > 0
+            ? hintReady
+            : '所选模型未声明思考档位；显式选择不支持的档位会在运行时报错。'
+          : hintFallback
         return h('div', { key, style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
-            label: '思考深度',
+            label,
             overridden: overridden(key) && !resets[key],
             disabled,
             onReset: () => resetField(key),
@@ -486,7 +508,9 @@ window.__ModuleLoader__.load({
               !snap.writable ? h('p', { style: css.readOnly, role: 'status' }, '当前设置为只读。') : null,
               routeField('provider', '提供方路由', '须是「设置 → 模型」中已注册的 provider 路由。', providerOptions),
               routeField('model', '顾问模型', '与主模型跨家族时多样性收益最大。', modelOptions),
-              effortField(),
+              effortField('reasoningEffort', '思考深度', advisorEffort,
+                '注入该次咨询每个请求的思考深度；选项与所选模型声明的档位一致。',
+                '注入该次咨询每个请求的思考深度；模型目录不可用，未校验档位支持。'),
               h('div', { key: 'maxTokens', style: { ...css.field, ...css.fieldBorder } },
                 h(FieldHead, {
                   label: '输出上限（tokens）',
@@ -533,6 +557,13 @@ window.__ModuleLoader__.load({
               checkField('enforceFollowupGap', '追问之间要求独立工作', '同一 turn 内两次咨询之间必须至少有一次非顾问工具调用——追问须由新事实驱动。'),
               checkField('planReminderEnabled', '规划时刻提醒', '检测到本 turn 开始规划（todo_write / exit_plan_mode）且尚未咨询时，在下一步系统提示里注入一次提醒；机制不做任务语义判断。'),
               checkField('guidanceEnabled', '注入使用协议到系统提示词', '触发判据与追问预算；改动即刻生效（影响提示词前缀）。'),
+              h('div', { key: 'critic-sep', style: { ...css.field, ...css.fieldBorder } },
+                h('p', { style: { ...css.hint, fontWeight: 600, opacity: 0.8 } }, '批评者（批注评审）路由——独立于上面的顾问管道：')),
+              routeField('criticProvider', '批评者提供方', '评审子代理的 provider 路由；跨家族纠错收益最大。', providerOptions),
+              routeField('criticModel', '批评者模型', 'gemini-3.7-flash 过载时可临时切走（如 deepseek flash）。', criticModelOptions),
+              effortField('criticEffort', '批评者思考深度', criticEffortOpts,
+                '注入评审子代理的每个请求；gemini-3.7-flash 仅支持 low/medium/high，文档默认 medium。',
+                '注入评审子代理的每个请求；模型目录不可用，未校验档位支持。'),
               h('div', { style: css.footer },
                 saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未生效，请重试。') : null,
                 h('button', {
