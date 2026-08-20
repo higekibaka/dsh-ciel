@@ -1,6 +1,6 @@
 {
   "name": "dsh-advisor",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "description": "Pre-planning advisor for DeepSeek Harness: a second, knowledge-rich model the agent consults before planning — ideas only, never steps. Configurable under Settings → Plugins.",
   "license": "MIT",
   "repository": {

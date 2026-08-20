@@ -605,6 +605,10 @@ window.__ModuleLoader__.load({
       '.dsr-pop-head{margin-bottom:5px}',
       '.dsr-pop-anchor{margin:6px 0 4px;padding:3px 8px;border-left:2px solid rgba(130,130,130,.5);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
       '.dsr-pop-comment{white-space:pre-wrap;word-break:break-word}',
+      '.dsr-item{cursor:pointer;border-radius:4px}',
+      '.dsr-item:hover{background:rgba(255,255,255,.045)}',
+      '.dsr-flash{animation:dsrFlash 1.4s ease}',
+      '@keyframes dsrFlash{0%{outline:2px solid #d29922;outline-offset:1px}100%{outline:2px solid transparent;outline-offset:5px}}',
     ].join('\n')
 
     function apply(ctx) {
@@ -809,7 +813,7 @@ window.__ModuleLoader__.load({
       // node(s), then wrap them. The DFS is bounded by `root` so a bug can never
       // escape the chat root. Every created span is recorded in `created` for
       // owned cleanup.
-      function wrapRange(doc, root, range, spanClass, badge, onActivate, created) {
+      function wrapRange(doc, root, range, spanClass, badge, onActivate, created, index) {
         let first
         let last
         if (range.startNode === range.endNode) {
@@ -840,7 +844,7 @@ window.__ModuleLoader__.load({
           span.addEventListener('click', onActivate)
           node.parentNode.replaceChild(span, node)
           span.appendChild(node)
-          created.push({ kind: 'mark', el: span })
+          created.push({ kind: 'mark', el: span, index })
           if (node === last) lastSpan = span
         }
         if (lastSpan && lastSpan.parentNode) {
@@ -848,7 +852,7 @@ window.__ModuleLoader__.load({
         } else if (last.parentNode) {
           last.parentNode.insertBefore(badge, last.nextSibling)
         }
-        created.push({ kind: 'badge', el: badge })
+        created.push({ kind: 'badge', el: badge, index })
       }
 
       // ── mark every annotation with per-item try/catch and return visible
@@ -861,7 +865,7 @@ window.__ModuleLoader__.load({
         if (!root) {
           stats.failures.push('chat root not found')
           console.error('advisor-review: chat root not found')
-          return { root: null, stats, created }
+          return { root: null, stats, created, byIndex: new Map() }
         }
         const doc = root.ownerDocument
         annotations.forEach((a, i) => {
@@ -894,14 +898,21 @@ window.__ModuleLoader__.load({
             badge.textContent = String(i + 1)
             badge.title = (a.severity === 'blocker' ? 'blocker' : 'nit') + ' · ' + (a.title || '')
             badge.addEventListener('click', open)
-            wrapRange(doc, root, range, 'dsr-mark dsr-mark-' + sev, badge, open, created)
+            wrapRange(doc, root, range, 'dsr-mark dsr-mark-' + sev, badge, open, created, i)
             stats.marked += 1
           } catch (error) {
             stats.failures.push('#' + (i + 1) + ' ' + String(error && error.message || error))
           }
         })
         if (stats.failures.length > 0) console.error('advisor-review mark failures:', stats.failures.join(' | '))
-        return { root, stats, created }
+        // Spans grouped by annotation index: panel cards click-locate through this.
+        const byIndex = new Map()
+        for (const item of created) {
+          if (item.index === undefined) continue
+          if (!byIndex.has(item.index)) byIndex.set(item.index, [])
+          byIndex.get(item.index).push(item.el)
+        }
+        return { root, stats, created, byIndex }
       }
 
       // ── the annotation card panel, built as plain DOM and inserted right
@@ -919,7 +930,7 @@ window.__ModuleLoader__.load({
         b.textContent = String(n)
         parent.appendChild(b)
       }
-      function buildPanel(doc, entry) {
+      function buildPanel(doc, entry, locate) {
         const panel = doc.createElement('div')
         panel.className = 'dsr-tail'
         if (entry.status === 'error') {
@@ -937,7 +948,7 @@ window.__ModuleLoader__.load({
           ? '✓ 批评者：草案整体成立'
           : '批评者批注 · ' + annotations.length + ' 条'
             + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
-            + '（原文中的波浪下划线与角标可点击）'
+            + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
             + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
             + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : '')
         panel.appendChild(head)
@@ -945,6 +956,10 @@ window.__ModuleLoader__.load({
           const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
           const item = doc.createElement('div')
           item.className = 'dsr-item'
+          item.title = '点击定位到原文对应位置'
+          if (typeof locate === 'function') {
+            item.addEventListener('click', () => locate(i))
+          }
           const row = doc.createElement('div')
           appendSevBadge(doc, row, sev)
           appendIndexBadge(doc, row, sev, i + 1)
@@ -991,28 +1006,95 @@ window.__ModuleLoader__.load({
         // One effect owns every visual artifact for this message: inline marks,
         // badges, and the card panel inserted right before the message's own
         // tail flow item (the direct child of the chat root on the button's
-        // ancestor path).
+        // ancestor path). The paint is imperative DOM surgery, so React can
+        // silently destroy it whenever it rebuilds the message subtree (turn
+        // regrouping when a new turn starts, list re-slicing); a MutationObserver
+        // self-heals by repainting once every owned span has disconnected.
         useEffect(() => {
           const el = rootRef.current
           if (!el || !entry) return undefined
           const doc = el.ownerDocument
           let markResult = null
-          if (entry.status !== 'error') {
-            markResult = markTurn(el, entry)
-            entry.markStats = markResult.stats
-          }
-          const root = markResult && markResult.root
-            ? markResult.root
-            : findChatRoot(el, Array.isArray(entry.annotations) ? entry.annotations : [])
           let panel = null
-          if (root) {
-            panel = buildPanel(doc, entry)
-            let branch = el
-            while (branch.parentElement && branch.parentElement !== root) branch = branch.parentElement
-            root.insertBefore(panel, branch)
+          let painting = false
+          const paint = () => {
+            painting = true
+            try {
+              if (markResult) clearOwned(markResult.created)
+              if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
+              markResult = null
+              panel = null
+              if (entry.status !== 'error') {
+                markResult = markTurn(el, entry)
+                entry.markStats = markResult.stats
+              }
+              const root = markResult && markResult.root
+                ? markResult.root
+                : findChatRoot(el, Array.isArray(entry.annotations) ? entry.annotations : [])
+              panel = buildPanel(doc, entry, locate)
+              if (root) {
+                let branch = el
+                while (branch.parentElement && branch.parentElement !== root) branch = branch.parentElement
+                root.insertBefore(panel, branch)
+              } else {
+                // Anchor text absent from the DOM (e.g. the critic quoted the
+                // evidence section instead of the draft): the review must not
+                // vanish together with its marks — park the panel right after
+                // the message container reached a few levels up from the button.
+                let host2 = el
+                for (let d = 0; d < 4 && host2.parentElement && host2.parentElement !== doc.body; d += 1) host2 = host2.parentElement
+                if (host2.parentElement) host2.parentElement.insertBefore(panel, host2.nextSibling)
+              }
+            } finally {
+              painting = false
+            }
           }
+          // Panel card click → smooth-scroll to the annotation's inline mark
+          // and flash it; marks absent (wiped or unmatchable) → repaint once,
+          // then fall back to scrolling the message itself into view.
+          const locate = (index) => {
+            let spans = markResult && markResult.byIndex ? markResult.byIndex.get(index) : undefined
+            let targetEl = spans ? spans.find((s) => s.isConnected) : undefined
+            if (targetEl === undefined) {
+              paint()
+              emit()
+              spans = markResult && markResult.byIndex ? markResult.byIndex.get(index) : undefined
+              targetEl = spans ? spans.find((s) => s.isConnected) : undefined
+            }
+            ;(targetEl || el).scrollIntoView({ behavior: 'smooth', block: 'center' })
+            if (targetEl !== undefined && spans) {
+              for (const s of spans) {
+                s.classList.remove('dsr-flash')
+                void s.offsetWidth // restart the animation
+                s.classList.add('dsr-flash')
+              }
+            }
+          }
+          paint()
           emit()
+          let timer = null
+          let deadRepaints = 0
+          const observer = new MutationObserver(() => {
+            if (painting || !el.isConnected || timer !== null) return
+            const marksAlive = markResult !== null
+              && markResult.created.some((item) => item.el.isConnected)
+            const panelAlive = panel !== null && panel.parentNode !== null
+            if (marksAlive && panelAlive) return
+            timer = setTimeout(() => {
+              timer = null
+              if (!el.isConnected) return
+              const before = entry.markStats ? entry.markStats.marked : 0
+              paint()
+              emit()
+              const after = entry.markStats ? entry.markStats.marked : 0
+              deadRepaints = after > 0 || after !== before ? 0 : deadRepaints + 1
+              if (deadRepaints >= 3) observer.disconnect() // anchor truly unmatchable; stop retrying
+            }, 120)
+          })
+          observer.observe(doc.body, { childList: true, subtree: true })
           return () => {
+            observer.disconnect()
+            if (timer !== null) clearTimeout(timer)
             if (markResult) clearOwned(markResult.created)
             if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
           }
