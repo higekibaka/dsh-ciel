@@ -842,9 +842,13 @@ class AdvisorReviewService extends TypertRemoteService {
     }
     try {
       let run
+      // Hoisted out of the spawn-guard try: the review entry (outer scope)
+      // reads targets.items.length for targetsProvided — a block-scoped const
+      // inside the inner try threw ReferenceError at entry construction
+      // (0.9.0 live bug: "targets is not defined").
+      const targets = advisorTargets(events, target)
       try {
         const evidence = turnEvidence(events, target)
-        const targets = advisorTargets(events, target)
         let promptText = ''
         if (evidence.request !== '') {
           promptText += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
