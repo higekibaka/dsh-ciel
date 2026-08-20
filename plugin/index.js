@@ -110,6 +110,13 @@ export const Config = Schema.object({
     .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
   guidanceEnabled: Schema.boolean().default(true)
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
+  criticProvider: Schema.string().default('google')
+    .description('批评者路由的提供方（0.9.1 起可配；跨家族路由的纠错收益最高）'),
+  criticModel: Schema.string().default('gemini-3.7-flash')
+    .description('批评者模型 id'),
+  criticEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    .default('medium')
+    .description('批评者思考深度：注入评审子代理的每个请求；gemini-3.7-flash 仅支持 low/medium/high（minimal 报错），文档默认 medium'),
 })
 
 /**
@@ -353,10 +360,13 @@ function reminderTextFor(agent, current) {
 // annotation-review). The browser button calls the `advisorReview` Remote
 // namespace below; every review persists to a per-session sidecar JSONL
 // store (see persistReview) and hydrates back across restarts.
-
-/** Critic route: cross-family by design (the caller's own family纠错收益最低). */
-const CRITIC_PROVIDER = 'google'
-const CRITIC_MODEL = 'gemini-3.7-flash'
+//
+// 0.9.1: the critic route is CONFIGURABLE (criticProvider/criticModel/
+// criticEffort in the advisor settings namespace) — the hard-coded constants
+// became a defect the day gemini-3.7-flash returned 503 under load and the
+// user found no knob that reached the critic (the card only drove the
+// advisory route). Cross-family routing stays the design default; the
+// settings description says so.
 
 /** Critic persona: convergent red-line annotations, visible text only. */
 const CRITIC_PERSONA =
@@ -760,10 +770,14 @@ class AdvisorReviewService extends TypertRemoteService {
   /**
    * @param ctx - host context (agents/subagents are read lazily per call).
    * @param liveCriticChildren - shared set for the effort pin listener.
+   * @param getConfig - thunk returning the LATEST resolved settings (the
+   *   settings scope resyncs after construction, so capture the thunk, never
+   *   a snapshot).
    */
-  constructor(ctx, liveCriticChildren) {
+  constructor(ctx, liveCriticChildren, getConfig) {
     super(ctx, 'advisorReview')
     this.liveCriticChildren = liveCriticChildren
+    this.getConfig = getConfig
     this.inFlight = new Set()
     // Per-session dedup ledgers, each a Promise<Set> so concurrent first
     // touches share one WAL read and one Set instance.
@@ -849,7 +863,7 @@ class AdvisorReviewService extends TypertRemoteService {
           parent: agent,
           signal: new AbortController().signal,
           prompt: [{ type: 'text', text: promptText }],
-          agentOptions: { provider: CRITIC_PROVIDER, model: CRITIC_MODEL, maxTokens: 4096 },
+          agentOptions: { provider: this.getConfig().criticProvider, model: this.getConfig().criticModel, maxTokens: 4096 },
           persona: CRITIC_PERSONA + RUBRIC_ADDENDUM,
           maxDepth: 1,
           toolFilter: { allow: [] },
@@ -1079,18 +1093,20 @@ export function apply(ctx, config) {
     return { ...resolved, reasoningEffort: effort }
   })
 
-  // ── M3-③ critic: the same effort pin for critic children. Pinned to
-  // 'medium' — the documented gemini-3.7-flash default; 'low' was the 0.5.0
-  // workaround for the MINIMAL rejection and trades review quality for
-  // latency, which misannotations do not repay. The strict Remote descriptors
-  // and the service itself follow.
+  // ── M3-③ critic: effort pin for critic children, driven by the
+  // criticEffort setting (0.9.1). Default 'medium' — the documented
+  // gemini-3.7-flash default; 'low' was the 0.5.0 workaround for the MINIMAL
+  // rejection and trades review quality for latency, which misannotations do
+  // not repay. 'provider'/empty leaves the request untouched. The strict
+  // Remote descriptors and the service itself follow.
   const liveCriticChildren = new Set()
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
     if (agent === undefined || !liveCriticChildren.has(agent.id)) return next()
-    if (CRITIC_PROVIDER !== 'google') return next()
+    const effort = current().criticEffort
+    if (effort === undefined || effort === '' || effort === 'provider') return next()
     const resolved = await next()
-    return { ...resolved, reasoningEffort: 'medium' }
+    return { ...resolved, reasoningEffort: effort }
   })
   // Strict descriptors into the typert registry — through ctx.inject because
   // the registry's mount time is not ours to know (bare ctx.get loses boot
@@ -1107,7 +1123,7 @@ export function apply(ctx, config) {
       'dsh-advisor: review remote descriptors',
     )
   })
-  new AdvisorReviewService(ctx, liveCriticChildren)
+  new AdvisorReviewService(ctx, liveCriticChildren, () => current())
 
   // ── the ask_advisor tool. Each call is a fresh one-shot child on the spawn
   // provider: the stateless follow-up channel the consultation protocol
