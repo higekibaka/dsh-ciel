@@ -991,7 +991,9 @@ export function apply(ctx, config) {
   // child built with an explicit provider/model selection runs at the
   // provider's default thinking behavior — which is what made
   // google/gemini-3.7-flash fail (pi-ai maps "no effort" to a MINIMAL
-  // thinkingLevel that model rejects). The `agent/request` waterfall reaches
+  // thinkingLevel; per the official thinking docs 3.7-flash supports only
+  // low/medium/high and minimal returns an error, default On (medium)).
+  // The `agent/request` waterfall reaches
   // every agent from this host scope and its payload carries the subject
   // agent, so one listener can pin the configured effort onto exactly the
   // live advisor children tracked below. `provider` (or an empty value)
@@ -1006,16 +1008,18 @@ export function apply(ctx, config) {
     return { ...resolved, reasoningEffort: effort }
   })
 
-  // ── M3-③ critic: the same effort pin for critic children (gemini rejects
-  // pi-ai's no-effort MINIMAL thinkingLevel; 'low' keeps the review fast), the
-  // strict Remote descriptors, and the service itself.
+  // ── M3-③ critic: the same effort pin for critic children. Pinned to
+  // 'medium' — the documented gemini-3.7-flash default; 'low' was the 0.5.0
+  // workaround for the MINIMAL rejection and trades review quality for
+  // latency, which misannotations do not repay. The strict Remote descriptors
+  // and the service itself follow.
   const liveCriticChildren = new Set()
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
     if (agent === undefined || !liveCriticChildren.has(agent.id)) return next()
     if (CRITIC_PROVIDER !== 'google') return next()
     const resolved = await next()
-    return { ...resolved, reasoningEffort: 'low' }
+    return { ...resolved, reasoningEffort: 'medium' }
   })
   // Strict descriptors into the typert registry — through ctx.inject because
   // the registry's mount time is not ours to know (bare ctx.get loses boot
