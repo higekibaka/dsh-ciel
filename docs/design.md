@@ -82,6 +82,7 @@
 
 - **不进 host composition**：顾问能力不跨会话共享、不发布服务，是一个会话贡献给注册表的工具 + prompt section——正是 agent preset 的定义域。
 - **不停留在动态插件**：进程重启即消失，只适合原型验证。
+- **开发流水线（2026-08-20 起执行）**：新能力一律先做动态插件原型（免重启、快速迭代、真实页面直验），**用户确认后才静态化进 bundle**——annrev 原型 → 0.3.0 的路径正式制度化。
 - **关键约束**（`packages/preset/agent-presets/src/mount.ts`）：preset 行的 bare 包名解析到 harness 安装目录，相对路径解析到 preset 目录——preset 引用不了树外安装的插件包。因此 M1 只用发行版自带包 + preset 目录内文件，自包含可分发；M2 自写代码走 bundle/patch 安装到 host 层。
 
 ### M1 实现（纯组合，零安装包）
