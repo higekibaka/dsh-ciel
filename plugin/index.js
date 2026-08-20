@@ -18,6 +18,9 @@ import Schema from '@deepseek-ai/schemastery'
 // dependency graph) — deliberately NOT declared in package.json so no second
 // copy with its own registry state gets installed beside the app's.
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 /** Cordis plugin name. */
 export const name = 'dsh-advisor'
@@ -312,8 +315,8 @@ function reminderTextFor(agent, current) {
 // ═══════════════════════ M3-③ 批评者：锚定批注评审 ═══════════════════════
 // Ported from the live-tested annrev dynamic prototype (prototypes/
 // annotation-review). The browser button calls the `advisorReview` Remote
-// namespace below; every review persists as an `advisor/review` session event
-// and hydrates back across restarts.
+// namespace below; every review persists to a per-session sidecar JSONL
+// store (see persistReview) and hydrates back across restarts.
 
 /** Critic route: cross-family by design (the caller's own family纠错收益最低). */
 const CRITIC_PROVIDER = 'google'
@@ -321,13 +324,13 @@ const CRITIC_MODEL = 'gemini-3.7-flash'
 
 /** Critic persona: convergent red-line annotations, visible text only. */
 const CRITIC_PERSONA =
-  'You are a convergent plan critic. You receive a DRAFT (a plan or answer a ' +
-  'model is about to act on) and your only job is to find what is wrong, ' +
-  'missing, or unverified in it — red-line annotations, never a rewrite, ' +
-  'never an alternative plan of your own. You have NO tools and NO way to ' +
-  'verify anything externally: never plan or attempt tool calls; judge the ' +
-  'draft from its text and your own knowledge, and say so inside the comment ' +
-  'when a claim cannot be verified. Your deliverable is your VISIBLE reply ' +
+  'You are a convergent plan critic. You receive a DRAFT (a reply a model ' +
+  'is about to show the user), the REQUEST it answers, and the VERDICT-LEVEL ' +
+  'tool activity of the turn that produced it. Your only job is to find what ' +
+  'is wrong, missing, or unverified in the draft — red-line annotations, ' +
+  'never a rewrite, never an alternative plan of your own. You have NO tools: ' +
+  'never plan or attempt tool calls; judge from the draft, the provided ' +
+  'evidence, and your own knowledge. Your deliverable is your VISIBLE reply ' +
   'text — private reasoning without a visible answer is a failed review. ' +
   'For every issue output one annotation in EXACTLY this Markdown shape, ' +
   'with the fields on their own lines:\n\n' +
@@ -336,19 +339,38 @@ const CRITIC_PERSONA =
   'comment: what is wrong or missing, and why it matters\n\n' +
   'Severity: [blocker] means acting on the draft without fixing this is ' +
   'likely to fail or cause real damage; [nit] means worth fixing but not ' +
-  'blocking. Rules: at most 8 annotations; every anchor MUST be an exact ' +
-  'substring of the draft (copy it, never paraphrase, never translate); ' +
-  'write every title and comment in the SAME LANGUAGE as the draft (a ' +
-  'Chinese draft gets Chinese annotations); critique the draft itself, not ' +
+  'blocking. Rules: at most 8 annotations — most good reviews need 1-4; ' +
+  'every annotation spends the reader\'s attention, and a wrong or vacuous ' +
+  'one costs more than a missing one. Every anchor MUST be an exact ' +
+  'substring of the draft (copy it, never paraphrase, never translate). ' +
+  'The anchor quotes ONLY the draft section — NEVER the request or the ' +
+  'tool-activity evidence: those are context, citable inside the comment, ' +
+  'never anchorable. ' +
+  'Write every title and comment in the SAME LANGUAGE as the draft (a ' +
+  'Chinese draft gets Chinese annotations). Critique the draft itself, not ' +
   'the topic in general; no compliments, no summaries, no step-by-step ' +
-  'fixes — name the problem and the reason, the author owns the remedy. If ' +
-  'the draft is sound, output one line starting with "SOUND:" followed by ' +
-  'a single sentence in the draft\'s language, plus at most 3 [nit] ' +
-  'annotations for residual risks.'
+  'fixes — name the problem and the reason, the author owns the remedy. ' +
+  'When the provided evidence supports an annotation, cite it (the request ' +
+  'text, or which tool result showed what). When the draft asserts ' +
+  'something the provided evidence cannot confirm — including a turn with ' +
+  'NO tool activity matching a claimed verification — flag it ONLY if the ' +
+  'claim is load-bearing (the draft\'s conclusion or the user\'s next ' +
+  'action collapses if it is false): at most 2 such annotations, each ' +
+  'phrased as a conditional risk ("if X does not hold, … — verify before ' +
+  'acting"), never asserted as fact. Product facts about this environment ' +
+  'you may rely on — never second-guess them: the chat UI supports image ' +
+  'attachments (users can paste screenshots); replies render in a web UI ' +
+  'whose action area can carry plugin-registered buttons and cards, and ' +
+  'plugins can add inline marks (underlines, badges) to rendered text; ' +
+  'session history persists across restarts; static host-bundle plugins ' +
+  'take effect only after a DSH restart while dynamic Cordis packages ' +
+  'hot-swap without one. If the draft is sound, output one line starting ' +
+  'with "SOUND:" followed by a single sentence in the draft\'s language, ' +
+  'plus at most 3 [nit] annotations for residual risks.'
 
 const CRITIC_PROMPT_SUFFIX =
   '\n\nWrite the annotations now as your visible reply. You have no tools; ' +
-  'judge from the text alone.'
+  'judge from the draft and the provided request/tool evidence.'
 
 /** A codec that passes values through — both halves are first-party here. */
 const PASS_CODEC = { parse: (value) => value }
@@ -437,6 +459,114 @@ function parseAnnotations(text, draft) {
   return annotations.slice(0, 8)
 }
 
+/** Extract the visible text of a user/message event. */
+function userText(event) {
+  const content = event.data && event.data.content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+/**
+ * Collect the verdict-level evidence of the turn that produced a draft: the
+ * request text(s) plus one digest line per tool result. Never full tool
+ * output, never reasoning — the critic judges the OUTPUT; the author's
+ * process narrative stays invisible so the critique keeps its independence
+ * (an omniscient critic converges with the author's framing and the
+ * diversity the second model exists for evaporates). Slicing by seq range
+ * stays correct even for event payloads that carry no turn field.
+ */
+function turnEvidence(events, target) {
+  const turn = target.data && target.data.turn
+  let startSeq = 0
+  for (const event of events) {
+    if (event.seq >= target.seq) break
+    if (event && event.type === 'turn/start' && event.data && event.data.turn === turn) {
+      startSeq = event.seq
+    }
+  }
+  const requests = []
+  const calls = new Map()
+  const results = []
+  for (const event of events) {
+    if (!event || event.seq < startSeq || event.seq >= target.seq) continue
+    if (event.type === 'user/message') {
+      const text = userText(event)
+      if (text !== '' && !text.includes('[advisor:plan-reminder]')) requests.push(text)
+    } else if (event.type === 'tool/call' && event.data) {
+      calls.set(String(event.data.callId), String(event.data.name || 'tool'))
+    } else if (event.type === 'tool/result' && event.data) {
+      const message = event.data.message || {}
+      const block = Array.isArray(message.content) ? message.content[0] : undefined
+      const callId = (block && block.toolCallId) || (message.source && message.source.callId)
+      const name = calls.get(String(callId)) || 'tool'
+      let snippet = ''
+      if (block && Array.isArray(block.content)) {
+        const textBlock = block.content.find((part) => part && part.type === 'text' && typeof part.text === 'string')
+        if (textBlock) snippet = textBlock.text.replace(/\s+/g, ' ').trim().slice(0, 240)
+      }
+      results.push('- ' + name + ': ' + ((block && block.isError) ? 'ERROR' : 'ok') + (snippet === '' ? '' : ' — "' + snippet + '"'))
+    }
+  }
+  const MAX_TOOLS = 15
+  return {
+    request: requests.join('\n---\n').slice(0, 3000),
+    tools: results.length === 0
+      ? 'NONE — any draft claim of having run, tested, written, or verified something is unsupported by this turn\'s tool activity'
+      : results.slice(0, MAX_TOOLS).join('\n') + (results.length > MAX_TOOLS ? '\n… +' + (results.length - MAX_TOOLS) + ' more' : ''),
+  }
+}
+
+/**
+ * Review persistence: a per-session sidecar JSONL store under the harness
+ * home. Why not an `advisor/review` session event (the 0.3.x design):
+ * `Session.append()` cannot set the envelope `ignorable` flag, and the
+ * harness load path refuses any event type outside its build-time generated
+ * catalog unless the event is ignorable — every out-of-repo `advisor/review`
+ * event bricked its session log with SessionFormatUnsupportedError (observed
+ * live: five sessions locked out, each needing surgical log repair). The
+ * sidecar writes NOTHING into the log, so no harness build can ever refuse
+ * the session; hydration reads this store instead of scanning session events.
+ */
+function reviewsDir() {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(home, 'dsh-advisor', 'reviews')
+}
+
+/** The sidecar path for one session id, or undefined for an unusable id. */
+function reviewsPath(sessionId) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return undefined
+  return join(reviewsDir(), sessionId + '.jsonl')
+}
+
+/** Read every stored review of one session; a missing file means none. */
+async function readReviews(sessionId) {
+  const path = reviewsPath(sessionId)
+  if (path === undefined) return []
+  let text
+  try { text = await readFile(path, 'utf8') } catch { return [] }
+  const reviews = []
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    try {
+      const entry = JSON.parse(line)
+      if (entry && typeof entry === 'object' && typeof entry.reviewId === 'string') reviews.push(entry)
+    } catch { /* a torn trailing line recovers like a torn log tail: skipped */ }
+  }
+  return reviews
+}
+
+/** Append one review entry to the session's sidecar log. */
+async function persistReview(sessionId, entry) {
+  const path = reviewsPath(sessionId)
+  if (path === undefined) throw new Error('unusable session id for review storage: ' + String(sessionId))
+  await mkdir(reviewsDir(), { recursive: true })
+  await appendFile(path, JSON.stringify(entry) + '\n')
+}
+
 /**
  * The advisorReview Remote service: one list + one start method, callable from
  * the browser card through the Typert gateway (strict descriptors registered
@@ -459,19 +589,10 @@ class AdvisorReviewService extends TypertRemoteService {
     remoteMarker(Object.getPrototypeOf(this), 'start').call(this)
   }
 
-  /** List every persisted review of one live session. */
+  /** List every persisted review of one session (sidecar store — the session need not be live). */
   async list(request) {
-    const agents = this.ctx.get('agents')
-    const agent = agents && agents.get(request.sessionId)
-    const events = agent && agent.session && agent.session.events
-    if (!Array.isArray(events)) return { reviews: [] }
-    const reviews = []
-    for (const event of events) {
-      if (event && event.type === 'advisor/review' && event.data && typeof event.data === 'object') {
-        reviews.push({ ...event.data, time: event.time })
-      }
-    }
-    return { reviews }
+    const entries = await readReviews(request && request.sessionId)
+    return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })) }
   }
 
   /** Run the critic over one assistant message and persist the review. */
@@ -499,20 +620,27 @@ class AdvisorReviewService extends TypertRemoteService {
     if (this.inFlight.has(messageId)) return { ok: false, error: 'review already in flight for this message' }
     this.inFlight.add(messageId)
     const reviewId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-    const fail = (error) => {
+    const fail = async (error) => {
       this.ctx.logger?.warn('dsh-advisor: review.start failed: %s', String(error))
       const entry = { reviewId, messageId, anchorSeq: target.seq, status: 'error', error: String(error), annotations: [], createdAt: Date.now() }
-      try { agent.session.append('advisor/review', entry) } catch (e) { this.ctx.logger?.warn('dsh-advisor: append failed: %s', e && e.message) }
+      try { await persistReview(sessionId, entry) } catch (e) { this.ctx.logger?.warn('dsh-advisor: review persist failed: %s', e && e.message) }
       return { ok: false, error: entry.error, review: entry }
     }
     try {
       let run
       try {
+        const evidence = turnEvidence(events, target)
+        let promptText = ''
+        if (evidence.request !== '') {
+          promptText += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
+        }
+        promptText += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
+        promptText += 'Draft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX
         run = await subagents.start('spawn', {
           label: 'critic',
           parent: agent,
           signal: new AbortController().signal,
-          prompt: [{ type: 'text', text: 'Draft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX }],
+          prompt: [{ type: 'text', text: promptText }],
           agentOptions: { provider: CRITIC_PROVIDER, model: CRITIC_MODEL, maxTokens: 4096 },
           persona: CRITIC_PERSONA,
           maxDepth: 1,
@@ -548,9 +676,9 @@ class AdvisorReviewService extends TypertRemoteService {
       }
       if (annotations.length === 0) entry.raw = text.slice(0, 2000)
       try {
-        agent.session.append('advisor/review', entry)
-      } catch (appendError) {
-        return fail('session.append rejected advisor/review: ' + String(appendError && appendError.message || appendError))
+        await persistReview(sessionId, entry)
+      } catch (persistError) {
+        return fail('review persistence failed: ' + String(persistError && persistError.message || persistError))
       }
       return { ok: true, review: entry }
     } catch (error) {
