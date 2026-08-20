@@ -644,6 +644,51 @@ async function persistReview(sessionId, entry) {
   await appendFile(path, JSON.stringify(entry) + '\n')
 }
 
+// ═══════════════ 回传（review feedback）持久化 ═══════════════
+// Which annotations the user endorsed for the author model — a per-session
+// WAL sibling of the reviews store. This is the static host bundle, so
+// direct node:fs applies; the dynamic prototype's fs-sandbox dance (its fs
+// service resolved against the host cwd, not the session workspace) is gone.
+
+/** The feedback WAL directory under the harness home. */
+function feedbackDir() {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(home, 'dsh-advisor', 'feedback')
+}
+
+/** The feedback WAL path for one session id, or undefined for an unusable id. */
+function feedbackPath(sessionId) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return undefined
+  return join(feedbackDir(), sessionId + '.jsonl')
+}
+
+/** Read every dedup key recorded for one session; a missing file means none. */
+async function readFeedbackKeys(sessionId) {
+  const keys = new Set()
+  const path = feedbackPath(sessionId)
+  if (path === undefined) return keys
+  let text
+  try { text = await readFile(path, 'utf8') } catch { return keys }
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    try {
+      const record = JSON.parse(line)
+      if (record && Array.isArray(record.keys)) {
+        for (const key of record.keys) if (typeof key === 'string') keys.add(key)
+      }
+    } catch { /* a torn trailing line recovers like a torn log tail: skipped */ }
+  }
+  return keys
+}
+
+/** Append one feedback record to the session's WAL. */
+async function appendFeedback(sessionId, record) {
+  const path = feedbackPath(sessionId)
+  if (path === undefined) throw new Error('unusable session id for feedback storage: ' + String(sessionId))
+  await mkdir(feedbackDir(), { recursive: true })
+  await appendFile(path, JSON.stringify(record) + '\n')
+}
+
 /**
  * The advisorReview Remote service: one list + one start method, callable from
  * the browser card through the Typert gateway (strict descriptors registered
@@ -660,16 +705,34 @@ class AdvisorReviewService extends TypertRemoteService {
     super(ctx, 'advisorReview')
     this.liveCriticChildren = liveCriticChildren
     this.inFlight = new Set()
+    // Per-session dedup ledgers, each a Promise<Set> so concurrent first
+    // touches share one WAL read and one Set instance.
+    this.sentBySession = new Map()
     // SRC-fallback markers: let the gateway claim these endpoints even if the
     // strict descriptor registration lost a boot race.
     remoteMarker(Object.getPrototypeOf(this), 'list').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'start').call(this)
+    remoteMarker(Object.getPrototypeOf(this), 'feedback').call(this)
+  }
+
+  /** The dedup ledger for one session, seeded from the WAL on first touch. */
+  sentSet(sessionId) {
+    const sid = String(sessionId || '')
+    let pending = this.sentBySession.get(sid)
+    if (pending === undefined) {
+      pending = readFeedbackKeys(sid)
+      this.sentBySession.set(sid, pending)
+    }
+    return pending
   }
 
   /** List every persisted review of one session (sidecar store — the session need not be live). */
   async list(request) {
     const entries = await readReviews(request && request.sessionId)
-    return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })) }
+    // The dedup keys ride along so the client can grey out already-returned
+    // annotations after a reload, not just within one page lifetime.
+    const sent = await this.sentSet(request && request.sessionId)
+    return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })), sentKeys: Array.from(sent) }
   }
 
   /** Run the critic over one assistant message and persist the review. */
@@ -762,6 +825,66 @@ class AdvisorReviewService extends TypertRemoteService {
       return fail('unexpected: ' + String(error && error.message || error))
     } finally {
       this.inFlight.delete(messageId)
+    }
+  }
+
+  /**
+   * Send the user-endorsed annotations of one review back to the author model
+   * as a followup user message (next-turn semantics: never interrupts a
+   * running turn — it becomes the sole ordinary message of its own turn once
+   * the agent goes idle). Idempotent per reviewId#index: the WAL-seeded
+   * ledger skips repeats, so a double click or a repainted panel re-send
+   * costs nothing. Ported from the annfbk dynamic prototype after live
+   * confirmation (delivery/wake, readable payload, dedup skip).
+   */
+  async feedback(request) {
+    try {
+      const sessionId = request && request.sessionId
+      const agents = this.ctx.get('agents')
+      if (agents === undefined) return { ok: false, error: 'agents service unavailable' }
+      const agent = agents.get(sessionId)
+      if (agent === undefined) return { ok: false, error: 'session is not live: ' + sessionId }
+      const items = Array.isArray(request.items) ? request.items : []
+      if (items.length === 0) return { ok: false, error: 'no annotations selected' }
+      const reviewId = typeof request.reviewId === 'string' ? request.reviewId : ''
+      const keyOf = (item) => (reviewId !== '' ? reviewId : 't:' + String(item.title)) + '#' + String(item.index)
+      const sent = await this.sentSet(sessionId)
+      const fresh = items.filter((item) => !sent.has(keyOf(item)))
+      const skippedIndices = items.filter((item) => sent.has(keyOf(item))).map((item) => item.index)
+      if (fresh.length === 0) return { ok: true, delivered: 0, skipped: items.length, skippedIndices }
+      const lines = [
+        '[advisor:review-feedback] 用户逐条确认了批评者对你此前回复的以下批注，请按 author-owns-the-remedy 自行修复对应问题（不必逐条回复，修复后在产物中体现）：',
+      ]
+      for (const item of fresh) {
+        lines.push('')
+        lines.push('### [' + (item.severity === 'blocker' ? 'blocker' : 'nit') + '] ' + String(item.title || '（无标题）'))
+        if (item.anchor) lines.push('anchor: ' + String(item.anchor))
+        if (item.comment) lines.push('comment: ' + String(item.comment))
+      }
+      agent.followup({
+        id: 'mfb-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        role: 'user',
+        content: [{ type: 'text', text: lines.join('\n') }],
+        source: { kind: 'user' },
+      })
+      for (const item of fresh) sent.add(keyOf(item))
+      let warn
+      try {
+        await appendFeedback(sessionId, {
+          reviewId,
+          messageId: typeof request.messageId === 'string' ? request.messageId : '',
+          keys: fresh.map(keyOf),
+          indices: fresh.map((item) => item.index),
+          time: Date.now(),
+        })
+      } catch (error) {
+        // Dedup already holds in memory; the WAL only matters across restarts.
+        warn = '反馈日志未落盘（去重不受影响，重启后该条可能重复）: ' + String(error && error.message || error)
+        this.ctx.logger?.warn('dsh-advisor: feedback WAL append failed: %s', error && error.message)
+      }
+      return { ok: true, delivered: fresh.length, skipped: skippedIndices.length, skippedIndices, ...(warn ? { warn } : {}) }
+    } catch (error) {
+      return { ok: false, error: String(error && error.message || error) }
     }
   }
 }
@@ -904,7 +1027,7 @@ export function apply(ctx, config) {
         face: 'host',
         schemas: [],
         model: { services: [], events: [], objects: [] },
-        invocations: [reviewInvocation('list'), reviewInvocation('start')],
+        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback')],
       }),
       'dsh-advisor: review remote descriptors',
     )

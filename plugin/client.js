@@ -559,7 +559,7 @@ window.__ModuleLoader__.load({
     /** The advisorReview Remote contribution this client $mounts on boot. */
     const ADVISOR_REMOTE = {
       package: 'dsh-advisor',
-      descriptors: ['list', 'start'].map((method) => ({
+      descriptors: ['list', 'start', 'feedback'].map((method) => ({
         id: `dsh-advisor#advisorReview/${method}`,
         service: 'advisorReview',
         namespace: 'advisorReview',
@@ -609,6 +609,13 @@ window.__ModuleLoader__.load({
       '.dsr-item:hover{background:rgba(255,255,255,.045)}',
       '.dsr-flash{animation:dsrFlash 1.4s ease}',
       '@keyframes dsrFlash{0%{outline:2px solid #d29922;outline-offset:1px}100%{outline:2px solid transparent;outline-offset:5px}}',
+      // ── 回传（annfbk 原型移植）：勾选框、发送按钮、状态注记、已回传置灰
+      '.dsrf-box{margin-right:7px;vertical-align:1px;accent-color:#3fb950;cursor:pointer}',
+      '.dsrf-send{margin-left:10px;padding:2px 10px;font-size:11.5px;border:1px solid #3fb950;border-radius:4px;background:transparent;color:#3fb950;cursor:pointer;font-family:inherit}',
+      '.dsrf-send:disabled{opacity:.45;cursor:default}',
+      '.dsrf-note{margin-left:8px;font-size:11px;opacity:.75}',
+      '.dsr-item.dsrf-sent{opacity:.55}',
+      '.dsr-item.dsrf-sent .dsrf-box{pointer-events:none}',
     ].join('\n')
 
     function apply(ctx) {
@@ -670,7 +677,20 @@ window.__ModuleLoader__.load({
       }
 
       const listeners = new Set()
-      const store = { byMessage: new Map(), hydrated: new Set(), popover: null }
+      const store = {
+        byMessage: new Map(),
+        hydrated: new Set(),
+        popover: null,
+        // 回传状态，全部按 reviewId 归键——面板是 imperative DOM，React 重建
+        // 后由 buildPanel 从这里重读，勾选/已回传/注记随重绘保留。
+        feedback: {
+          sel: new Map(),      // reviewId -> Set<annotation index>
+          sent: new Map(),     // reviewId -> Set<index>（hydrate 自 sentKeys，发送后更新）
+          note: new Map(),     // reviewId -> 面板头注记文本
+          sending: new Set(),  // 有在途回传的 reviewId
+          tick: new Map(),     // messageId -> 重绘计数器（回传 settle 后 bump）
+        },
+      }
       const emit = () => { for (const l of Array.from(listeners)) l() }
       function useStoreTick() {
         const [, set] = useState(0)
@@ -691,6 +711,18 @@ window.__ModuleLoader__.load({
           const res = await reviewCall('list', { sessionId })
           const reviews = res && Array.isArray(res.reviews) ? res.reviews : []
           for (const r of reviews) absorb(r)
+          // 已回传去重键（reviewId#index）→ 置灰对应条目，刷新后不依赖服务端重放拒绝。
+          const sentKeys = res && Array.isArray(res.sentKeys) ? res.sentKeys : []
+          for (const key of sentKeys) {
+            if (typeof key !== 'string') continue
+            const at = key.lastIndexOf('#')
+            if (at <= 0) continue
+            const rid = key.slice(0, at)
+            const idx = Number(key.slice(at + 1))
+            if (!Number.isInteger(idx)) continue
+            if (!store.feedback.sent.has(rid)) store.feedback.sent.set(rid, new Set())
+            store.feedback.sent.get(rid).add(idx)
+          }
           emit()
         } catch (error) {
           store.hydrated.delete(sessionId)
@@ -930,7 +962,7 @@ window.__ModuleLoader__.load({
         b.textContent = String(n)
         parent.appendChild(b)
       }
-      function buildPanel(doc, entry, locate) {
+      function buildPanel(doc, entry, locate, fb) {
         const panel = doc.createElement('div')
         panel.className = 'dsr-tail'
         if (entry.status === 'error') {
@@ -951,6 +983,27 @@ window.__ModuleLoader__.load({
             + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
             + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
             + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : '')
+        // ── 回传选中：勾选态/已回传态都在 store.feedback（随重绘重读），
+        // reviewId 直接取自 entry——原型里的 title 匹配猜测链已删除。
+        if (fb && annotations.length > 0) {
+          const sendBtn = doc.createElement('button')
+          sendBtn.className = 'dsrf-send'
+          sendBtn.title = '把勾选的批注回传给主模型修复（author-owns-the-remedy）'
+          const syncLabel = () => {
+            sendBtn.textContent = fb.sending ? '回传中…' : (fb.sel.size > 0 ? '回传选中 (' + fb.sel.size + ')' : '回传选中')
+          }
+          syncLabel()
+          sendBtn.disabled = fb.sending
+          sendBtn.addEventListener('click', (event) => { event.stopPropagation(); fb.onSend() })
+          head.appendChild(sendBtn)
+          if (fb.note !== '') {
+            const note = doc.createElement('span')
+            note.className = 'dsrf-note'
+            note.textContent = fb.note
+            head.appendChild(note)
+          }
+          fb._syncLabel = syncLabel
+        }
         panel.appendChild(head)
         annotations.forEach((a, i) => {
           const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
@@ -961,6 +1014,22 @@ window.__ModuleLoader__.load({
             item.addEventListener('click', () => locate(i))
           }
           const row = doc.createElement('div')
+          if (fb) {
+            const isSent = fb.sent.has(i)
+            const cb = doc.createElement('input')
+            cb.type = 'checkbox'
+            cb.className = 'dsrf-box'
+            cb.checked = !isSent && fb.sel.has(i)
+            cb.disabled = fb.sending || isSent
+            cb.title = isSent ? '已回传过' : '勾选后点「回传选中」发给主模型修复'
+            cb.addEventListener('click', (event) => event.stopPropagation())
+            cb.addEventListener('change', () => {
+              fb.onToggle(i, cb.checked)
+              if (typeof fb._syncLabel === 'function') fb._syncLabel()
+            })
+            row.appendChild(cb)
+            if (isSent) item.classList.add('dsrf-sent')
+          }
           appendSevBadge(doc, row, sev)
           appendIndexBadge(doc, row, sev, i + 1)
           const title = doc.createElement('span')
@@ -1003,6 +1072,12 @@ window.__ModuleLoader__.load({
         const rootRef = React.useRef(null)
         useEffect(() => { void hydrate(sessionId) }, [sessionId])
         const entry = store.byMessage.get(messageId)
+        // 回传 settle 后的重绘触发器：bump 本消息的 tick → 下面的 effect 重跑。
+        const fbTick = store.feedback.tick.get(messageId) || 0
+        const bumpTick = () => {
+          store.feedback.tick.set(messageId, (store.feedback.tick.get(messageId) || 0) + 1)
+          emit()
+        }
         // One effect owns every visual artifact for this message: inline marks,
         // badges, and the card panel inserted right before the message's own
         // tail flow item (the direct child of the chat root on the button's
@@ -1017,6 +1092,73 @@ window.__ModuleLoader__.load({
           let markResult = null
           let panel = null
           let painting = false
+          // ── 回传上下文：真实 reviewId 来自 entry 本身（host 落库时生成），
+          // 勾选/已回传/注记全部 store 化，本 effect 的任何重绘都重新读出。
+          const reviewId = typeof entry.reviewId === 'string' ? entry.reviewId : ''
+          let fb
+          if (entry.status !== 'error' && reviewId !== '') {
+            if (!store.feedback.sel.has(reviewId)) store.feedback.sel.set(reviewId, new Set())
+            if (!store.feedback.sent.has(reviewId)) store.feedback.sent.set(reviewId, new Set())
+            const sel = store.feedback.sel.get(reviewId)
+            const sent = store.feedback.sent.get(reviewId)
+            fb = {
+              sel,
+              sent,
+              note: store.feedback.note.get(reviewId) || '',
+              sending: store.feedback.sending.has(reviewId),
+              onToggle: (index, checked) => { if (checked) sel.add(index); else sel.delete(index) },
+              onSend: () => {
+                if (store.feedback.sending.has(reviewId)) return
+                const indices = Array.from(sel).sort((a, b) => a - b)
+                if (indices.length === 0) {
+                  store.feedback.note.set(reviewId, '先勾选要回传的批注')
+                  bumpTick()
+                  return
+                }
+                const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
+                const items = indices
+                  .filter((i) => annotations[i] !== undefined && !sent.has(i))
+                  .map((i) => ({
+                    index: i,
+                    severity: annotations[i].severity === 'blocker' ? 'blocker' : 'nit',
+                    title: String(annotations[i].title || ''),
+                    anchor: String(annotations[i].anchor || ''),
+                    comment: String(annotations[i].comment || ''),
+                  }))
+                if (items.length === 0) {
+                  store.feedback.note.set(reviewId, '所选批注均已回传过')
+                  bumpTick()
+                  return
+                }
+                store.feedback.sending.add(reviewId)
+                bumpTick()
+                reviewCall('feedback', { sessionId, reviewId, messageId, items })
+                  .then((res) => {
+                    if (res && res.ok === true) {
+                      const skipped = Array.isArray(res.skippedIndices) ? res.skippedIndices : []
+                      for (const item of items) {
+                        if (skipped.includes(item.index)) continue
+                        sent.add(item.index)
+                        sel.delete(item.index)
+                      }
+                      store.feedback.note.set(reviewId,
+                        '✓ 已回传 ' + res.delivered + ' 条'
+                        + (res.skipped > 0 ? '（跳过重复 ' + res.skipped + '）' : '')
+                        + (res.warn ? ' · ' + res.warn : ''))
+                    } else {
+                      store.feedback.note.set(reviewId, '回传失败：' + String(res && res.error || 'unknown'))
+                    }
+                  })
+                  .catch((error) => {
+                    store.feedback.note.set(reviewId, '回传异常：' + String(error && error.message || error))
+                  })
+                  .finally(() => {
+                    store.feedback.sending.delete(reviewId)
+                    bumpTick()
+                  })
+              },
+            }
+          }
           const paint = () => {
             painting = true
             try {
@@ -1031,7 +1173,7 @@ window.__ModuleLoader__.load({
               const root = markResult && markResult.root
                 ? markResult.root
                 : findChatRoot(el, Array.isArray(entry.annotations) ? entry.annotations : [])
-              panel = buildPanel(doc, entry, locate)
+              panel = buildPanel(doc, entry, locate, fb)
               if (root) {
                 let branch = el
                 while (branch.parentElement && branch.parentElement !== root) branch = branch.parentElement
@@ -1098,7 +1240,7 @@ window.__ModuleLoader__.load({
             if (markResult) clearOwned(markResult.created)
             if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
           }
-        }, [entry])
+        }, [entry, fbTick])
         const count = entry && Array.isArray(entry.annotations) ? entry.annotations.length : 0
         const label = busy
           ? '评审中…'
