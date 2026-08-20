@@ -618,6 +618,179 @@ window.__ModuleLoader__.load({
       '.dsr-item.dsrf-sent .dsrf-box{pointer-events:none}',
     ].join('\n')
 
+    // ═══════════════ M3-④ 顾问输出卡片（advcrd 原型 v2 移植） ═══════════════
+    // ask_advisor 的 keyed tool view：结构化条目直读 tool/result.meta（② 的
+    // presentationMeta 通道），tier 色左边条 + 实色胶囊徽章 + 字段标签 chip；
+    // 未解析回退原文——任何状态都不比通用卡片差。边框/背景走主题 token 自适应
+    // 亮暗，rgba 为兜底。
+    const ADVISOR_CARD_CSS = [
+      '.adv-card{margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
+      '.adv-head{padding:9px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:rgba(127.5,127.5,127.5,.06);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
+      '.adv-head:hover{background:rgba(127.5,127.5,127.5,.12)}',
+      '.adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}',
+      '.adv-head-icon{flex:none;font-size:13px}',
+      '.adv-head-title{font-weight:600;font-size:13px}',
+      '.adv-dots{display:inline-flex;gap:4px;align-items:center;margin-left:2px}',
+      '.adv-dot{width:7px;height:7px;border-radius:50%}',
+      '.adv-dot-high{background:#3fb950}',
+      '.adv-dot-mid{background:#d29922}',
+      '.adv-dot-low{background:#6e7681}',
+      '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace}',
+      '.adv-head-issues{font-size:11px;color:#d29922;font-family:ui-monospace,monospace}',
+      '.adv-body{padding:10px 14px 12px}',
+      '.adv-q{margin:0 0 10px;padding:6px 10px;border-left:2px solid rgba(130,130,130,.45);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
+      '.adv-item{position:relative;padding:8px 0 8px 12px;border-top:1px solid rgba(130,130,130,.12)}',
+      '.adv-item:first-of-type{border-top:none;padding-top:2px}',
+      '.adv-item::before{content:"";position:absolute;left:0;top:10px;bottom:8px;width:2.5px;border-radius:2px}',
+      '.adv-item:first-of-type::before{top:4px}',
+      '.adv-item.t-high::before{background:#3fb950}',
+      '.adv-item.t-mid::before{background:#d29922}',
+      '.adv-item.t-low::before{background:#6e7681}',
+      '.adv-item-head{display:flex;gap:8px;align-items:center;margin-bottom:5px}',
+      '.adv-badge{flex:none;font-size:10px;font-family:ui-monospace,monospace;line-height:16px;padding:0 7px;border-radius:999px;font-weight:600}',
+      '.adv-badge-high{color:#3fb950;background:rgba(63,185,80,.13)}',
+      '.adv-badge-mid{color:#d29922;background:rgba(210,153,34,.13)}',
+      '.adv-badge-low{color:#8b949e;background:rgba(139,148,158,.16)}',
+      '.adv-item-title{font-weight:600;font-size:13.5px}',
+      '.adv-field{margin:5px 0;white-space:pre-wrap;word-break:break-word}',
+      '.adv-flabel{display:inline-block;font-size:10.5px;font-family:ui-monospace,monospace;margin-right:7px;padding:0 5px;border-radius:3px;background:rgba(130,130,130,.14);opacity:.8;vertical-align:1px}',
+      '.adv-field-pitfalls .adv-flabel{color:#d29922;background:rgba(210,153,34,.12);opacity:1}',
+      '.adv-field-vtarget .adv-flabel{color:#3fb950;background:rgba(63,185,80,.12);opacity:1}',
+      '.adv-field-vtarget{font-size:12.5px}',
+      '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:#d29922;border:1px solid rgba(210,153,34,.35);border-radius:8px;background:rgba(210,153,34,.06)}',
+      '.adv-raw{white-space:pre-wrap;word-break:break-word;opacity:.92;font-size:12.5px}',
+      '.adv-err{color:#f85149;font-size:12.5px;white-space:pre-wrap;word-break:break-word}',
+      '.adv-ctx{margin-top:10px;font-size:12px;opacity:.7}',
+      '.adv-ctx summary{cursor:pointer;opacity:.8}',
+      '.adv-ctx-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-style:normal}',
+    ].join('\n')
+
+    /** One-line clip for the card head/question quote. */
+    function clipAdv(text, max) {
+      const oneLine = String(text).replace(/\s+/g, ' ').trim()
+      return oneLine.length <= max ? oneLine : oneLine.slice(0, max - 1) + '…'
+    }
+    /** Visible text of a settled tool result's content blocks. */
+    function advBodyText(content) {
+      if (!Array.isArray(content)) return ''
+      return content
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('\n')
+        .trim()
+    }
+    /** ask_advisor argsRaw → { question, context } (tolerant). */
+    function advArgs(raw) {
+      if (typeof raw !== 'string' || raw === '') return {}
+      try {
+        const v = JSON.parse(raw)
+        return v && typeof v === 'object' ? v : {}
+      } catch { return {} }
+    }
+
+    const ADV_TIERS = ['high', 'mid', 'low']
+
+    function AdvisorItem({ item }) {
+      const tier = ADV_TIERS.includes(item.tier) ? item.tier : 'low'
+      return h('div', { className: 'adv-item t-' + tier },
+        h('div', { className: 'adv-item-head' },
+          h('span', { className: 'adv-badge adv-badge-' + tier }, tier),
+          h('span', { className: 'adv-item-title' }, String(item.title || '（无标题）'))),
+        item.framing
+          ? h('div', { className: 'adv-field' },
+              h('span', { className: 'adv-flabel' }, '思路'),
+              String(item.framing))
+          : null,
+        item.pitfalls
+          ? h('div', { className: 'adv-field adv-field-pitfalls' },
+              h('span', { className: 'adv-flabel' }, '陷阱'),
+              String(item.pitfalls))
+          : null,
+        item.verificationTarget
+          ? h('div', { className: 'adv-field adv-field-vtarget' },
+              h('span', { className: 'adv-flabel' }, '验证目标'),
+              String(item.verificationTarget))
+          : null)
+    }
+
+    /** The ask_advisor keyed tool view (tool.call.toolview, key 'ask_advisor'). */
+    function AdvisorToolView(props) {
+      const block = props.block
+      const settled = block !== null && typeof block === 'object' && 'kind' in block
+      const argsRaw = settled
+        ? (block.call && typeof block.call.argsRaw === 'string' ? block.call.argsRaw : '')
+        : (block && typeof block.argsRaw === 'string' ? block.argsRaw : '')
+      const args = advArgs(argsRaw)
+      const question = typeof args.question === 'string' ? args.question : ''
+      const context = typeof args.context === 'string' ? args.context : ''
+      const meta = settled ? block.meta : undefined
+      const items = meta !== null && typeof meta === 'object' && meta.v === 1 && Array.isArray(meta.items)
+        ? meta.items.filter((it) => it && typeof it === 'object')
+        : []
+      const issues = meta !== null && typeof meta === 'object' && Array.isArray(meta.issues)
+        ? meta.issues.map(String)
+        : []
+      const [open, setOpen] = useState(true)
+
+      // In-flight: tool/call seen, result not yet.
+      if (!settled) {
+        return h('div', { className: 'adv-card' },
+          h('div', { className: 'adv-head', style: { cursor: 'default' } },
+            h('span', { className: 'adv-head-icon' }, '💡'),
+            h('span', { className: 'adv-head-title', style: { opacity: .7 } }, '顾问咨询中…'),
+            question !== '' ? h('span', { className: 'adv-head-note' }, clipAdv(question, 60)) : null))
+      }
+
+      const isError = block.isError === true
+      const body = advBodyText(block.content)
+      // Tier 计数点：每个实心点代表一条对应 tier 的建议。
+      const dots = []
+      for (const t of ADV_TIERS) {
+        for (const it of items) {
+          if (it.tier === t) dots.push(h('span', { key: t + dots.length, className: 'adv-dot adv-dot-' + t }))
+        }
+      }
+      // 耗时：settled 节点同时带 callTime 与 time。
+      const duration = typeof block.callTime === 'number' && typeof block.time === 'number' && block.time >= block.callTime
+        ? Math.round((block.time - block.callTime) / 1000) + 's'
+        : ''
+      const headText = isError
+        ? '顾问咨询失败'
+        : items.length > 0
+          ? '顾问建议 · ' + items.length + ' 条'
+          : '顾问建议（未解析出结构化条目，原文如下）'
+
+      return h('div', { className: 'adv-card' },
+        h('div', {
+          className: 'adv-head',
+          onClick: () => setOpen(!open),
+          'aria-expanded': open,
+        },
+          h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
+          h('span', { className: 'adv-head-icon' }, '💡'),
+          h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
+          dots.length > 0 ? h('span', { className: 'adv-dots' }, dots) : null,
+          issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
+          duration !== '' ? h('span', { className: 'adv-head-note' }, duration) : null),
+        open
+          ? h('div', { className: 'adv-body' },
+              question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
+              isError
+                ? h('div', { className: 'adv-err' }, body !== '' ? body : '（无错误详情）')
+                : items.length > 0
+                  ? items.map((item, i) => h(AdvisorItem, { key: i, item }))
+                  : h('div', { className: 'adv-raw' }, body !== '' ? body : '（空回复）'),
+              issues.length > 0
+                ? h('div', { className: 'adv-issues' }, '解析问题：' + issues.join('；'))
+                : null,
+              context !== ''
+                ? h('details', { className: 'adv-ctx' },
+                    h('summary', null, '已确立的事实与约束（咨询输入）'),
+                    h('div', { className: 'adv-ctx-body' }, context))
+                : null)
+          : null)
+    }
+
     function apply(ctx) {
       scope = ctx.settingsScope.bind({ namespace: 'advisor' })
       getConnection = () => {
@@ -642,7 +815,7 @@ window.__ModuleLoader__.load({
       // only, so one message never disturbs another's marks.
 
       const styleEl = document.createElement('style')
-      styleEl.textContent = REVIEW_CSS
+      styleEl.textContent = REVIEW_CSS + '\n' + ADVISOR_CARD_CSS
       document.head.appendChild(styleEl)
       ctx.effect(() => () => styleEl.remove(), 'dsh-advisor: review styles')
 
@@ -1314,6 +1487,13 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'conversation.chat.assistant-actions', id: 'advisor-review', order: 20, label: '批注评审' },
           (props) => h(ReviewButton, props),
+        ),
+      )
+      // ── M3-④: ask_advisor 的 keyed tool view（未占用键，纯增量；通用行兜底不变）
+      ctx.slots.inject('tool.call.toolview', () =>
+        ctx.slots.register(
+          { name: 'tool.call.toolview', key: 'ask_advisor' },
+          (props) => h(AdvisorToolView, props),
         ),
       )
       ctx.slots.inject('shell.overlay', () =>
