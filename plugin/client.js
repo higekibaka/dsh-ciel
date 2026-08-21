@@ -1178,15 +1178,21 @@ window.__ModuleLoader__.load({
         }
         const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
         const stats = entry.markStats
+        // 0.9.3：清单可见性——评审输入是否携带顾问验证目标（③深化），面板头明示；
+        // 旧 entry 无 targetsProvided 字段时什么都不显示（后向兼容）。
+        const targetsNote = typeof entry.targetsProvided === 'number' && entry.targetsProvided > 0
+          ? ' · 含顾问验证清单 ' + entry.targetsProvided + ' 条'
+          : ''
         const head = doc.createElement('div')
         head.className = 'dsr-tail-head'
-        head.textContent = entry.status === 'sound'
+        head.textContent = (entry.status === 'sound'
           ? '✓ 批评者：草案整体成立'
           : '批评者批注 · ' + annotations.length + ' 条'
             + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
             + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
             + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
-            + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : '')
+            + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : ''))
+          + targetsNote
         // ── 回传选中：勾选态/已回传态都在 store.feedback（随重绘重读），
         // reviewId 直接取自 entry——原型里的 title 匹配猜测链已删除。
         if (fb && annotations.length > 0) {
