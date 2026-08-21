@@ -1,4 +1,4 @@
-// ═══════════════ /advise 命令 · host 半 ═══════════════
+// ═══════════════ /advise 命令 · host 半（pkg-6：结果双槽投递） ═══════════════
 // P3 原型：人类触发的顾问咨询。设计三要点：
 //  · 双槽之一（host 槽）：commands 注册表登记 'advise' 人类命令；
 //  · 显式 inject：commands / subagents 是硬依赖，缺席即 waiting；
@@ -6,6 +6,9 @@
 //    agent.session.events 倒序捞最近用户/助手可见文本拼成。
 // 咨询执行路径与静态 dsh-advisor 的 ask_advisor 工具同文（spawn 一次性
 // 子代理 + ADVISOR_PERSONA + maxDepth 1 + 禁工具），路由读 advisor 设置命名空间。
+// pkg-6 兑现看板 ① 的 C 方案（用户实测后拍板）：成功的咨询结果除渲染卡片外，
+// 以 followup 次轮语义回注主模型（照抄 0.7.0 回传的 agent.followup 形态，
+// 不打断在跑的 turn；失败不回注——错误留在卡片上给人看）。
 
 const ADVISOR_PERSONA =
   'You are a senior technical advisor consulted BEFORE planning begins. ' +
@@ -101,7 +104,7 @@ return {
     // register 的 disposer 挂进 fiber effect：stop/update 即注销命令。
     ctx.effect(() => ctx.commands.register({
       name: 'advise',
-      description: '向顾问模型发起一次人类触发的咨询；上下文自动装配自本会话最近对话',
+      description: '向顾问模型发起咨询；上下文自动装配自本会话，结果渲染卡片并回注主模型',
       input: { hint: '咨询问题（开放设计空间 / 陌生领域 / 不可逆决策 / 困难诊断）' },
       async handler(invocation) {
         const question = String(invocation.rawInput || '').trim()
@@ -149,7 +152,27 @@ return {
                 (text === '' ? '' : '\n部分回答：\n' + text),
             }
           }
-          return { kind: 'success', text: text === '' ? '顾问返回了空回答。' : text }
+          const answer = text === '' ? '顾问返回了空回答。' : text
+          // C 方案：成功结果以 followup 次轮语义回注主模型（0.7.0 回传同形态：
+          // 不打断在跑 turn，agent 空闲后成为自己 turn 的唯一普通消息）。
+          // 注入失败不颠覆命令本身——卡片照常渲染，失败以附注形式透明可见。
+          let note = ''
+          try {
+            invocation.agent.followup({
+              id: 'advise-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+              role: 'user',
+              content: [{
+                type: 'text',
+                text: '[advisor:advise-result] 用户通过 /advise 命令向顾问模型发起咨询，结果如下' +
+                  '（用户已在卡片中看到同样的内容；请结合当前工作自行采纳或讨论，不必复述原文）：\n\n' +
+                  '问题：' + question + '\n\n顾问回答：\n' + answer,
+              }],
+              source: { kind: 'user' },
+            })
+          } catch (injectError) {
+            note = '\n\n（结果回注主模型失败：' + String((injectError && injectError.message) || injectError) + '）'
+          }
+          return { kind: 'success', text: answer + note }
         } catch (runError) {
           return {
             kind: 'error',
