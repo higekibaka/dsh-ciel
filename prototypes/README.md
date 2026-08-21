@@ -7,7 +7,7 @@
 |---|---|---|---|
 | `step-echo-badge/` | stecho-2 | pkg-9（client） | **常驻原型，未静态化**——重启后用它重新 define+run |
 | `review-plus-rubric/` | advrub-1 | pkg-5（host） | 已静态化进 bundle 0.9.0，此档仅供回放参考 |
-| `advise-command/` | advcmd-1 | pkg-6（host+client） | **P3 原型，待用户复测**——pkg-6 加结果双槽投递（followup 回注主模型，兑现看板 ① C 方案）；确认后静态化进 bundle；重启后把 host.js/client.js 分别作为 `code.host`/`code.client` 重新 define（idPrefix advcmd）+ run |
+| `advise-command/` | advcmd-1 | pkg-16（host+client） | 已静态化进 bundle 0.10.0（`08dd572`），此档仅供回放参考 |
 
 重启后拉起看门狗：把 `step-echo-badge/client.js` 的内容作为 `code.client`
 重新 `cordis_define`（idPrefix stecho）再 `cordis_run` 即可。
