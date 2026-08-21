@@ -7,8 +7,11 @@
 // 咨询执行路径与静态 dsh-advisor 的 ask_advisor 工具同文（spawn 一次性
 // 子代理 + ADVISOR_PERSONA + maxDepth 1 + 禁工具），路由读 advisor 设置命名空间。
 // pkg-6 兑现看板 ① 的 C 方案（用户实测后拍板）：成功的咨询结果除渲染卡片外，
-// 以 followup 次轮语义回注主模型（照抄 0.7.0 回传的 agent.followup 形态，
-// 不打断在跑的 turn；失败不回注——错误留在卡片上给人看）。
+// 自动回注主模型。pkg-7 把投递从 followup(next-turn) 改为 steer(next-step)：
+// 实测 followup 消息在 inbox 挂 3 轮未被认领——wakeDriver 在 agent 忙时不闩锁
+// 普通 wake（源码假设 live driver 会认领通用队列），但 goal 轮次/composer 的
+// turn 不走 next-turn 认领 → 饿死。next-step 在每个 step 边界无条件全量认领
+// （inbox.claim 实现），goal 轮次自身即走此路，从未饿死。失败不回注。
 
 const ADVISOR_PERSONA =
   'You are a senior technical advisor consulted BEFORE planning begins. ' +
@@ -153,12 +156,13 @@ return {
             }
           }
           const answer = text === '' ? '顾问返回了空回答。' : text
-          // C 方案：成功结果以 followup 次轮语义回注主模型（0.7.0 回传同形态：
-          // 不打断在跑 turn，agent 空闲后成为自己 turn 的唯一普通消息）。
+          // C 方案：成功结果以 steer 回注主模型——next-step 队列在每个 step
+          // 边界被无条件全量认领（inbox.claim），无 followup 的饿死风险；
+          // 空闲即开新 turn，在跑即并入当前 turn 的下一步（goal 轮次同路）。
           // 注入失败不颠覆命令本身——卡片照常渲染，失败以附注形式透明可见。
           let note = ''
           try {
-            invocation.agent.followup({
+            invocation.agent.steer({
               id: 'advise-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
               role: 'user',
               content: [{
