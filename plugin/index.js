@@ -173,6 +173,38 @@ function clip(text, max = 300) {
 }
 
 /**
+ * /advise 的上下文自动装配（P3，advcmd 原型移植）：倒序扫会话事件，取最近
+ * ≤8 条用户/助手可见文本，总量封顶 ~1800 字符（与 ask_advisor 的 context
+ * 参数同级预算）。只读叶字段，任何一步异常都降级为空串而不是炸掉命令。
+ */
+function assembleAdviseContext(agent) {
+  try {
+    const session = agent && agent.session
+    const events = session && session.events
+    if (!Array.isArray(events)) return ''
+    const parts = []
+    let budget = 1800
+    for (let i = events.length - 1; i >= 0 && budget > 0 && parts.length < 8; i -= 1) {
+      const ev = events[i]
+      if (!ev || !ev.data) continue
+      let role = null
+      if (ev.type === 'user/message') role = '用户'
+      else if (ev.type === 'assistant/message') role = '助手'
+      if (role === null) continue
+      const text = userText(ev)
+      if (text === '') continue
+      const clipped = clip(text, Math.min(400, budget))
+      if (clipped === '') continue
+      parts.unshift(role + '：' + clipped)
+      budget -= clipped.length
+    }
+    return parts.join('\n')
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Unwrap nested provider envelopes (`{"error":{"message":"{\"error":…"}}}` —
  * adapters sometimes stringify an upstream body into their own message) down
  * to the innermost plain message, then clip it.
@@ -1253,6 +1285,96 @@ export function apply(ctx, config) {
         } finally {
           liveAdvisorChildren.delete(run.id)
           await run.dispose()
+        }
+      },
+    })
+  })
+
+  // ── /advise 人类命令（P3，advcmd 原型 pkg-16 双线确认后静态化）───────────
+  // 双槽：此处 commands 注册 + client 的 conversation.chat.commandview 卡片。
+  // 上下文自动装配（assembleAdviseContext）；四条门对人类显式触发放行
+  // （HITL override，看板 M3-①）。成功结果除卡片外以 steer 回注主模型——
+  // next-step 在每个 step 边界无条件全量认领；followup 的 next-turn 队列在
+  // goal 轮次/composer 路径下会饿死（原型实测，inbox 挂 3 轮未认领）。
+  // effort 钉与 ask_advisor 共用 liveAdvisorChildren 通道；错误结果不回注。
+  ctx.inject(['commands', 'subagents'], (cctx) => {
+    cctx.commands.register({
+      name: 'advise',
+      description: '向顾问模型发起咨询；上下文自动装配自本会话，结果渲染卡片并回注主模型',
+      input: { hint: '咨询问题（开放设计空间 / 陌生领域 / 不可逆决策 / 困难诊断）' },
+      async handler(invocation) {
+        const question = String(invocation.rawInput || '').trim()
+        if (question === '') {
+          return { kind: 'error', text: '用法：/advise 你的问题 —— 上下文会从本会话最近对话自动装配' }
+        }
+        const cfg = current()
+        const assembled = assembleAdviseContext(invocation.agent)
+        const consultation =
+          'Established facts and constraints:\n' +
+          '（以下上下文由 /advise 命令从本会话最近对话自动装配，可能不完整；如需补充请以对话说明为准）\n' +
+          (assembled === '' ? '（本会话暂无可装配的对话内容）' : assembled) +
+          '\n\nQuestion:\n' + question
+        let run
+        try {
+          run = await cctx.subagents.start('spawn', {
+            label: 'advise',
+            parent: invocation.agent,
+            signal: invocation.signal,
+            prompt: [{ type: 'text', text: consultation }],
+            agentOptions: {
+              provider: cfg.provider,
+              model: cfg.model,
+              maxTokens: cfg.maxTokens,
+            },
+            persona: ADVISOR_PERSONA,
+            maxDepth: 1,
+            toolFilter: { allow: [] },
+          })
+        } catch (spawnError) {
+          return {
+            kind: 'error',
+            text: 'advisor spawn failed: ' + String((spawnError && spawnError.message) || spawnError),
+          }
+        }
+        // 与 ask_advisor 同：start() 先于子代理首个请求解析，立刻进跟踪集。
+        liveAdvisorChildren.add(run.id)
+        try {
+          const result = await run.result
+          const text = outputText(result.output)
+          if (result.stopReason !== 'completed') {
+            return {
+              kind: 'error',
+              text: '顾问咨询异常结束（' + String(result.stopReason) + '）' +
+                (text === '' ? '' : '\n部分回答：\n' + text),
+            }
+          }
+          const answer = text === '' ? '顾问返回了空回答。' : text
+          // 注入失败不颠覆命令本身——卡片照常渲染，失败以附注形式透明可见。
+          let note = ''
+          try {
+            invocation.agent.steer({
+              id: 'advise-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+              role: 'user',
+              content: [{
+                type: 'text',
+                text: '[advisor:advise-result] 用户通过 /advise 命令向顾问模型发起咨询，结果如下' +
+                  '（用户已在卡片中看到同样的内容；请结合当前工作自行采纳或讨论，不必复述原文）：\n\n' +
+                  '问题：' + question + '\n\n顾问回答：\n' + answer,
+              }],
+              source: { kind: 'user' },
+            })
+          } catch (injectError) {
+            note = '\n\n（结果回注主模型失败：' + String((injectError && injectError.message) || injectError) + '）'
+          }
+          return { kind: 'success', text: answer + note }
+        } catch (runError) {
+          return {
+            kind: 'error',
+            text: 'advisor run failed: ' + String((runError && runError.message) || runError),
+          }
+        } finally {
+          liveAdvisorChildren.delete(run.id)
+          try { await run.dispose() } catch { /* 忽略清理失败 */ }
         }
       },
     })

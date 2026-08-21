@@ -822,6 +822,104 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    // ── P3: /advise 命令卡片（advcmd 原型 pkg-16 移植）─────────────────────
+    // host 侧 parseAdvisorItems 的客户端复刻（同一正则契约）——命令结果只有
+    // text 通道（无工具的 output.schema/meta），结构化全靠 persona + 解析。
+    function parseAdviseItems(text) {
+      const heads = []
+      const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm
+      let m
+      while ((m = re.exec(text)) !== null) {
+        heads.push({ tier: m[1], title: (m[2] || '').trim(), at: m.index, end: re.lastIndex })
+      }
+      if (heads.length === 0) return { items: [], issues: [] }
+      const issues = []
+      if (heads.length > 6) issues.push('item count ' + heads.length + ' exceeds the 6-item cap')
+      const FIELD_NAMES = ['framing', 'pitfalls', 'verification_target']
+      const items = []
+      for (let i = 0; i < heads.length; i += 1) {
+        const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
+        const field = (name) => {
+          const match = new RegExp(
+            '(?:^|\\n)[ \\t]*' + name + '[ \\t]*:[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:' + FIELD_NAMES.join('|') + ')[ \\t]*:|$)',
+          ).exec(body)
+          return match ? match[1].trim() : ''
+        }
+        const item = {
+          tier: heads[i].tier,
+          title: heads[i].title.slice(0, 120),
+          framing: field('framing').slice(0, 1200),
+          pitfalls: field('pitfalls').slice(0, 1200),
+          verificationTarget: field('verification_target').slice(0, 600),
+        }
+        if (item.framing === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks framing')
+        if (item.verificationTarget === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks verification_target')
+        items.push(item)
+      }
+      return { items, issues }
+    }
+
+    // CommandNode 数据源：args=问题原文，outcome=null 在途，
+    // outcome.kind/text 定成败。条目渲染复用 AdvisorItem（同一视觉语言）。
+    function AdviseCommandView(props) {
+      const node = props.node
+      const question = node && typeof node.args === 'string' ? node.args.trim() : ''
+      const outcome = node ? node.outcome : null
+      const [open, setOpen] = useState(true)
+
+      if (outcome === null || outcome === undefined) {
+        return h('div', { className: 'adv-card' },
+          h('div', { className: 'adv-head', style: { cursor: 'default' } },
+            h('span', { className: 'adv-head-icon' }, '💡'),
+            h('span', { className: 'adv-head-title', style: { opacity: .7 } }, '顾问咨询中…'),
+            h('span', { className: 'adv-head-note' }, '/advise 人类触发'),
+            question !== '' ? h('span', { className: 'adv-head-note', style: { marginLeft: 0 } }, clipAdv(question, 60)) : null))
+      }
+
+      const isError = outcome.kind === 'error'
+      const body = typeof outcome.text === 'string' ? outcome.text : ''
+      const parsed = isError ? { items: [], issues: [] } : parseAdviseItems(body)
+      const items = parsed.items
+      const issues = parsed.issues
+
+      const dots = []
+      for (const t of ADV_TIERS) {
+        for (const it of items) {
+          if (it.tier === t) dots.push(h('span', { key: t + dots.length, className: 'adv-dot adv-dot-' + t }))
+        }
+      }
+      const headText = isError
+        ? '顾问咨询失败'
+        : items.length > 0
+          ? '顾问建议 · ' + items.length + ' 条'
+          : '顾问建议（未解析出结构化条目，原文如下）'
+
+      return h('div', { className: 'adv-card' },
+        h('div', {
+          className: 'adv-head',
+          onClick: () => setOpen(!open),
+          'aria-expanded': open,
+        },
+          h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
+          h('span', { className: 'adv-head-icon' }, '💡'),
+          h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
+          dots.length > 0 ? h('span', { className: 'adv-dots' }, dots) : null,
+          issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
+          h('span', { className: 'adv-head-note' }, '/advise 人类触发')),
+        open
+          ? h('div', { className: 'adv-body' },
+              question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
+              isError
+                ? h('div', { className: 'adv-err' }, body !== '' ? body : '（无错误详情）')
+                : items.length > 0
+                  ? items.map((item, i) => h(AdvisorItem, { key: i, item }))
+                  : h('div', { className: 'adv-raw' }, body !== '' ? body : '（空回复）'),
+              issues.length > 0
+                ? h('div', { className: 'adv-issues' }, '解析问题：' + issues.join('；'))
+                : null)
+          : null)
+    }
+
     function apply(ctx) {
       scope = ctx.settingsScope.bind({ namespace: 'advisor' })
       getConnection = () => {
@@ -835,6 +933,19 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'settings.plugin.item', key: 'advisor' },
           () => h(AdvisorCard),
+        ),
+      )
+
+      // ═══════════════ P3: /advise 命令卡片（advcmd 原型移植） ═══════════════
+      // conversation.chat.commandview 键控 'advise'（开放键域，纯增量），
+      // 与 ask_advisor 工具卡片同一视觉语言：条目渲染直接复用 AdvisorItem，
+      // CSS 复用 ADVISOR_CARD_CSS。数据源是 CommandNode：args=问题原文，
+      // outcome=null 在途，outcome.kind/text 定成败；解析器是 host 侧
+      // parseAdvisorItems 的客户端复刻（同一正则契约），失败一律回退原文。
+      ctx.slots.inject('conversation.chat.commandview', () =>
+        ctx.slots.register(
+          { name: 'conversation.chat.commandview', key: 'advise' },
+          (props) => h(AdviseCommandView, props),
         ),
       )
 
