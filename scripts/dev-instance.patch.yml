@@ -2,7 +2,7 @@
 # never collides with the main GUI on 3080. A patch replaces a row's ENTIRE
 # config, so both required keys are restated.
 #
-# Usage: pnpm dsh --profile advisor-test --patch /home/hgk/123/dsh-advisor/scripts/dev-instance.patch.yml
+# Usage: pnpm dsh --profile advisor-test --patch /home/hgk/123/dsh-ciel/scripts/dev-instance.patch.yml
 - id: webserver
   config:
     host: 127.0.0.1

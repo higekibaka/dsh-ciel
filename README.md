@@ -25,9 +25,9 @@ docs/         设计文档
 
 ```sh
 # 已安装的 dsh：
-dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
+dsh plugin --profile web add /home/hgk/123/dsh-ciel/plugin
 # 或源码 checkout 内：
-pnpm dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
+pnpm dsh plugin --profile web add /home/hgk/123/dsh-ciel/plugin
 ```
 
 重启 DSH 后生效。打开 **设置 → 插件 → 插件配置 → 夏尔 Ciel (dsh-ciel)** 即可可视化配置；改动即时保存、无需再重启。`ask_advisor` 工具与指导 prompt section 对所有 preset 的会话全局生效。
@@ -47,9 +47,9 @@ pnpm dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
 ## 开发验证（独立测试实例，不动主 GUI）
 
 ```sh
-pnpm dsh plugin --profile advisor-test add /home/hgk/123/dsh-advisor/plugin
+pnpm dsh plugin --profile advisor-test add /home/hgk/123/dsh-ciel/plugin
 # 首次需手工把 "@deepseek-ai/dsh-web-app" 加进 ~/.dsh/profiles/advisor-test/package.json 的 bundles
-cd /home/hgk/deepseek-harness && pnpm dsh --profile advisor-test --patch /home/hgk/123/dsh-advisor/scripts/dev-instance.patch.yml
+cd /home/hgk/deepseek-harness && pnpm dsh --profile advisor-test --patch /home/hgk/123/dsh-ciel/scripts/dev-instance.patch.yml
 # 打开 http://127.0.0.1:3180 → 设置 → 插件 → 插件配置
 ```
 
