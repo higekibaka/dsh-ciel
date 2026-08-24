@@ -1,13 +1,14 @@
-# dsh-advisor bundle layer: applied automatically when the package is
+# dsh-ciel bundle layer: applied automatically when the package is
 # installed (package.json declares dsh.bundle.patch). Later layers (the
 # profile's own cordis.patch.yml, --patch overlays) override this row by id.
 #
 # The row mounts at the HOST layer on purpose:
 #   - settings namespaces are host-plane (an agent-preset row cannot register
-#     one), and the Settings → Plugins card edits the `advisor` namespace;
+#     one), and the Settings → Plugins card edits the `advisor` namespace
+#     (ns 名保留 advisor：配置连续性优先于命名一致性);
 #   - the `ask_advisor` tool and the guidance prompt section become available
 #     to every agent in every preset, matching how dsh-vision-router wires
 #     its global tools.
 - insert:
     - id: advisor
-      name: dsh-advisor
+      name: dsh-ciel

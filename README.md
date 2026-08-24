@@ -1,6 +1,8 @@
-# dsh-advisor
+# dsh-ciel（夏尔）
 
-DeepSeek Harness（DSH）的**规划前顾问 + 收敛批评者**能力：在主模型制定计划之前，由一个知识分布不同的顾问模型提供思路、领域知识与陷阱清单——只给思路，不给步骤；另附每条助手回复的「批注评审」按钮，由批评者模型（gemini-3.7-flash）对草案做红线批注。
+> **0.11.0 起更名**：`dsh-advisor` → `dsh-ciel`（大贤者夏尔——《关于我转生变成史莱姆这档事》中主角的脑内参谋：不下场干活，只在关键节点给分析与方向）。更名只为避开与 [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor) 的撞名；**settings 命名空间 `advisor`、sidecar 目录 `$DSH_HOME/dsh-advisor/`、消息标签 `[advisor:*]` 均为配置与数据连续性保留旧名**。
+
+DeepSeek Harness（DSH）的**规划前顾问 + 收敛批评者**能力：在主模型制定计划之前，由一个知识分布不同的顾问模型提供思路、领域知识与陷阱清单——只给思路，不给步骤；另附每条助手回复的「批注评审」按钮，由批评者模型（gemini-3.7-flash）对草案做红线批注；0.10.0 起另有 `/advise` 人类命令（上下文自动装配 + 卡片 + 自动知会主模型）。
 
 ## 设计理念（一句话）
 
@@ -28,7 +30,7 @@ dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
 pnpm dsh plugin --profile web add /home/hgk/123/dsh-advisor/plugin
 ```
 
-重启 DSH 后生效。打开 **设置 → 插件 → 插件配置 → 顾问 (dsh-advisor)** 即可可视化配置；改动即时保存、无需再重启。`ask_advisor` 工具与指导 prompt section 对所有 preset 的会话全局生效。
+重启 DSH 后生效。打开 **设置 → 插件 → 插件配置 → 夏尔 Ciel (dsh-ciel)** 即可可视化配置；改动即时保存、无需再重启。`ask_advisor` 工具与指导 prompt section 对所有 preset 的会话全局生效。
 
 **批注评审（M3-③，0.3.0 起）**：每条助手回复的操作区出现「批注评审」按钮——点击后批评者子代理（`google/gemini-3.7-flash`，effort 固定 low）对该回复做收敛型红线评审；批注以 severity 波浪下划线 + 角标长在原文上，点击弹出批注卡，回复下方另有完整卡片面板。评审输入（**0.5.0** 起）= 回复正文 + 该轮用户请求与工具结果的**裁决摘要**——不含思维链与过程叙事：批评者证伪输出，不复盘作者心路，全知会使其与作者框架趋同、丧失第二模型的分布多样性（定位推导见 docs/design.md §6「批评者定位」）。评审记录自 **0.4.0** 起持久化在 sidecar 存储（`$DSH_HOME/dsh-advisor/reviews/<sessionId>.jsonl`），跨重启水合；0.3.x 曾写 `advisor/review` 自定义会话事件——harness 的 `Session.append()` 无法给事件信封打 `ignorable` 标记，加载路径又会拒绝一切目录外的非 ignorable 事件类型，导致写过该事件的会话日志被 `SessionFormatUnsupportedError` 整体拒载（实测锁死 5 条会话，已手术修复），故改为 sidecar，**不再往会话日志写任何东西**。host↔browser 走 typert Remote（host 注册 strict descriptor，client `$mount` 后调 `remote.advisorReview`）——两个 `@deepseek-ai/*` 导入（cordis / typert-protocol）经 `plugin/node_modules` 里指向共享 profiles 回退图的 symlink 解析，**不要往 package.json 里加这两个依赖**（重复副本会带自己的 registry 状态）。
 
@@ -59,5 +61,5 @@ cd /home/hgk/deepseek-harness && pnpm dsh --profile advisor-test --patch /home/h
 
 ## 社区对照
 
-- [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor)：每轮被动评审的第二模型——触发哲学与本项目相反（系统驱动 vs 按需咨询）。
+- [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor)：每轮被动评审的第二模型——触发哲学与本项目相反（系统驱动 vs 按需咨询）。**本项目 0.11.0 起更名 dsh-ciel 以避开撞名**。
 - [Optim-Agent/dsh-plans](https://github.com/Optim-Agent/dsh-plans)：planning preset + criticizer 子代理——收敛型批评者，是本设计第⑥步的角色而非发散顾问。

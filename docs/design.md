@@ -1,4 +1,6 @@
-# dsh-advisor 设计文档
+# dsh-ciel 设计文档
+
+> 0.11.0 起由 dsh-advisor 更名 dsh-ciel（大贤者夏尔）；本文保留写作时的历史名引用。
 
 ## 1. 问题与动机
 
