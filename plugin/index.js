@@ -1,4 +1,7 @@
-// dsh-advisor host half: a pre-planning advisor for DeepSeek Harness agents.
+// dsh-ciel host half: a pre-planning advisor for DeepSeek Harness agents.
+// (0.11.0 起由 dsh-advisor 更名为 dsh-ciel——大贤者夏尔；settings 命名空间
+//  `advisor`、sidecar 目录 $DSH_HOME/dsh-advisor/、typert 契约 id 均为配置
+//  与数据连续性保留旧名，仅身份面改名。)
 //
 // What this plugin contributes, all at the host layer:
 //   1. the `ask_advisor` tool — one synchronous consultation with a second,
@@ -6,7 +9,9 @@
 //   2. the `advisor:guidance` prompt section — the consultation protocol
 //      (when to call, explore-first ordering, bounded follow-ups);
 //   3. the `advisor` settings namespace — edited from Settings → Plugins →
-//      dsh-advisor, hot-applied to every later consultation without restart.
+//      dsh-ciel, hot-applied to every later consultation without restart;
+//   4. the `/advise` human command — auto-assembled context, card render,
+//      steer re-injection (0.10.0).
 //
 // The settings namespace reaches the browser through the model-provider
 // exposure path: the API proxy serves exactly the configurable-provider
@@ -23,7 +28,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /** Cordis plugin name. */
-export const name = 'dsh-advisor'
+export const name = 'dsh-ciel'
 
 /** Advisor persona: the ideas-only output contract for the child agent. */
 const ADVISOR_PERSONA =
@@ -1094,7 +1099,7 @@ export function apply(ctx, config) {
       const directory = lctx.llm.registerConfigurableProviders([
         {
           provider: 'advisor',
-          displayName: '顾问（规划前咨询）',
+          displayName: '夏尔 Ciel · 顾问（规划前咨询）',
           settingsNs: 'advisor',
           settingsPath: [],
         },

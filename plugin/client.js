@@ -1,4 +1,4 @@
-// dsh-advisor browser half: the Settings → Plugins → 插件配置 card editing the
+// dsh-ciel browser half: the Settings → Plugins → 插件配置 card editing the
 // `advisor` settings namespace owned by the host half. Self-contained by hand
 // (no bundler): the client module system wraps this file in a CJS factory and
 // the kernel adopts { apply, inject } as a client plugin.
@@ -11,7 +11,7 @@
 // uses, degrading to text inputs when the catalog is unreachable.
 
 window.__ModuleLoader__.load({
-  id: 'dsh-advisor',
+  id: 'dsh-ciel',
   factory: (require) => {
     const module = { exports: {} }
     const exports = module.exports
@@ -493,11 +493,11 @@ window.__ModuleLoader__.load({
           type: 'button',
           style: css.header,
           'aria-expanded': open,
-          'aria-label': `${open ? '收起' : '展开'}: 顾问`,
+          'aria-label': `${open ? '收起' : '展开'}: 夏尔 Ciel`,
           onClick: () => setOpen(!open),
         },
           h('span', { style: css.headText },
-            h('span', { style: css.name }, '顾问'),
+            h('span', { style: css.name }, '夏尔 Ciel'),
             h('span', { style: css.description }, '规划前咨询的第二模型：提供思路、领域知识与陷阱，不输出步骤。'),
           ),
           dirty ? h('span', { style: css.pending }, '未保存') : null,
