@@ -416,11 +416,19 @@ const CRITIC_PERSONA =
   'never plan or attempt tool calls; judge from the draft, the provided ' +
   'evidence, and your own knowledge. Your deliverable is your VISIBLE reply ' +
   'text — private reasoning without a visible answer is a failed review. ' +
-  'For every issue output one annotation in EXACTLY this Markdown shape, ' +
-  'with the fields on their own lines:\n\n' +
+  'Open your reply with the verdict header, then one annotation per issue, ' +
+  'each field on its own line:\n\n' +
+  '## verdict: pass\n' +
+  'summary: one-sentence overall judgment of the draft\n\n' +
   '### [blocker] short title\n' +
-  'anchor: a verbatim quote copied character-for-character from the draft\n' +
+  'block: b2\n' +
+  'anchor: a verbatim quote copied character-for-character from THAT block\n' +
   'comment: what is wrong or missing, and why it matters\n\n' +
+  'The verdict is "pass" when no blocker is found (nits allowed) and ' +
+  '"changes" when at least one blocker exists. The block field names the ' +
+  'draft block from the BLOCK MAP (provided with the draft) that carries ' +
+  'the issue; quote the anchor from inside that same block — omit the ' +
+  'anchor when the whole block is the issue, and never invent one.\n\n' +
   'Severity: [blocker] means acting on the draft without fixing this is ' +
   'likely to fail or cause real damage; [nit] means worth fixing but not ' +
   'blocking. Rules: at most 8 annotations — most good reviews need 1-4; ' +
@@ -481,8 +489,9 @@ const RUBRIC_ADDENDUM =
   'never as form-1 facts.'
 
 const CRITIC_PROMPT_SUFFIX =
-  '\n\nWrite the annotations now as your visible reply. You have no tools; ' +
-  'judge from the draft and the provided request/tool evidence.'
+  '\n\nWrite the verdict header and annotations now as your visible reply. ' +
+  'You have no tools; judge from the draft and the provided request/tool ' +
+  'evidence.'
 
 /** A codec that passes values through — both halves are first-party here. */
 const PASS_CODEC = { parse: (value) => value }
@@ -545,30 +554,53 @@ function anchorInDraft(anchor, draft) {
 }
 
 /** Parse the critic's visible answer into structured annotations. */
-function parseAnnotations(text, draft) {
+function parseAnnotations(text, draft, blocks) {
   const heads = []
   const re = /^### \[(blocker|nit)\][ \t]*(.*)$/gm
   let m
   while ((m = re.exec(text)) !== null) {
     heads.push({ severity: m[1], title: (m[2] || '').trim(), at: m.index, end: re.lastIndex })
   }
+  const blockIds = Array.isArray(blocks) ? new Set(blocks.map((b) => b.id)) : undefined
   const annotations = []
   for (let i = 0; i < heads.length; i += 1) {
     const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
     const anchorMatch = /(?:^|\n)[ \t]*anchor:[ \t]*(.*)/.exec(body)
+    const blockMatch = /(?:^|\n)[ \t]*block:[ \t]*(b\d+)[ \t]*(?:\n|$)/.exec(body)
     const commentMatch = /(?:^|\n)[ \t]*comment:[ \t]*([\s\S]*)/.exec(body)
     let anchor = anchorMatch ? anchorMatch[1].trim() : ''
     anchor = anchor.replace(/^["'`「『“‘]+|["'`」』”’]+$/g, '').trim()
     const comment = commentMatch ? commentMatch[1].trim() : body.trim()
+    // 契约 v2 块号：非法 id（幻觉/越界）一律落 undefined，消费方退回旧
+    // proximity 定位——锚定降级是常态，不是错误。
+    const block = blockMatch && blockIds !== undefined && blockIds.has(blockMatch[1])
+      ? blockMatch[1]
+      : undefined
     annotations.push({
       severity: heads[i].severity,
       title: heads[i].title.slice(0, 120),
       anchor: anchor.slice(0, 400),
       comment: comment.slice(0, 1200),
       matched: anchorInDraft(anchor, draft),
+      ...(block === undefined ? {} : { block }),
     })
   }
   return annotations.slice(0, 8)
+}
+
+/**
+ * 契约 v2（0.12.0）：verdict 头 + 块锚批注。无 verdict 头时 verdict 为
+ * undefined（旧回复/模型未遵守），调用方按旧形态渲染——结构是增强不是门槛，
+ * 与 parseAdvisorItems 同一纪律。
+ */
+function parseCriticReview(text, draft, blocks) {
+  const verdictMatch = /^## verdict:[ \t]*(pass|changes)[ \t]*$/m.exec(text)
+  const summaryMatch = /(?:^|\n)[ \t]*summary:[ \t]*(.*)/.exec(text)
+  return {
+    verdict: verdictMatch ? verdictMatch[1] : undefined,
+    summary: summaryMatch ? summaryMatch[1].trim().slice(0, 300) : '',
+    annotations: parseAnnotations(text, draft, blocks),
+  }
 }
 
 /**
@@ -965,6 +997,7 @@ class AdvisorReviewService extends TypertRemoteService {
       // inside the inner try threw ReferenceError at entry construction
       // (0.9.0 live bug: "targets is not defined").
       const targets = advisorTargets(events, target)
+      const draftBlocks = splitMarkdownBlocks(draft)
       try {
         const evidence = turnEvidence(events, target)
         let promptText = ''
@@ -979,7 +1012,9 @@ class AdvisorReviewService extends TypertRemoteService {
           }
           promptText += '\n'
         }
-        promptText += 'Draft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX
+        promptText += 'Draft block map (cite these ids in each annotation\'s `block:` field):\n'
+        for (const b of draftBlocks) promptText += b.id + ': ' + b.type + '\n'
+        promptText += '\nDraft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX
         run = await subagents.start('spawn', {
           label: 'critic',
           parent: agent,
@@ -1009,12 +1044,16 @@ class AdvisorReviewService extends TypertRemoteService {
         this.liveCriticChildren.delete(run.id)
         await run.dispose()
       }
-      const annotations = parseAnnotations(text, draft)
+      const parsed = parseCriticReview(text, draft, draftBlocks)
+      const annotations = parsed.annotations
       const sound = /^SOUND:/m.test(text)
+        || (parsed.verdict === 'pass' && annotations.length === 0)
       const entry = {
         reviewId, messageId, anchorSeq: target.seq,
         status: annotations.length > 0 ? 'completed' : sound ? 'sound' : 'completed-unparsed',
         sound,
+        ...(parsed.verdict === undefined ? {} : { verdict: parsed.verdict }),
+        ...(parsed.summary === '' ? {} : { summary: parsed.summary }),
         annotations,
         // ③深化：本次评审携带的顾问验证目标条数（0 = 无清单，基线行为）——
         // 评估回路的地面真值：回传数据可与清单有无交叉分析批注质量。
@@ -1136,6 +1175,7 @@ export {
   readReviews,
   persistReview,
   splitMarkdownBlocks,
+  parseCriticReview,
 }
 
 export function apply(ctx, config) {
