@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh-ciel · 评审体验 demo（预渲染）</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #1c2129; --border: #30363d;
+    --text: #e6edf3; --text2: #9da7b3; --text3: #6e7681;
+    --blocker: #f85149; --nit: #d29922; --ok: #3fb950; --accent: #58a6ff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.65 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; padding: 32px 20px 80px; }
+  .page { max-width: 860px; margin: 0 auto; }
+  .demo-note { color: var(--text3); font-size: 12px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .demo-note label { cursor: pointer; user-select: none; display: inline-flex; gap: 6px; align-items: center; }
+
+  /* ── 会话消息 ── */
+  .msg { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .msg-head { padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text3); font-size: 12px; display: flex; align-items: center; gap: 10px; }
+  .msg-head .who { color: var(--text2); font-weight: 600; }
+  .msg-body { padding: 16px; }
+
+  /* 块级容器 + gutter */
+  .blk { position: relative; padding-left: 26px; margin: 0 0 14px; border-radius: 6px; transition: background .2s, outline .2s; outline: 1px solid transparent; outline-offset: 2px; }
+  .blk:last-child { margin-bottom: 0; }
+  .blk h3 { font-size: 15px; margin-bottom: 6px; }
+  .blk p { color: var(--text); }
+  .blk code { font-family: var(--mono); font-size: 12.5px; background: var(--bg3); padding: 1px 5px; border-radius: 4px; }
+  .blk pre { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; overflow-x: auto; color: #c9d1d9; }
+  .blk ul { padding-left: 20px; }
+  .gutter { position: absolute; left: 2px; top: 3px; display: flex; flex-direction: column; gap: 4px; opacity: 0; transition: opacity .35s; }
+  .reviewed .gutter.has { opacity: 1; }
+  .gmark { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; line-height: 16px; text-align: center; cursor: pointer; font-family: var(--mono); border: 1px solid; }
+  .gmark.blocker { color: var(--blocker); border-color: var(--blocker); background: rgba(248,81,73,.12); }
+  .gmark.nit { color: var(--nit); border-color: var(--nit); background: rgba(210,153,34,.10); }
+  .blk.hl { background: rgba(88,166,255,.07); outline-color: rgba(88,166,255,.45); }
+  .blk.hl .gmark { box-shadow: 0 0 0 2px rgba(88,166,255,.35); }
+
+  /* 旧版红线模式 */
+  .legacy .gutter { display: none; }
+  .legacy u.dsr { text-decoration: none; border-bottom: 2px wavy; border-bottom-style: wavy; cursor: pointer; }
+  .legacy u.dsr.blocker { border-bottom-color: var(--blocker); }
+  .legacy u.dsr.nit { border-bottom-color: var(--nit); }
+  .legacy u.dsr::after { content: attr(data-sev); font: 9px var(--mono); vertical-align: super; margin-left: 2px; }
+  .legacy u.dsr.blocker::after { color: var(--blocker); content: "▲"; }
+  .legacy u.dsr.nit::after { color: var(--nit); content: "●"; }
+
+  /* 操作区 + 生命周期徽标 */
+  .actions { padding: 8px 16px 12px; display: flex; align-items: center; gap: 10px; }
+  .abtn { appearance: none; background: none; border: 1px solid var(--border); color: var(--text2); border-radius: 8px; padding: 4px 12px; font: inherit; font-size: 12.5px; cursor: pointer; transition: all .15s; }
+  .abtn:hover { border-color: var(--text3); color: var(--text); }
+  .abtn:disabled { opacity: .5; cursor: default; }
+  .status { font-size: 12px; color: var(--text3); display: none; align-items: center; gap: 6px; }
+  .status.show { display: inline-flex; }
+  .spin { width: 11px; height: 11px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .status.done { color: var(--nit); cursor: pointer; }
+  .status.done:hover { color: var(--text); }
+
+  /* ── 裁决卡 ── */
+  .verdict { display: none; margin-top: 12px; background: var(--bg2); border: 1px solid var(--border); border-left: 3px solid var(--nit); border-radius: 12px; overflow: hidden; animation: rise .35s ease; }
+  .verdict.show { display: block; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .v-head { padding: 12px 16px; display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+  .v-head:hover { background: rgba(255,255,255,.02); }
+  .v-caret { color: var(--text3); transition: transform .18s; font-size: 11px; }
+  .verdict.open .v-caret { transform: rotate(90deg); }
+  .v-badge { font-size: 13px; font-weight: 700; color: var(--nit); }
+  .v-badge.pass { color: var(--ok); }
+  .v-sum { color: var(--text2); font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .v-chips { display: flex; gap: 6px; flex: none; }
+  .chip { font: 600 11px var(--mono); padding: 1px 8px; border-radius: 999px; }
+  .chip.b { color: var(--blocker); background: rgba(248,81,73,.13); }
+  .chip.n { color: var(--nit); background: rgba(210,153,34,.13); }
+  .chip.ok { color: var(--ok); background: rgba(63,185,80,.13); }
+  .v-body { display: none; border-top: 1px solid var(--border); }
+  .verdict.open .v-body { display: block; }
+
+  .anno { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: flex-start; }
+  .anno:last-of-type { border-bottom: none; }
+  .anno.dismissed { opacity: .42; }
+  .anno .sev { flex: none; margin-top: 2px; font: 700 10px var(--mono); padding: 1px 7px; border-radius: 4px; border: 1px solid; }
+  .sev.blocker { color: var(--blocker); border-color: var(--blocker); }
+  .sev.nit { color: var(--nit); border-color: var(--nit); }
+  .anno .acontent { flex: 1; min-width: 0; }
+  .anno .atitle { font-weight: 600; font-size: 13px; margin-bottom: 3px; cursor: pointer; }
+  .anno .atitle:hover { color: var(--accent); }
+  .anno .ablock { color: var(--text3); font: 11px var(--mono); margin-bottom: 4px; }
+  .anno .acomment { color: var(--text2); font-size: 12.5px; }
+  .triage { flex: none; display: flex; flex-direction: column; gap: 4px; }
+  .tbtn { appearance: none; background: none; border: 1px solid var(--border); color: var(--text3); border-radius: 6px; padding: 1px 8px; font-size: 11px; cursor: pointer; }
+  .tbtn.on-accept { color: var(--ok); border-color: var(--ok); background: rgba(63,185,80,.1); }
+  .tbtn.on-dismiss { color: var(--text3); border-color: var(--text3); background: rgba(110,118,129,.12); }
+
+  .v-foot { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .filter { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .filter button { appearance: none; background: none; border: none; color: var(--text3); padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .filter button.on { background: var(--bg3); color: var(--text); }
+  .send { margin-left: auto; appearance: none; border: none; border-radius: 8px; padding: 5px 14px; font: inherit; font-size: 12.5px; cursor: pointer; background: var(--accent); color: #0d1117; font-weight: 600; }
+  .send:disabled { background: var(--bg3); color: var(--text3); cursor: default; }
+  .send-all { background: none; border: 1px solid var(--border); color: var(--text2); border-radius: 8px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .hint { color: var(--text3); font-size: 11.5px; }
+
+  /* popover */
+  .pop { position: absolute; z-index: 30; width: 300px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.5); padding: 12px 14px; display: none; }
+  .pop.show { display: block; animation: rise .2s ease; }
+  .pop .pt { font-weight: 600; font-size: 13px; margin: 4px 0 6px; }
+  .pop .pc { color: var(--text2); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="demo-note">
+    <span>dsh-ciel 评审体验 · 预渲染 demo（数据为虚构，交互可点）</span>
+    <label><input type="checkbox" id="legacyMode"> 对比：旧版红波浪线模式</label>
+  </div>
+
+  <!-- ── 助手消息 ── -->
+  <div class="msg" id="msg">
+    <div class="msg-head"><span class="who">助手</span><span>回复草稿</span></div>
+    <div class="msg-body" id="msgBody">
+      <div class="blk" data-blk="b1">
+        <div class="gutter"></div>
+        <h3>分组折叠的实现方案</h3>
+        <p>设置卡片可以按「描述符表 + 递归渲染」实现任意层级的分组折叠。每组一个 <code>group</code> 描述符，children 里再放字段或下一级 group。</p>
+      </div>
+      <div class="blk" data-blk="b2">
+        <div class="gutter"></div>
+        <pre>function renderField(def, depth) {
+  if (def.kind === 'group') {
+    const open = !closed[def.key]
+    return h('div', { onClick: toggle },
+      h('span', null, def.label),
+      open ? def.children.map(c => renderField(c, depth + 1)) : null)
+  }
+  // …route / effort / number / check
+}</pre>
+      </div>
+      <div class="blk" data-blk="b3">
+        <div class="gutter"></div>
+        <p>可访问性已经处理好：组头按钮加了 <code>aria-expanded</code>，键盘用户可以直接操作，屏幕阅读器也能正确播报分组状态。</p>
+      </div>
+      <div class="blk" data-blk="b4">
+        <div class="gutter"></div>
+        <p>折叠状态下组头会显示摘要，由描述符的 <code>summarize</code> 函数生成：</p>
+        <ul>
+          <li>顾问组显示 provider / model · 档位</li>
+          <li>参数组显示 tokens · 次/轮</li>
+          <li>批评者组显示完整路由</li>
+        </ul>
+      </div>
+      <div class="blk" data-blk="b5">
+        <div class="gutter"></div>
+        <p>全部 12 个字段的脏检查、保存、校验都改为遍历描述符表，测试已经覆盖，可以放心合并。</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="abtn" id="reviewBtn">批注评审</button>
+      <span class="status" id="status"></span>
+      <button class="abtn" style="margin-left:auto">回传</button>
+    </div>
+  </div>
+
+  <!-- ── 裁决卡 ── -->
+  <div class="verdict" id="verdict">
+    <div class="v-head" id="vHead">
+      <span class="v-caret">▶</span>
+      <span class="v-badge">⚠ 建议修改</span>
+      <span class="v-sum">键盘与读屏的关键路径存在阻断性问题；其余 2 条为改进建议。</span>
+      <span class="v-chips"><span class="chip b">2 blocker</span><span class="chip n">2 nit</span></span>
+    </div>
+    <div class="v-body" id="vBody"></div>
+    <div class="v-foot" id="vFoot" style="display:none">
+      <span class="filter">
+        <button class="on" data-f="all">全部</button><button data-f="blocker">只看 blocker</button>
+      </span>
+      <span class="hint" id="triageHint">默认全部采纳；点「忽略」剔除误报</span>
+      <button class="send-all" id="sendBlockers">仅回传 blocker</button>
+      <button class="send" id="sendBtn">回传 4 条批注给主模型</button>
+    </div>
+  </div>
+
+  <div class="pop" id="pop"></div>
+</div>
+
+<script>
+const ANNOS = [
+  { id: 1, sev: 'blocker', blk: 'b2',
+    title: '折叠卸载 DOM 会丢失键盘焦点',
+    comment: 'open=false 时 children 整体从渲染树卸载。若焦点正落在组内某个输入框，折叠瞬间焦点掉到 <body>，键盘用户被迫从头 Tab。应改为焦点陷阱或将焦点回收到组头按钮。',
+    quote: 'open ? def.children.map(c => renderField(c, depth + 1)) : null' },
+  { id: 2, sev: 'blocker', blk: 'b3',
+    title: '「可访问性已经处理好」与证据不符',
+    comment: '本轮工具活动只有文件读写，没有任何键盘/读屏验证；aria-expanded 只解决状态播报，没有处理焦点丢失（见上一条）。把未验证的结论写成已确认，用户会据此跳过人工检查。',
+    quote: '可访问性已经处理好' },
+  { id: 3, sev: 'nit', blk: 'b4',
+    title: '摘要缺少「未保存修改」的可见性',
+    comment: '闭组摘要只显示当前值；组内字段被改过但未保存时，外部看不到任何提示。建议在 summarize 输出上叠加脏状态标记。',
+    quote: '折叠状态下组头会显示摘要' },
+  { id: 4, sev: 'nit', blk: 'b5',
+    title: '「测试已经覆盖」缺验证目标',
+    comment: '「覆盖」指的是哪一层——渲染快照、脏检查分支还是保存序列化？建议附一个可检查的验证目标（如 node --test 的用例数），否则这条结论无法证伪。',
+    quote: '测试已经覆盖' },
+]
+
+const state = { reviewed: false, open: false, filter: 'all', triage: {}, anchorHl: null }
+for (const a of ANNOS) state.triage[a.id] = 'accept'
+
+const $ = (s) => document.querySelector(s)
+const msgBody = $('#msgBody')
+
+/* gutter badges + legacy underlines */
+function placeMarks() {
+  for (const a of ANNOS) {
+    const blk = msgBody.querySelector(`[data-blk="${a.blk}"]`)
+    const g = blk.querySelector('.gutter')
+    g.classList.add('has')
+    const mark = document.createElement('span')
+    mark.className = 'gmark ' + a.sev
+    mark.textContent = a.sev === 'blocker' ? '▲' : '●'
+    mark.title = a.title
+    mark.onclick = (e) => { e.stopPropagation(); showPop(a, blk) }
+    g.appendChild(mark)
+    // legacy inline underline on the quote
+    const text = blk.textContent
+    const idx = text.indexOf(a.quote)
+    if (idx >= 0) {
+      const walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT)
+      let node, acc = 0
+      while ((node = walker.nextNode())) {
+        const start = acc, end = acc + node.nodeValue.length
+        if (idx >= start && idx + a.quote.length <= end && node.nodeValue.includes(a.quote)) {
+          const r = document.createRange()
+          const off = node.nodeValue.indexOf(a.quote)
+          r.setStart(node, off); r.setEnd(node, off + a.quote.length)
+          const u = document.createElement('u')
+          u.className = 'dsr ' + a.sev
+          try { r.surroundContents(u) } catch {}
+          u.onclick = (e) => { e.stopPropagation(); showPop(a, blk) }
+          break
+        }
+        acc = end
+      }
+    }
+  }
+}
+
+/* popover */
+const pop = $('#pop')
+function showPop(a, blk) {
+  msgBody.querySelectorAll('.blk.hl').forEach(b => b.classList.remove('hl'))
+  blk.classList.add('hl')
+  state.anchorHl = a.id
+  renderAnnos()
+  pop.innerHTML = `<span class="sev ${a.sev}">${a.sev}</span><div class="pt">${a.title}</div><div class="pc">${a.comment}</div>`
+  pop.classList.add('show')
+  const msgRect = $('#msg').getBoundingClientRect()
+  const r = blk.getBoundingClientRect()
+  pop.style.top = (r.top - msgRect.top + window.scrollY - 4) + 'px'
+  pop.style.left = Math.min(r.right - msgRect.left - 320, msgRect.width - 320) + 'px'
+  pop.style.left = Math.max(8, r.right - msgRect.left - 316) + 'px'
+}
+document.addEventListener('click', (e) => {
+  if (!pop.contains(e.target)) { pop.classList.remove('show'); msgBody.querySelectorAll('.blk.hl').forEach(b => b.classList.remove('hl')) }
+})
+
+/* verdict card */
+function renderAnnos() {
+  const body = $('#vBody')
+  body.innerHTML = ''
+  for (const a of ANNOS) {
+    if (state.filter === 'blocker' && a.sev !== 'blocker') continue
+    const row = document.createElement('div')
+    row.className = 'anno' + (state.triage[a.id] === 'dismiss' ? ' dismissed' : '') + (state.anchorHl === a.id ? '' : '')
+    row.innerHTML = `
+      <span class="sev ${a.sev}">${a.sev}</span>
+      <div class="acontent">
+        <div class="atitle">${a.title}</div>
+        <div class="ablock">⌖ ${a.blk} · “${a.quote.slice(0, 26)}${a.quote.length > 26 ? '…' : ''}”</div>
+        <div class="acomment">${a.comment}</div>
+      </div>
+      <div class="triage">
+        <button class="tbtn ${state.triage[a.id] === 'accept' ? 'on-accept' : ''}" data-t="accept">采纳</button>
+        <button class="tbtn ${state.triage[a.id] === 'dismiss' ? 'on-dismiss' : ''}" data-t="dismiss">忽略</button>
+      </div>`
+    row.querySelector('.atitle').onclick = () => showPop(a, msgBody.querySelector(`[data-blk="${a.blk}"]`))
+    row.querySelectorAll('.tbtn').forEach(btn => btn.onclick = () => { state.triage[a.id] = btn.dataset.t; renderAnnos() })
+    body.appendChild(row)
+  }
+  const accepted = ANNOS.filter(a => state.triage[a.id] === 'accept')
+  const send = $('#sendBtn')
+  send.textContent = `回传 ${accepted.length} 条批注给主模型`
+  send.disabled = accepted.length === 0
+  $('#triageHint').textContent = accepted.length === ANNOS.length
+    ? '默认全部采纳；点「忽略」剔除误报'
+    : `已采纳 ${accepted.length}/${ANNOS.length}，忽略的意见不会注入主模型上下文`
+}
+
+$('#vHead').onclick = () => {
+  state.open = !state.open
+  $('#verdict').classList.toggle('open', state.open)
+  $('#vFoot').style.display = state.open ? 'flex' : 'none'
+}
+document.querySelectorAll('.filter button').forEach(b => b.onclick = (e) => {
+  e.stopPropagation()
+  document.querySelectorAll('.filter button').forEach(x => x.classList.remove('on'))
+  b.classList.add('on'); state.filter = b.dataset.f; renderAnnos()
+})
+$('#sendBlockers').onclick = () => {
+  for (const a of ANNOS) state.triage[a.id] = a.sev === 'blocker' ? 'accept' : 'dismiss'
+  state.open = true; $('#verdict').classList.add('open'); $('#vFoot').style.display = 'flex'
+  renderAnnos()
+}
+
+/* lifecycle */
+$('#reviewBtn').onclick = () => {
+  if (state.reviewed) return
+  $('#reviewBtn').disabled = true
+  const st = $('#status')
+  st.className = 'status show'
+  st.innerHTML = '<span class="spin"></span>评审中（critic 子代理）…'
+  setTimeout(() => {
+    state.reviewed = true
+    msgBody.classList.add('reviewed')
+    placeMarks()
+    st.className = 'status show done'
+    st.textContent = '⚠ 4 条批注（2 blocker · 2 nit）'
+    st.onclick = () => { $('#verdict').classList.add('show', 'open'); state.open = true; $('#vFoot').style.display = 'flex'; $('#verdict').scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }
+    $('#verdict').classList.add('show', 'open'); state.open = true; $('#vFoot').style.display = 'flex'
+    $('#reviewBtn').textContent = '重新评审'
+    $('#reviewBtn').disabled = false
+    renderAnnos()
+  }, 1800)
+}
+
+$('#legacyMode').onchange = (e) => {
+  document.body.classList.toggle('legacy', e.target.checked)
+  $('#verdict').style.display = e.target.checked ? 'none' : ''
+}
+</script>
+</body>
+</html>
