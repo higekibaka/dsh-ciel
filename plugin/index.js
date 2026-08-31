@@ -578,6 +578,86 @@ function parseAnnotations(text, draft) {
  * and the caller simply gets the raw text (structure is an enhancement,
  * never a gate — M3-②'s core discipline).
  */
+/**
+ * 0.12.0 ①块切分：把 markdown 草稿切成顶层块（b1..bN），供批评者输入的
+ * 块地图与浏览器的 gutter 渲染共用同一序号空间。host 与 client 各内嵌一份
+ * 相同实现（两端无共享打包通道），一致性由 test/blocks.fixtures.js 的共享
+ * 夹具锁定——改一端不改另一端会红测试。
+ *
+ * 规则（行级扫描，宁简勿繁）：
+ *   - 围栏代码（```/~~~，长围栏吞短围栏）自成一块；
+ *   - ATX 标题、水平线自成一块；
+ *   - 连续表格行 / 引用行（含懒惰续行）各成一块；
+ *   - 列表含松散项（空行后仍是列表内容）仍为一块；
+ *   - 其余非空行聚成段落块；空行只是边界，不进任何块。
+ * 渲染 DOM 与切分序号的错位风险由消费方兜底（块定位失败退回旧 proximity）。
+ */
+function splitMarkdownBlocks(text) {
+  const lines = String(text).split('\n')
+  const blocks = []
+  const isBlank = (l) => /^\s*$/.test(l)
+  const isHeading = (l) => /^#{1,6}\s/.test(l)
+  const fenceMark = (l) => {
+    const m = /^(\s*)(`{3,}|~{3,})/.exec(l)
+    return m ? { ch: m[2][0], len: m[2].length } : null
+  }
+  const isTable = (l) => /^\s*\|/.test(l)
+  const isQuote = (l) => /^\s*>/.test(l)
+  const isListItem = (l) => /^\s*(?:[-*+]|\d{1,9}[.)])\s/.test(l)
+  const isHr = (l) => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(l)
+  const push = (type, start, end) => {
+    const body = lines.slice(start, end).join('\n')
+    if (body.trim() === '') return
+    blocks.push({ id: 'b' + (blocks.length + 1), type, text: body })
+  }
+  let i = 0
+  while (i < lines.length) {
+    if (isBlank(lines[i])) { i += 1; continue }
+    const start = i
+    const fence = fenceMark(lines[i])
+    if (fence) {
+      i += 1
+      while (i < lines.length) {
+        const m = fenceMark(lines[i])
+        if (m && m.ch === fence.ch && m.len >= fence.len) { i += 1; break }
+        i += 1
+      }
+      push('code', start, i)
+      continue
+    }
+    if (isHeading(lines[i])) { push('heading', start, start + 1); i += 1; continue }
+    if (isHr(lines[i])) { push('hr', start, start + 1); i += 1; continue }
+    if (isTable(lines[i])) {
+      i += 1
+      while (i < lines.length && isTable(lines[i])) i += 1
+      push('table', start, i)
+      continue
+    }
+    if (isQuote(lines[i])) {
+      i += 1
+      while (i < lines.length && (isQuote(lines[i]) || (!isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i])))) i += 1
+      push('quote', start, i)
+      continue
+    }
+    if (isListItem(lines[i])) {
+      i += 1
+      for (;;) {
+        while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isHr(lines[i])) i += 1
+        let j = i
+        while (j < lines.length && isBlank(lines[j])) j += 1
+        if (j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
+        break
+      }
+      push('list', start, i)
+      continue
+    }
+    i += 1
+    while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isQuote(lines[i]) && !isListItem(lines[i]) && !isHr(lines[i])) i += 1
+    push('paragraph', start, i)
+  }
+  return blocks
+}
+
 function parseAdvisorItems(text) {
   const heads = []
   const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm
@@ -1055,6 +1135,7 @@ export {
   reviewsPath,
   readReviews,
   persistReview,
+  splitMarkdownBlocks,
 }
 
 export function apply(ctx, config) {
