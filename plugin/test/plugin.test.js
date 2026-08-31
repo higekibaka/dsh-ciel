@@ -20,6 +20,8 @@ const {
   persistReview,
   migrateLegacyAdvisorSettings,
   settingsUserSection,
+  splitMarkdownBlocks,
+  parseCriticReview,
 } = await import('../index.js')
 
 // ── Config schema ────────────────────────────────────────────────────────
@@ -232,6 +234,59 @@ test('settingsUserSection tolerates namespaces missing from describe', () => {
   const settings = fakeSettings({ advisor: { a: 1 }, ciel: undefined })
   settings.register('ciel')
   assert.deepEqual(settingsUserSection(settings, 'advisor'), {})
+})
+
+// ── parseCriticReview（契约 v2） ─────────────────────────────────────────
+
+const CRITIC_DRAFT = '## 方案\n正文第一段。\n```js\nconst a = 1\n```\n结尾段。'
+const CRITIC_BLOCKS = splitMarkdownBlocks(CRITIC_DRAFT)
+
+const V2_REPLY = [
+  '## verdict: changes',
+  'summary: 键盘路径存在阻断性问题，其余可放行。',
+  '',
+  '### [blocker] 焦点丢失',
+  'block: b3',
+  'anchor: const a = 1',
+  'comment: 折叠卸载 DOM 时焦点掉到 body。',
+  '',
+  '### [nit] 摘要缺脏状态',
+  'block: b2',
+  'comment: 闭组看不到未保存修改。',
+].join('\n')
+
+test('parseCriticReview parses the v2 verdict header and block anchors', () => {
+  const { verdict, summary, annotations } = parseCriticReview(V2_REPLY, CRITIC_DRAFT, CRITIC_BLOCKS)
+  assert.equal(verdict, 'changes')
+  assert.equal(summary, '键盘路径存在阻断性问题，其余可放行。')
+  assert.equal(annotations.length, 2)
+  assert.equal(annotations[0].block, 'b3')
+  assert.equal(annotations[0].anchor, 'const a = 1')
+  assert.equal(annotations[0].matched, true)
+  assert.equal(annotations[1].block, 'b2')
+  assert.equal(annotations[1].anchor, '')
+})
+
+test('parseCriticReview drops hallucinated block ids', () => {
+  const text = V2_REPLY.replace('block: b3', 'block: b99')
+  const { annotations } = parseCriticReview(text, CRITIC_DRAFT, CRITIC_BLOCKS)
+  assert.equal(annotations[0].block, undefined)
+  assert.equal(annotations[1].block, 'b2')
+})
+
+test('parseCriticReview degrades to legacy when the verdict header is absent', () => {
+  const legacy = '### [nit] 只给意见不写头\ncomment: 旧形态。'
+  const { verdict, summary, annotations } = parseCriticReview(legacy, CRITIC_DRAFT, CRITIC_BLOCKS)
+  assert.equal(verdict, undefined)
+  assert.equal(summary, '')
+  assert.equal(annotations.length, 1)
+  assert.equal(annotations[0].block, undefined)
+})
+
+test('parseCriticReview reads pass verdicts with zero annotations', () => {
+  const { verdict, annotations } = parseCriticReview('## verdict: pass\nsummary: 没发现问题。', CRITIC_DRAFT, CRITIC_BLOCKS)
+  assert.equal(verdict, 'pass')
+  assert.equal(annotations.length, 0)
 })
 
 process.on('exit', () => {
