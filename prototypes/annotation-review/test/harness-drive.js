@@ -3,16 +3,16 @@
 const puppeteer = require(process.env.HOME + '/.dsh/profiles/web/node_modules/puppeteer-core')
 
 ;(async () => {
-  const browser = await puppeteer.launch({ executablePath: '/home/hgk/.local/bin/dsh-chrome', args: ['--no-sandbox'] })
+  const browser = await puppeteer.launch({ executablePath: process.env.DSH_CHROME || 'chrome', args: ['--no-sandbox'] })
   const page = await browser.newPage()
   await page.setViewport({ width: 1000, height: 1200 })
   page.on('console', (m) => console.log('[page]', m.type(), m.text().slice(0, 200)))
   page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 400)))
-  await page.goto('file:///home/hgk/123/test/harness.html')
+  await page.goto('file://<repo>/test/harness.html')
   await page.evaluate(() => new Promise((r) => setTimeout(r, 300)))
   const result = await page.evaluate(() => window.__run())
   console.log(JSON.stringify(result, null, 1))
-  await page.screenshot({ path: '/home/hgk/123/test/harness-1.png', fullPage: true })
+  await page.screenshot({ path: '<repo>/test/harness-1.png', fullPage: true })
   await browser.close()
 
   const EXPECT = {

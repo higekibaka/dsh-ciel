@@ -2,8 +2,8 @@
 // a shared duplicate phrase) + extracted engine + scenario hooks.
 const { readFileSync, writeFileSync } = require('fs')
 
-const fixture = readFileSync('/home/hgk/123/test/fixture-chat.html', 'utf8')
-const engine = readFileSync('/home/hgk/123/test/engine.js', 'utf8')
+const fixture = readFileSync('<repo>/test/fixture-chat.html', 'utf8')
+const engine = readFileSync('<repo>/test/engine.js', 'utf8')
 
 const styles = [
   '.dsr-btn{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;opacity:.65;cursor:pointer}',
@@ -139,5 +139,5 @@ window.__run = function () {
 </script>
 </body></html>`
 
-writeFileSync('/home/hgk/123/test/harness.html', html)
+writeFileSync('<repo>/test/harness.html', html)
 console.log('harness built:', html.length, 'chars')
