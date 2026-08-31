@@ -792,37 +792,32 @@ window.__ModuleLoader__.load({
       '.adv-head:hover{background:rgba(127.5,127.5,127.5,.12)}',
       '.adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}',
       '.adv-head-icon{flex:none;font-size:13px}',
-      '.adv-head-title{font-weight:600;font-size:13px}',
-      '.adv-dots{display:inline-flex;gap:4px;align-items:center;margin-left:2px}',
-      '.adv-dot{width:7px;height:7px;border-radius:50%}',
-      '.adv-dot-high{background:#3fb950}',
-      '.adv-dot-mid{background:#d29922}',
-      '.adv-dot-low{background:#6e7681}',
-      '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace}',
-      '.adv-head-issues{font-size:11px;color:#d29922;font-family:ui-monospace,monospace}',
-      '.adv-body{padding:10px 14px 12px}',
-      '.adv-q{margin:0 0 10px;padding:6px 10px;border-left:2px solid rgba(130,130,130,.45);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
-      '.adv-item{position:relative;padding:8px 0 8px 12px;border-top:1px solid rgba(130,130,130,.12)}',
-      '.adv-item:first-of-type{border-top:none;padding-top:2px}',
-      '.adv-item::before{content:"";position:absolute;left:0;top:10px;bottom:8px;width:2.5px;border-radius:2px}',
-      '.adv-item:first-of-type::before{top:4px}',
-      '.adv-item.t-high::before{background:#3fb950}',
-      '.adv-item.t-mid::before{background:#d29922}',
-      '.adv-item.t-low::before{background:#6e7681}',
-      '.adv-item-head{display:flex;gap:8px;align-items:center;margin-bottom:5px}',
-      '.adv-badge{flex:none;font-size:10px;font-family:ui-monospace,monospace;line-height:16px;padding:0 7px;border-radius:999px;font-weight:600}',
-      '.adv-badge-high{color:#3fb950;background:rgba(63,185,80,.13)}',
-      '.adv-badge-mid{color:#d29922;background:rgba(210,153,34,.13)}',
-      '.adv-badge-low{color:#8b949e;background:rgba(139,148,158,.16)}',
-      '.adv-item-title{font-weight:600;font-size:13.5px}',
-      '.adv-field{margin:5px 0;white-space:pre-wrap;word-break:break-word}',
-      '.adv-flabel{display:inline-block;font-size:10.5px;font-family:ui-monospace,monospace;margin-right:7px;padding:0 5px;border-radius:3px;background:rgba(130,130,130,.14);opacity:.8;vertical-align:1px}',
-      '.adv-field-pitfalls .adv-flabel{color:#d29922;background:rgba(210,153,34,.12);opacity:1}',
-      '.adv-field-vtarget .adv-flabel{color:#3fb950;background:rgba(63,185,80,.12);opacity:1}',
-      '.adv-field-vtarget{font-size:12.5px}',
+      '.adv-head-title{font-weight:600;font-size:13px;white-space:nowrap;flex:none}',
+      '.adv-chips{display:inline-flex;gap:6px;align-items:center;margin-left:2px;flex:none}',
+      '.adv-chip{font-size:10.5px;font-family:ui-monospace,monospace;font-weight:600;line-height:16px;padding:0 8px;border-radius:999px}',
+      '.adv-chip-high{color:#3fb950;background:rgba(63,185,80,.13)}',
+      '.adv-chip-mid{color:#d29922;background:rgba(210,153,34,.13)}',
+      '.adv-chip-low{color:#8b949e;background:rgba(139,148,158,.16)}',
+      '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}',
+      '.adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+      '.adv-head-issues{font-size:11px;color:#d29922;font-family:ui-monospace,monospace;flex:none}',
+      '.adv-body{padding:4px 14px 12px}',
+      '.adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid rgba(130,130,130,.45);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
+      '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid rgba(130,130,130,.14)}',
+      '.adv-item:first-of-type{border-top:none}',
+      '.adv-badge{flex:none;margin-top:2px;font-size:10px;font-family:ui-monospace,monospace;font-weight:700;line-height:15px;padding:0 6px;border-radius:4px;border:1px solid}',
+      '.adv-badge-high{color:#3fb950;border-color:#3fb950}',
+      '.adv-badge-mid{color:#d29922;border-color:#d29922}',
+      '.adv-badge-low{color:#8b949e;border-color:#8b949e}',
+      '.adv-item-content{flex:1;min-width:0}',
+      '.adv-item-title{font-weight:600;font-size:13.5px;margin-bottom:6px}',
+      '.adv-frow{display:flex;gap:8px;margin-bottom:5px;font-size:12.5px}',
+      '.adv-frow:last-child{margin-bottom:0}',
+      '.adv-flabel{flex:none;width:56px;font-size:11.5px;opacity:.6;padding-top:1px}',
+      '.adv-fval{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;opacity:.88}',
       '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:#d29922;border:1px solid rgba(210,153,34,.35);border-radius:8px;background:rgba(210,153,34,.06)}',
-      '.adv-raw{white-space:pre-wrap;word-break:break-word;opacity:.92;font-size:12.5px}',
-      '.adv-err{color:#f85149;font-size:12.5px;white-space:pre-wrap;word-break:break-word}',
+      '.adv-raw{white-space:pre-wrap;word-break:break-word;opacity:.92;font-size:12.5px;padding-top:8px}',
+      '.adv-err{color:#f85149;font-size:12.5px;white-space:pre-wrap;word-break:break-word;padding-top:8px}',
       '.adv-ctx{margin-top:10px;font-size:12px;opacity:.7}',
       '.adv-ctx summary{cursor:pointer;opacity:.8}',
       '.adv-ctx-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-style:normal}',
@@ -853,27 +848,36 @@ window.__ModuleLoader__.load({
 
     const ADV_TIERS = ['high', 'mid', 'low']
 
+    /** Tier-count chips for the card head: one pill per present tier. */
+    function advTierChips(items) {
+      const counts = { high: 0, mid: 0, low: 0 }
+      for (const it of items) {
+        if (Object.prototype.hasOwnProperty.call(counts, it.tier)) counts[it.tier] += 1
+      }
+      const chips = []
+      for (const t of ADV_TIERS) {
+        if (counts[t] > 0) chips.push(h('span', { key: t, className: 'adv-chip adv-chip-' + t }, counts[t] + ' ' + t))
+      }
+      return chips.length > 0 ? h('span', { className: 'adv-chips' }, chips) : null
+    }
+
+    /** One labeled field row inside an advisor item. */
+    function AdvField({ label, value }) {
+      if (!value) return null
+      return h('div', { className: 'adv-frow' },
+        h('span', { className: 'adv-flabel' }, label),
+        h('span', { className: 'adv-fval' }, String(value)))
+    }
+
     function AdvisorItem({ item }) {
       const tier = ADV_TIERS.includes(item.tier) ? item.tier : 'low'
-      return h('div', { className: 'adv-item t-' + tier },
-        h('div', { className: 'adv-item-head' },
-          h('span', { className: 'adv-badge adv-badge-' + tier }, tier),
-          h('span', { className: 'adv-item-title' }, String(item.title || '（无标题）'))),
-        item.framing
-          ? h('div', { className: 'adv-field' },
-              h('span', { className: 'adv-flabel' }, '思路'),
-              String(item.framing))
-          : null,
-        item.pitfalls
-          ? h('div', { className: 'adv-field adv-field-pitfalls' },
-              h('span', { className: 'adv-flabel' }, '陷阱'),
-              String(item.pitfalls))
-          : null,
-        item.verificationTarget
-          ? h('div', { className: 'adv-field adv-field-vtarget' },
-              h('span', { className: 'adv-flabel' }, '验证目标'),
-              String(item.verificationTarget))
-          : null)
+      return h('div', { className: 'adv-item' },
+        h('span', { className: 'adv-badge adv-badge-' + tier }, tier),
+        h('div', { className: 'adv-item-content' },
+          h('div', { className: 'adv-item-title' }, String(item.title || '（无标题）')),
+          h(AdvField, { label: '思路', value: item.framing }),
+          h(AdvField, { label: '陷阱', value: item.pitfalls }),
+          h(AdvField, { label: '验证目标', value: item.verificationTarget })))
     }
 
     /** The ask_advisor keyed tool view (tool.call.toolview, key 'ask_advisor'). */
@@ -906,13 +910,7 @@ window.__ModuleLoader__.load({
 
       const isError = block.isError === true
       const body = advBodyText(block.content)
-      // Tier 计数点：每个实心点代表一条对应 tier 的建议。
-      const dots = []
-      for (const t of ADV_TIERS) {
-        for (const it of items) {
-          if (it.tier === t) dots.push(h('span', { key: t + dots.length, className: 'adv-dot adv-dot-' + t }))
-        }
-      }
+      const chips = advTierChips(items)
       // 耗时：settled 节点同时带 callTime 与 time。
       const duration = typeof block.callTime === 'number' && typeof block.time === 'number' && block.time >= block.callTime
         ? Math.round((block.time - block.callTime) / 1000) + 's'
@@ -932,9 +930,10 @@ window.__ModuleLoader__.load({
           h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
           h('span', { className: 'adv-head-icon' }, '💡'),
           h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
-          dots.length > 0 ? h('span', { className: 'adv-dots' }, dots) : null,
+          chips,
           issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
-          duration !== '' ? h('span', { className: 'adv-head-note' }, duration) : null),
+          duration !== '' ? h('span', { className: 'adv-head-note', style: { marginLeft: 0 } }, duration) : null,
+          question !== '' ? h('span', { className: 'adv-head-q' }, clipAdv(question, 80)) : null),
         open
           ? h('div', { className: 'adv-body' },
               question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
@@ -1014,12 +1013,7 @@ window.__ModuleLoader__.load({
       const items = parsed.items
       const issues = parsed.issues
 
-      const dots = []
-      for (const t of ADV_TIERS) {
-        for (const it of items) {
-          if (it.tier === t) dots.push(h('span', { key: t + dots.length, className: 'adv-dot adv-dot-' + t }))
-        }
-      }
+      const chips = advTierChips(items)
       const headText = isError
         ? '顾问咨询失败'
         : items.length > 0
@@ -1035,9 +1029,10 @@ window.__ModuleLoader__.load({
           h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
           h('span', { className: 'adv-head-icon' }, '💡'),
           h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
-          dots.length > 0 ? h('span', { className: 'adv-dots' }, dots) : null,
+          chips,
           issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
-          h('span', { className: 'adv-head-note' }, '/advise 人类触发')),
+          h('span', { className: 'adv-head-note' }, '/advise 人类触发'),
+          question !== '' ? h('span', { className: 'adv-head-q', style: { marginLeft: 0 } }, clipAdv(question, 60)) : null),
         open
           ? h('div', { className: 'adv-body' },
               question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
