@@ -1,22 +1,23 @@
 // dsh-ciel host half: a pre-planning advisor for DeepSeek Harness agents.
-// (0.11.0 起由 dsh-advisor 更名为 dsh-ciel——大贤者夏尔；settings 命名空间
-//  `advisor`、sidecar 目录 $DSH_HOME/dsh-advisor/、typert 契约 id 均为配置
-//  与数据连续性保留旧名，仅身份面改名。)
+// (0.11.0 起由 dsh-advisor 更名为 dsh-ciel——大贤者夏尔；settings 命名空间同版
+//  迁移 `advisor` → `ciel`（旧节自动迁入，为 omdsh-dev/dsh-advisor 让名），
+//  sidecar 目录 $DSH_HOME/dsh-advisor/、消息标签 [advisor:*]、typert 契约 id
+//  均为数据连续性保留旧名。)
 //
 // What this plugin contributes, all at the host layer:
 //   1. the `ask_advisor` tool — one synchronous consultation with a second,
 //      knowledge-rich model that returns ideas and knowledge, never steps;
 //   2. the `advisor:guidance` prompt section — the consultation protocol
 //      (when to call, explore-first ordering, bounded follow-ups);
-//   3. the `advisor` settings namespace — edited from Settings → Plugins →
+//   3. the `ciel` settings namespace — edited from Settings → Plugins →
 //      dsh-ciel, hot-applied to every later consultation without restart;
 //   4. the `/advise` human command — auto-assembled context, card render,
 //      steer re-injection (0.10.0).
 //
-// The settings namespace reaches the browser through the model-provider
-// exposure path: the API proxy serves exactly the configurable-provider
-// namespaces, so this plugin registers a dormant `advisor` directory entry
-// whose settingsNs is this namespace (the same seam dsh-vision-router uses).
+// Every registered settings namespace is served to configuration pages, so
+// the browser card pairs with `ciel` directly; the dormant `ciel` directory
+// entry below exists only for Models-page presence (the same seam
+// dsh-vision-router uses).
 
 import Schema from '@deepseek-ai/schemastery'
 // Resolved through the shared profiles node_modules fallback (the app's own
@@ -121,7 +122,7 @@ export const Config = Schema.object({
     .description('批评者模型 id'),
   criticEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     .default('medium')
-    .description('批评者思考深度：注入评审子代理的每个请求；gemini-3.7-flash 仅支持 low/medium/high（minimal 报错），文档默认 medium'),
+    .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.7-flash 仅支持 low/medium/high）'),
 })
 
 /**
@@ -1015,23 +1016,92 @@ class AdvisorReviewService extends TypertRemoteService {
   }
 }
 
+// ── legacy namespace migration (0.11.0). Pure seam, unit-tested with fakes:
+// given the settings service and the live `ciel` scope, read the pre-rename
+// `advisor` raw user section through a temporary registration (owned by a
+// throwaway fiber, see apply) and copy its overrides into `ciel` — but only
+// while `ciel` carries no user section of its own. Returns true when a copy
+// happened. The legacy settings.yaml section is deliberately LEFT in place:
+// a downgrade (or the omdsh-dev plugin the name was cleared for) can still
+// read it, and a failed copy loses nothing by construction.
+function settingsUserSection(settings, ns) {
+  const descriptor = settings.describe().find((d) => String(d.ns) === ns)
+  return descriptor && descriptor.user && typeof descriptor.user === 'object'
+    ? descriptor.user
+    : {}
+}
+
+async function migrateLegacyAdvisorSettings(settings, cielScope) {  try {
+    settings.register('advisor', Config)
+  } catch {
+    // Another plugin owns `advisor` (or the stored section is malformed
+    // beyond schema repair) — nothing here is ours to move.
+    return false
+  }
+  const legacyUser = settingsUserSection(settings, 'advisor')
+  const cielUser = settingsUserSection(settings, 'ciel')
+  if (Object.keys(legacyUser).length === 0 || Object.keys(cielUser).length > 0) return false
+  await cielScope.update(legacyUser)
+  return true
+}
+
+// Named exports for the unit tests (the loader only consumes apply/inject).
+export {
+  migrateLegacyAdvisorSettings,
+  settingsUserSection,
+  parseAdvisorItems,
+  advisorTargets,
+  userText,
+  reviewsPath,
+  readReviews,
+  persistReview,
+}
+
 export function apply(ctx, config) {
-  // ── settings seam: the resolved `advisor` section (schema defaults over the
+  // ── settings seam: the resolved `ciel` section (schema defaults over the
   // composition entry over the user document) feeds every later consultation.
+  // (0.11.0 renamed the namespace `advisor` → `ciel` to clear the collision
+  // with omdsh-dev/dsh-advisor; the legacy section is migrated below.)
   // Wired through ctx.inject so the plugin still activates when the settings
   // service is absent (the composition config then stands alone).
   let current = () => config
   let resyncGuidance = () => {}
   ctx.inject(['settings'], (sctx) => {
-    const scope = sctx.settings.register('advisor', Config, { base: config })
+    const scope = sctx.settings.register('ciel', Config, { base: config })
     current = () => scope.get()
     sctx.effect(
       () => () => {
         current = () => config
       },
-      'dsh-advisor: settings fallback',
+      'dsh-ciel: settings fallback',
     )
     scope.watch(() => resyncGuidance())
+
+    // ── legacy migration: the temporary `advisor` registration is owned by
+    // this throwaway fiber, so disposing it after the copy attempt frees the
+    // name again for omdsh-dev/dsh-advisor. Self-dispose always fires one
+    // microtask later, after sctx.plugin() has returned the fiber.
+    let migrationFiber = null
+    migrationFiber = sctx.plugin({
+      name: 'dsh-ciel: legacy advisor settings migration',
+      inject: ['settings'],
+      apply(mctx) {
+        const finish = () => {
+          const fiber = migrationFiber
+          if (fiber !== null) void fiber.dispose()
+        }
+        void migrateLegacyAdvisorSettings(mctx.settings, scope)
+          .then((moved) => {
+            if (moved) mctx.logger?.info?.('dsh-ciel: migrated legacy advisor settings into the ciel namespace')
+          }, (error) => {
+            mctx.logger?.warn?.(
+              'dsh-ciel: legacy advisor settings migration skipped: %s',
+              error && error.message ? error.message : String(error),
+            )
+          })
+          .then(finish, finish)
+      },
+    })
   })
 
   // ── guidance prompt section, gated by the guidanceEnabled setting. Host-layer
@@ -1089,25 +1159,26 @@ export function apply(ctx, config) {
     })
   })
 
-  // ── namespace exposure: the API proxy serves settings describe/mutate only
-  // for configurable-provider namespaces (plus a fixed product allowlist), so
-  // the Web card finds `advisor` through this dormant directory entry. The llm
-  // service is a sibling row whose registration order is not ours to know, so
-  // this waits for it through ctx.inject instead of reading it eagerly.
+  // ── Models-page presence: one dormant directory entry so the deployment's
+  // provider directory lists the advisor route beside the real providers
+  // (settings namespaces themselves need no such help since every registered
+  // namespace is served to configuration pages). The llm service is a sibling
+  // row whose registration order is not ours to know, so this waits for it
+  // through ctx.inject instead of reading it eagerly.
   ctx.inject(['llm'], (lctx) => {
     try {
       const directory = lctx.llm.registerConfigurableProviders([
         {
-          provider: 'advisor',
+          provider: 'ciel',
           displayName: '夏尔 Ciel · 顾问（规划前咨询）',
-          settingsNs: 'advisor',
+          settingsNs: 'ciel',
           settingsPath: [],
         },
       ])
-      lctx.effect(() => directory, 'dsh-advisor: configurable provider directory')
+      lctx.effect(() => directory, 'dsh-ciel: configurable provider directory')
     } catch (error) {
       ctx.logger?.warn(
-        'dsh-advisor: configurable provider registration failed: %s',
+        'dsh-ciel: configurable provider registration failed: %s',
         error && error.message ? error.message : String(error),
       )
     }

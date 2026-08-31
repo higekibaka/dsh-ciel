@@ -1,5 +1,6 @@
 // dsh-ciel browser half: the Settings → Plugins → 插件配置 card editing the
-// `advisor` settings namespace owned by the host half. Self-contained by hand
+// `ciel` settings namespace owned by the host half (renamed from `advisor`
+// in 0.11.0; the host migrates legacy sections on boot). Self-contained by hand
 // (no bundler): the client module system wraps this file in a CJS factory and
 // the kernel adopts { apply, inject } as a client plugin.
 //
@@ -7,8 +8,10 @@
 // dsh-client-ui-settings-plugins): collapsed by default, name-over-description
 // header, staged drafts with one save point, per-field override badge and
 // reset, and a save that writes through the revision-fenced settings scope.
-// Provider/model are dropdowns fed by the same catalog RPC the Models page
-// uses, degrading to text inputs when the catalog is unreachable.
+// Provider/model are dropdowns fed by the `session.modelCatalog` Remote (the
+// same source the shipped Subagent card uses; it replaced the removed
+// `connection.api.llm.models` RPC), degrading to text inputs when the
+// catalog is unreachable.
 
 window.__ModuleLoader__.load({
   id: 'dsh-ciel',
@@ -22,8 +25,11 @@ window.__ModuleLoader__.load({
 
     /** Bound in apply() before the card registers. */
     let scope = null
-    /** Lazy connection reader: a hard inject would park the card's registration. */
-    let getConnection = () => undefined
+    /** Lazy remote readers: a hard inject would park the card's registration. */
+    let getSessionRemote = () => undefined
+    let getRemote = () => undefined
+    /** Client cordis event subscription, bound in apply(). */
+    let clientOn = null
 
     /** Mirror of the host schema defaults — what a reset stages. */
     const DEFAULTS = {
@@ -40,7 +46,6 @@ window.__ModuleLoader__.load({
       criticModel: 'gemini-3.7-flash',
       criticEffort: 'medium',
     }
-    const FIELD_KEYS = ['provider', 'model', 'maxTokens', 'maxCallsPerTurn', 'requireExploration', 'enforceFollowupGap', 'planReminderEnabled', 'reasoningEffort', 'guidanceEnabled', 'criticProvider', 'criticModel', 'criticEffort']
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
     const MAX_CALLS_MIN = 1
@@ -58,6 +63,73 @@ window.__ModuleLoader__.load({
       xhigh: '极高',
       max: '最大',
     }
+
+    /**
+     * Declarative field descriptors — the card body is one map over this
+     * list. kinds: route (catalog dropdown, text fallback), effort (reasoning
+     * dropdown tracking the selected route), number (validated text input),
+     * check (boolean toggle), group (collapsible section folding its
+     * children behind a header row; groups nest, and `summarize` renders the
+     * closed-state preview of the descendant staged values).
+     * `fallback` is the value a dirty-check compares against when the
+     * snapshot leaves the key unset.
+     */
+    const FIELD_DEFS = [
+      {
+        kind: 'group', key: 'advisor', label: '顾问管道', defaultOpen: false,
+        summarize: (staged) => `${staged.provider} / ${staged.model} · ${staged.reasoningEffort}`,
+        children: [
+          { kind: 'route', key: 'provider', label: '提供方路由', options: 'provider', hint: '须是「设置 → 模型」中已注册的 provider 路由。' },
+          { kind: 'route', key: 'model', label: '顾问模型', options: 'model', hint: '与主模型跨家族时多样性收益最大。' },
+          {
+            kind: 'effort', key: 'reasoningEffort', label: '思考深度', opts: 'advisor', fallback: 'provider',
+            hintReady: '注入该次咨询每个请求的思考深度；跟随提供方默认则不注入。选项与所选模型声明的档位一致。',
+            hintFallback: '注入该次咨询每个请求的思考深度；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
+          },
+          {
+            kind: 'group', key: 'advisor-advanced', label: '生成参数与行为开关', defaultOpen: false,
+            summarize: (staged) => `${staged.maxTokens} tokens · ${staged.maxCallsPerTurn} 次/轮`,
+            children: [
+              { kind: 'number', key: 'maxTokens', label: '输出上限（tokens）', min: MAX_TOKENS_MIN, max: MAX_TOKENS_MAX, hint: '顾问单次回答的长度上限。' },
+              { kind: 'number', key: 'maxCallsPerTurn', label: '每轮咨询额度', min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: '一个 turn（≈一个规划阶段）内允许的顾问调用上限：1 次发散 + 追问预算；超出即被拒绝。' },
+              { kind: 'check', key: 'requireExploration', label: '首次咨询前要求先探查', hint: '本会话内首个 ask_advisor 调用前，必须已有至少一次非顾问工具调用（读/搜/跑）。' },
+              { kind: 'check', key: 'enforceFollowupGap', label: '追问之间要求独立工作', hint: '同一 turn 内两次咨询之间必须至少有一次非顾问工具调用——追问须由新事实驱动。' },
+              { kind: 'check', key: 'planReminderEnabled', label: '规划时刻提醒', hint: '检测到本 turn 开始规划（todo_write / exit_plan_mode）且尚未咨询时，在下一步系统提示里注入一次提醒；机制不做任务语义判断。' },
+              { kind: 'check', key: 'guidanceEnabled', label: '注入使用协议到系统提示词', hint: '触发判据与追问预算；改动即刻生效（影响提示词前缀）。' },
+            ],
+          },
+        ],
+      },
+      {
+        kind: 'group', key: 'critic', label: '批评者（批注评审）路由', defaultOpen: false,
+        summarize: (staged) => `${staged.criticProvider} / ${staged.criticModel} · ${staged.criticEffort}`,
+        children: [
+          { kind: 'route', key: 'criticProvider', label: '批评者提供方', options: 'provider', hint: '评审子代理的 provider 路由；跨家族纠错收益最大。独立于上面的顾问管道。' },
+          { kind: 'route', key: 'criticModel', label: '批评者模型', options: 'criticModel', hint: 'gemini-3.7-flash 过载时可临时切走（如 deepseek flash）。' },
+          {
+            kind: 'effort', key: 'criticEffort', label: '批评者思考深度', opts: 'critic', fallback: 'medium',
+            hintReady: '注入评审子代理的每个请求；跟随提供方默认则不注入。选项与所选模型声明的档位一致（gemini-3.7-flash 仅 low/medium/high）。',
+            hintFallback: '注入评审子代理的每个请求；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
+          },
+        ],
+      },
+    ]
+    /** Recursive leaf walk: group wrappers index their descendants. */
+    const FIELD_DEF_BY_KEY = {}
+    const FIELD_KEYS = []
+    const INITIAL_CLOSED_GROUPS = {}
+    const walkDefs = (defs) => {
+      for (const def of defs) {
+        if (def.kind === 'group') {
+          if (def.defaultOpen === false) INITIAL_CLOSED_GROUPS[def.key] = true
+          walkDefs(def.children)
+          continue
+        }
+        FIELD_DEF_BY_KEY[def.key] = def
+        FIELD_KEYS.push(def.key)
+      }
+    }
+    walkDefs(FIELD_DEFS)
 
     const css = {
       card: {
@@ -143,6 +215,31 @@ window.__ModuleLoader__.load({
         border: '1px solid var(--dsw-alias-label-error)',
       },
       hint: { margin: 0, fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
+      groupHead: {
+        width: '100%',
+        appearance: 'none',
+        border: 'none',
+        background: 'none',
+        padding: 0,
+        font: 'inherit',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        cursor: 'pointer',
+        textAlign: 'left',
+      },
+      groupLabel: { fontSize: '12px', fontWeight: 600, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)' },
+      groupSummary: {
+        flex: 1,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        textAlign: 'right',
+        fontSize: '12px',
+        lineHeight: 1.5,
+        color: 'var(--dsw-alias-label-tertiary)',
+      },
       invalidText: { margin: 0, fontSize: '12px', lineHeight: 1.5, color: 'var(--dsw-alias-label-error)' },
       checkRow: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--dsw-alias-label-primary)' },
       footer: {
@@ -179,18 +276,6 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-bg-layer-3)',
       },
       disabled: { opacity: 0.4, cursor: 'default' },
-    }
-
-    /** Unwrap the client RPC envelope: { rpcId, result: { ok, value } }. */
-    function unwrapRpc(body) {
-      if (body && typeof body === 'object' && body.result && typeof body.result === 'object') {
-        if (body.result.ok !== true) {
-          const message = body.result.error && body.result.error.message
-          throw new Error(message || '模型目录接口返回失败')
-        }
-        return body.result.value
-      }
-      return body
     }
 
     function Chevron({ open }) {
@@ -235,31 +320,54 @@ window.__ModuleLoader__.load({
       const [saving, setSaving] = useState(false)
       const [saveFailed, setSaveFailed] = useState(false)
       const [catalog, setCatalog] = useState({ status: 'idle', groups: [] })
+      const [groupClosed, setGroupClosed] = useState(() => ({ ...INITIAL_CLOSED_GROUPS }))
 
       useEffect(() => {
         if (scope === null) return undefined
         return scope.subscribe(() => setTick((tick) => tick + 1))
       }, [])
 
-      // Lazy catalog load on first expand: the dropdown source is the same
-      // llm.models RPC the Models settings page uses.
+      // Lazy catalog load on expand: the dropdown source is the
+      // `session.modelCatalog` Remote (ClientResult envelope), successor of
+      // the removed `connection.api.llm.models` RPC — same groups shape the
+      // shipped Subagent card consumes. A failed load is NOT latched: the
+      // hint offers a retry that re-stages 'idle'.
       useEffect(() => {
         if (!open || catalog.status !== 'idle') return
-        const connection = getConnection()
-        const modelsFn = connection && connection.api && connection.api.llm && connection.api.llm.models
-        if (typeof modelsFn !== 'function') {
+        const session = getSessionRemote()
+        if (!session || typeof session.modelCatalog !== 'function') {
           setCatalog({ status: 'unavailable', groups: [] })
           return
         }
         setCatalog({ status: 'loading', groups: [] })
-        Promise.resolve(connection.api.llm.models({}))
-          .then(unwrapRpc)
-          .then((value) => {
+        Promise.resolve(session.modelCatalog())
+          .then((response) => {
+            if (response && typeof response === 'object' && response.ok === false) {
+              throw new Error((response.error && response.error.message) || '模型目录接口返回失败')
+            }
+            const value = response && typeof response === 'object' && 'value' in response
+              ? response.value
+              : response
             const groups = value && Array.isArray(value.groups) ? value.groups : []
             setCatalog({ status: 'ready', groups })
           })
           .catch(() => setCatalog({ status: 'unavailable', groups: [] }))
       }, [open, catalog.status])
+
+      // New invalidation model: provider-topology pushes and connection
+      // resets expire a fetched catalog, so the next expand refetches (and
+      // an open card converges without polling), matching the shipped cards.
+      useEffect(() => {
+        const expire = () => setCatalog((current) =>
+          current.status === 'ready' ? { status: 'idle', groups: [] } : current)
+        const disposers = []
+        if (clientOn) disposers.push(clientOn('connection/reset', expire))
+        const remote = getRemote()
+        if (remote && typeof remote.$on === 'function') {
+          disposers.push(remote.$on('llm/adapters-updated', expire))
+        }
+        return () => { for (const dispose of disposers) dispose() }
+      }, [])
 
       if (scope === null) return null
       const snap = scope.getSnapshot()
@@ -288,25 +396,25 @@ window.__ModuleLoader__.load({
       }
       if (drafts === null) setDrafts(staged)
 
-      const maxTokensParsed = Math.round(Number(staged.maxTokens))
-      const maxTokensInvalid = staged.maxTokens.trim() === ''
-        || !Number.isFinite(maxTokensParsed)
-        || maxTokensParsed < MAX_TOKENS_MIN
-        || maxTokensParsed > MAX_TOKENS_MAX
-      const maxCallsParsed = Math.round(Number(staged.maxCallsPerTurn))
-      const maxCallsInvalid = staged.maxCallsPerTurn.trim() === ''
-        || !Number.isFinite(maxCallsParsed)
-        || maxCallsParsed < MAX_CALLS_MIN
-        || maxCallsParsed > MAX_CALLS_MAX
+      /** Parse/validate one number descriptor against the staged draft. */
+      const numState = (def) => {
+        const parsed = Math.round(Number(staged[def.key]))
+        const invalid = staged[def.key].trim() === ''
+          || !Number.isFinite(parsed)
+          || parsed < def.min
+          || parsed > def.max
+        return { parsed, invalid }
+      }
 
       const dirtyKey = (key) => {
         if (resets[key]) return true
-        if (key === 'maxTokens') return !maxTokensInvalid && maxTokensParsed !== value.maxTokens
-        if (key === 'maxCallsPerTurn') return !maxCallsInvalid && maxCallsParsed !== value.maxCallsPerTurn
-        if (key === 'requireExploration' || key === 'enforceFollowupGap' || key === 'planReminderEnabled' || key === 'guidanceEnabled') return staged[key] !== Boolean(value[key])
-        if (key === 'reasoningEffort') return staged[key] !== String(value[key] ?? 'provider')
-        if (key === 'criticEffort') return staged[key] !== String(value[key] ?? 'medium')
-        return staged[key] !== String(value[key] ?? '')
+        const def = FIELD_DEF_BY_KEY[key]
+        if (def && def.kind === 'number') {
+          const { parsed, invalid } = numState(def)
+          return !invalid && parsed !== value[key]
+        }
+        if (def && def.kind === 'check') return staged[key] !== Boolean(value[key])
+        return staged[key] !== String(value[key] ?? (def && def.fallback) ?? '')
       }
       const dirty = FIELD_KEYS.some(dirtyKey)
 
@@ -337,7 +445,8 @@ window.__ModuleLoader__.load({
             if (resets[key]) {
               await scope.unset(key)
             } else if (dirtyKey(key)) {
-              const parsed = key === 'maxTokens' ? maxTokensParsed : key === 'maxCallsPerTurn' ? maxCallsParsed : undefined
+              const def = FIELD_DEF_BY_KEY[key]
+              const parsed = def && def.kind === 'number' ? numState(def).parsed : undefined
               await scope.set(key, parsed !== undefined ? parsed : staged[key])
             }
           }
@@ -373,11 +482,12 @@ window.__ModuleLoader__.load({
         : []
 
       // Reasoning-effort options follow the SELECTED model's declared levels
-      // when the catalog advertises them; otherwise the full host-schema set
+      // when the catalog advertises them (adapter-supplied names, and the
+      // model's own default marked); otherwise the full host-schema set
       // stays offered so the field remains usable without the catalog.
-      // 0.9.1: generalized — the critic route (criticProvider/criticModel)
-      // resolves its own option set through the same builder.
-      const effortOptionsFor = (providerKey, modelKey, withProviderOption) => {
+      // Both routes prepend 跟随提供方默认 — the host pin treats 'provider'
+      // as "leave the request untouched" for advisor and critic alike.
+      const effortOptionsFor = (providerKey, modelKey) => {
         const group = groups.find((g) => g.id === staged[providerKey])
         const sel = group && Array.isArray(group.models)
           ? group.models.find((model) => model.id === staged[modelKey])
@@ -385,20 +495,27 @@ window.__ModuleLoader__.load({
         const declared = sel && sel.reasoning && Array.isArray(sel.reasoning.efforts)
           ? sel.reasoning.efforts
           : []
+        const declaredName = {}
+        for (const effort of declared) {
+          if (effort && typeof effort.id === 'string') declaredName[effort.id] = effort.name
+        }
+        const modelDefault = sel && sel.reasoning && typeof sel.reasoning.defaultEffort === 'string'
+          ? sel.reasoning.defaultEffort
+          : undefined
         const levels = declared.length > 0 ? declared.map((effort) => effort.id) : EFFORT_LEVELS
         return {
           declared,
           options: [
-            ...(withProviderOption ? [{ value: 'provider', label: EFFORT_LABELS.provider }] : []),
+            { value: 'provider', label: EFFORT_LABELS.provider },
             ...levels.map((level) => ({
               value: level,
-              label: `${EFFORT_LABELS[level] || level}（${level}）`,
+              label: `${EFFORT_LABELS[level] || declaredName[level] || level}（${level}）${level === modelDefault ? ' · 模型默认' : ''}`,
             })),
           ],
         }
       }
-      const advisorEffort = effortOptionsFor('provider', 'model', true)
-      const criticEffortOpts = effortOptionsFor('criticProvider', 'criticModel', false)
+      const advisorEffort = effortOptionsFor('provider', 'model')
+      const criticEffortOpts = effortOptionsFor('criticProvider', 'criticModel')
 
       const selectStyle = { ...css.input, appearance: 'auto' }
 
@@ -433,7 +550,16 @@ window.__ModuleLoader__.load({
             catalog.status === 'loading'
               ? '正在加载模型目录（与「设置 → 模型」同源）…'
               : catalog.status === 'unavailable'
-                ? '模型目录不可用，请直接输入 id。' + hint
+                ? h(React.Fragment, null,
+                    '模型目录不可用，请直接输入 id。',
+                    h('button', {
+                      type: 'button',
+                      style: css.reset,
+                      disabled,
+                      onClick: () => setCatalog({ status: 'idle', groups: [] }),
+                    }, '重试'),
+                    ' ',
+                    hint)
                 : hint),
         )
       }
@@ -486,7 +612,70 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const blocked = !dirty || maxTokensInvalid || maxCallsInvalid || saving
+      /** One validated numeric input, driven by its descriptor. */
+      const numberField = (def) => {
+        const { invalid } = numState(def)
+        return h('div', { key: def.key, style: { ...css.field, ...css.fieldBorder } },
+          h(FieldHead, {
+            label: def.label,
+            overridden: overridden(def.key) && !resets[def.key],
+            disabled,
+            onReset: () => resetField(def.key),
+          }),
+          h('input', {
+            style: invalid ? { ...css.input, ...css.inputInvalid } : css.input,
+            type: 'text',
+            inputMode: 'numeric',
+            value: staged[def.key],
+            disabled,
+            'aria-invalid': invalid || undefined,
+            onChange: (event) => edit(def.key, event.target.value),
+          }),
+          h('p', { style: invalid ? css.invalidText : css.hint },
+            invalid ? `须是 ${def.min}–${def.max} 之间的数字` : def.hint),
+        )
+      }
+
+      const ROUTE_OPTIONS = { provider: providerOptions, model: modelOptions, criticModel: criticModelOptions }
+      const EFFORT_OPTS = { advisor: advisorEffort, critic: criticEffortOpts }
+
+      /** Dirty check across a group's whole descendant leaf set. */
+      const groupDirty = (def) => def.children.some((child) =>
+        child.kind === 'group' ? groupDirty(child) : dirtyKey(child.key))
+
+      /** The card body: one recursive renderer dispatch over FIELD_DEFS. */
+      const renderField = (def, depth) => {
+        if (def.kind === 'group') {
+          const open = groupClosed[def.key] !== true
+          return h(React.Fragment, { key: def.key },
+            h('div', { style: { ...css.field, ...css.fieldBorder, marginLeft: depth * 14 } },
+              h('button', {
+                type: 'button',
+                style: css.groupHead,
+                'aria-expanded': open,
+                onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open }),
+              },
+                h(Chevron, { open }),
+                h('span', { style: css.groupLabel }, def.label),
+                groupDirty(def) ? h('span', { style: css.pending }, '未保存') : null,
+                open ? null : h('span', { style: css.groupSummary }, def.summarize(staged)))),
+            open ? def.children.map((child) => renderField(child, depth + 1)) : null)
+        }
+        const el = def.kind === 'route' ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options])
+          : def.kind === 'effort' ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback)
+            : def.kind === 'check' ? checkField(def.key, def.label, def.hint)
+              : numberField(def)
+        return depth > 0
+          ? React.cloneElement(el, { style: { ...el.props.style, marginLeft: depth * 14 } })
+          : el
+      }
+
+      const blocked = !dirty
+        || FIELD_KEYS.some((key) => {
+          const def = FIELD_DEF_BY_KEY[key]
+          return def.kind === 'number' && numState(def).invalid
+        })
+        || saving
 
       return h('li', { style: css.card },
         h('button', {
@@ -506,64 +695,7 @@ window.__ModuleLoader__.load({
         open
           ? h('div', { style: css.body },
               !snap.writable ? h('p', { style: css.readOnly, role: 'status' }, '当前设置为只读。') : null,
-              routeField('provider', '提供方路由', '须是「设置 → 模型」中已注册的 provider 路由。', providerOptions),
-              routeField('model', '顾问模型', '与主模型跨家族时多样性收益最大。', modelOptions),
-              effortField('reasoningEffort', '思考深度', advisorEffort,
-                '注入该次咨询每个请求的思考深度；选项与所选模型声明的档位一致。',
-                '注入该次咨询每个请求的思考深度；模型目录不可用，未校验档位支持。'),
-              h('div', { key: 'maxTokens', style: { ...css.field, ...css.fieldBorder } },
-                h(FieldHead, {
-                  label: '输出上限（tokens）',
-                  overridden: overridden('maxTokens') && !resets.maxTokens,
-                  disabled,
-                  onReset: () => resetField('maxTokens'),
-                }),
-                h('input', {
-                  style: maxTokensInvalid ? { ...css.input, ...css.inputInvalid } : css.input,
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: staged.maxTokens,
-                  disabled,
-                  'aria-invalid': maxTokensInvalid || undefined,
-                  onChange: (event) => edit('maxTokens', event.target.value),
-                }),
-                h('p', { style: maxTokensInvalid ? css.invalidText : css.hint },
-                  maxTokensInvalid
-                    ? `须是 ${MAX_TOKENS_MIN}–${MAX_TOKENS_MAX} 之间的数字`
-                    : '顾问单次回答的长度上限。'),
-              ),
-              h('div', { key: 'maxCallsPerTurn', style: { ...css.field, ...css.fieldBorder } },
-                h(FieldHead, {
-                  label: '每轮咨询额度',
-                  overridden: overridden('maxCallsPerTurn') && !resets.maxCallsPerTurn,
-                  disabled,
-                  onReset: () => resetField('maxCallsPerTurn'),
-                }),
-                h('input', {
-                  style: maxCallsInvalid ? { ...css.input, ...css.inputInvalid } : css.input,
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: staged.maxCallsPerTurn,
-                  disabled,
-                  'aria-invalid': maxCallsInvalid || undefined,
-                  onChange: (event) => edit('maxCallsPerTurn', event.target.value),
-                }),
-                h('p', { style: maxCallsInvalid ? css.invalidText : css.hint },
-                  maxCallsInvalid
-                    ? `须是 ${MAX_CALLS_MIN}–${MAX_CALLS_MAX} 之间的数字`
-                    : '一个 turn（≈一个规划阶段）内允许的顾问调用上限：1 次发散 + 追问预算；超出即被拒绝。'),
-              ),
-              checkField('requireExploration', '首次咨询前要求先探查', '本会话内首个 ask_advisor 调用前，必须已有至少一次非顾问工具调用（读/搜/跑）。'),
-              checkField('enforceFollowupGap', '追问之间要求独立工作', '同一 turn 内两次咨询之间必须至少有一次非顾问工具调用——追问须由新事实驱动。'),
-              checkField('planReminderEnabled', '规划时刻提醒', '检测到本 turn 开始规划（todo_write / exit_plan_mode）且尚未咨询时，在下一步系统提示里注入一次提醒；机制不做任务语义判断。'),
-              checkField('guidanceEnabled', '注入使用协议到系统提示词', '触发判据与追问预算；改动即刻生效（影响提示词前缀）。'),
-              h('div', { key: 'critic-sep', style: { ...css.field, ...css.fieldBorder } },
-                h('p', { style: { ...css.hint, fontWeight: 600, opacity: 0.8 } }, '批评者（批注评审）路由——独立于上面的顾问管道：')),
-              routeField('criticProvider', '批评者提供方', '评审子代理的 provider 路由；跨家族纠错收益最大。', providerOptions),
-              routeField('criticModel', '批评者模型', 'gemini-3.7-flash 过载时可临时切走（如 deepseek flash）。', criticModelOptions),
-              effortField('criticEffort', '批评者思考深度', criticEffortOpts,
-                '注入评审子代理的每个请求；gemini-3.7-flash 仅支持 low/medium/high，文档默认 medium。',
-                '注入评审子代理的每个请求；模型目录不可用，未校验档位支持。'),
+              FIELD_DEFS.map((def) => renderField(def, 0)),
               h('div', { style: css.footer },
                 saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未生效，请重试。') : null,
                 h('button', {
@@ -921,17 +1053,25 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      scope = ctx.settingsScope.bind({ namespace: 'advisor' })
-      getConnection = () => {
+      scope = ctx.settingsScope.bind({ namespace: 'ciel' })
+      clientOn = (name, fn) => ctx.on(name, fn)
+      getSessionRemote = () => {
         try {
-          return ctx.get('connection')
+          return ctx.get('remote.session')
+        } catch {
+          return undefined
+        }
+      }
+      getRemote = () => {
+        try {
+          return ctx.get('remote')
         } catch {
           return undefined
         }
       }
       ctx.slots.inject('settings.plugin.item', () =>
         ctx.slots.register(
-          { name: 'settings.plugin.item', key: 'advisor' },
+          { name: 'settings.plugin.item', key: 'ciel' },
           () => h(AdvisorCard),
         ),
       )
