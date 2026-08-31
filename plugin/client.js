@@ -740,6 +740,77 @@ window.__ModuleLoader__.load({
       })),
     }
 
+    /**
+     * 0.12.0 ①块切分——host 半边的同算法副本（两端无共享打包通道）。
+     * 任何修改必须与 plugin/index.js 的 splitMarkdownBlocks 逐行一致；
+     * 共享夹具 test/blocks.fixtures.js 锁定两端输出。
+     */
+    function splitMarkdownBlocks(text) {
+      const lines = String(text).split('\n')
+      const blocks = []
+      const isBlank = (l) => /^\s*$/.test(l)
+      const isHeading = (l) => /^#{1,6}\s/.test(l)
+      const fenceMark = (l) => {
+        const m = /^(\s*)(`{3,}|~{3,})/.exec(l)
+        return m ? { ch: m[2][0], len: m[2].length } : null
+      }
+      const isTable = (l) => /^\s*\|/.test(l)
+      const isQuote = (l) => /^\s*>/.test(l)
+      const isListItem = (l) => /^\s*(?:[-*+]|\d{1,9}[.)])\s/.test(l)
+      const isHr = (l) => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(l)
+      const push = (type, start, end) => {
+        const body = lines.slice(start, end).join('\n')
+        if (body.trim() === '') return
+        blocks.push({ id: 'b' + (blocks.length + 1), type, text: body })
+      }
+      let i = 0
+      while (i < lines.length) {
+        if (isBlank(lines[i])) { i += 1; continue }
+        const start = i
+        const fence = fenceMark(lines[i])
+        if (fence) {
+          i += 1
+          while (i < lines.length) {
+            const m = fenceMark(lines[i])
+            if (m && m.ch === fence.ch && m.len >= fence.len) { i += 1; break }
+            i += 1
+          }
+          push('code', start, i)
+          continue
+        }
+        if (isHeading(lines[i])) { push('heading', start, start + 1); i += 1; continue }
+        if (isHr(lines[i])) { push('hr', start, start + 1); i += 1; continue }
+        if (isTable(lines[i])) {
+          i += 1
+          while (i < lines.length && isTable(lines[i])) i += 1
+          push('table', start, i)
+          continue
+        }
+        if (isQuote(lines[i])) {
+          i += 1
+          while (i < lines.length && (isQuote(lines[i]) || (!isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i])))) i += 1
+          push('quote', start, i)
+          continue
+        }
+        if (isListItem(lines[i])) {
+          i += 1
+          for (;;) {
+            while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isHr(lines[i])) i += 1
+            let j = i
+            while (j < lines.length && isBlank(lines[j])) j += 1
+            if (j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
+            break
+          }
+          push('list', start, i)
+          continue
+        }
+        i += 1
+        while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isQuote(lines[i]) && !isListItem(lines[i]) && !isHr(lines[i])) i += 1
+        push('paragraph', start, i)
+      }
+      return blocks
+    }
+
     /** Review UI stylesheet (dynamic-plugin styles.insert has no bundle twin). */
     const REVIEW_CSS = [
       '.dsr-btn{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;opacity:.65;cursor:pointer}',
@@ -1788,6 +1859,9 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
+    // Test hook: the node test harness loads this factory with a stubbed
+    // ModuleLoader and asserts the two splitMarkdownBlocks copies agree.
+    exports.__test = { splitMarkdownBlocks }
     exports.inject = ['settingsScope', 'slots']
     // The module system materializes the factory's RETURN VALUE as the plugin
     // exports — assigning without returning leaves the kernel `undefined`.
