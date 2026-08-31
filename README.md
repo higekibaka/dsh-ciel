@@ -1,9 +1,17 @@
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:7c3aed,100:06b6d4&height=170&section=header&text=dsh-ciel%20%E5%A4%8F%E5%B0%94&fontSize=52&fontColor=ffffff&animation=fadeIn&desc=%E8%A7%84%E5%88%92%E5%89%8D%E9%A1%BE%E9%97%AE%20%C2%B7%20%E6%94%B6%E6%95%9B%E6%89%B9%E8%AF%84%E8%80%85&descSize=20&descAlignY=72" alt="dsh-ciel 夏尔" />
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-ciel"><img src="https://img.shields.io/npm/v/dsh-ciel?style=for-the-badge&logo=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-ciel"><img src="https://img.shields.io/npm/dm/dsh-ciel?style=for-the-badge&color=2563eb" alt="npm downloads"></a>
+  <a href="https://github.com/higekibaka/dsh-ciel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/higekibaka/dsh-ciel/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=ci" alt="ci status"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="license: MIT"></a>
+</p>
+
+<p align="center"><a href="./README.en.md">English</a> | <b>中文</b></p>
+
 # dsh-ciel（夏尔）
-
-[![npm version](https://img.shields.io/npm/v/dsh-ciel)](https://www.npmjs.com/package/dsh-ciel)
-[![license](https://img.shields.io/npm/l/dsh-ciel)](./LICENSE)
-
-[English](./README.en.md) | **中文**
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的**规划前顾问 + 收敛批评者**：在主模型制定计划之前，由一个知识分布不同的顾问模型提供思路、领域知识与陷阱清单——只给思路，不给步骤；另附每条助手回复的「批注评审」按钮，由批评者模型（默认 `google/gemini-3.7-flash`）对草案做红线批注。命名灵感：《关于我转生变成史莱姆这档事》中主角的脑内参谋大贤者夏尔。
 
@@ -11,26 +19,21 @@
 
 ## 工作流程
 
-```text
-                        ┌──────────────── 主模型（探索 + 执行）────────────────┐
-                        │                                                      │
- 用户请求 ──▶ 探查（读/搜/跑）──┐                                          │
-                        │      └─ 规划时刻仍未咨询？──▶ 注入一次提醒 ──┐      │
-                        │                                            ▼      │
-                        │                                   ask_advisor ────┼──▶ 顾问模型
-                        │                                            │      │   （第二模型 ·
-                        │                                            │      │    只给思路）
-                        │ ◀── 思路 · 先例 · 陷阱 · 验证清单 ──────────┘      │
-                        ▼                                                      │
-                  自己定计划、自己落地 ──▶ 回复草稿 ──┐                       │
-                        │                            │ 「批注评审」按钮      │
-                        │                            ▼                      │
-                        │                     批评者模型（收敛红线）          │
-                        │                            │                      │
-                        │ ◀── severity 批注长在原文 ───┘                      │
-                        ▼                                                      │
-                  一键回传，按批注修正 ──▶ 终稿 ──▶ 用户                     │
-                        └──────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    U[用户请求] --> E[主模型探查：读 / 搜 / 跑]
+    E --> P{规划时刻仍未咨询？}
+    P -->|是| R[注入一次提醒]
+    R --> A
+    P -->|否| A[ask_advisor · /advise]
+    A --> G{{门：先探查 · 追问预算}}
+    G --> M[顾问模型<br>第二模型 · 只给思路]
+    M --> I[思路 · 先例 · 陷阱 · 验证清单]
+    I --> L[主模型自己定计划、自己落地]
+    L --> D[回复草稿]
+    D -->|批注评审| C[批评者模型<br>收敛红线]
+    C --> S[severity 批注长在原文]
+    S --> F[一键回传修正 → 终稿]
 ```
 
 两条管道刻意**角色分离**：
@@ -54,11 +57,20 @@
 - **设置卡片**——设置 → 插件 → 插件配置 → 夏尔 Ciel，热生效无需重启。
 
 <p align="center">
+  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-demo.gif" width="640" alt="设置卡片交互演示：分组折叠、嵌套展开、目录下拉">
+</p>
+<p align="center">
   <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="结构化顾问卡片：分档条目带思路、陷阱与验证目标">
 </p>
 <p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups.png" width="47%" alt="设置卡片折叠为分组，闭组显示当前路由摘要">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic.png" width="47%" alt="批评者分组展开：由实时模型目录供给的 provider/model 下拉">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-dark.png">
+    <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-light.png" width="47%" alt="设置卡片折叠为分组，闭组显示当前路由摘要">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-dark.png">
+    <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-light.png" width="47%" alt="批评者分组展开：由实时模型目录供给的 provider/model 下拉">
+  </picture>
 </p>
 
 ## 安装

@@ -1,9 +1,17 @@
+<p align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:7c3aed,100:06b6d4&height=170&section=header&text=dsh-ciel%20%E5%A4%8F%E5%B0%94&fontSize=52&fontColor=ffffff&animation=fadeIn&desc=ideas%2C%20never%20steps&descSize=20&descAlignY=72" alt="dsh-ciel" />
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-ciel"><img src="https://img.shields.io/npm/v/dsh-ciel?style=for-the-badge&logo=npm&color=cb3837" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-ciel"><img src="https://img.shields.io/npm/dm/dsh-ciel?style=for-the-badge&color=2563eb" alt="npm downloads"></a>
+  <a href="https://github.com/higekibaka/dsh-ciel/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/higekibaka/dsh-ciel/ci.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=ci" alt="ci status"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="license: MIT"></a>
+</p>
+
+<p align="center"><b>English</b> | <a href="./README.md">中文</a></p>
+
 # dsh-ciel（夏尔 Ciel）
-
-[![npm version](https://img.shields.io/npm/v/dsh-ciel)](https://www.npmjs.com/package/dsh-ciel)
-[![license](https://img.shields.io/npm/l/dsh-ciel)](./LICENSE)
-
-**English** | [中文](./README.md)
 
 A pre-planning advisor and a convergent critic for
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) —
@@ -19,25 +27,21 @@ stays with the main model. Full argument: [docs/design.md](docs/design.md).
 
 ## How it flows
 
-```text
-                     ┌────────────── main model (explore + execute) ──────────────┐
-                     │                                                            │
- request ──▶ explore (read/search/run) ──┐                                       │
-                     │                   └─ planning without consulting? ──▶ one  │
-                     │                       reminder ──▶ ask_advisor ─────────────┼──▶ advisor model
-                     │                                          │                │   (second model,
-                     │                                          │                │    ideas only)
-                     │ ◀── ideas · prior art · pitfalls · verification targets ──┘│
-                     ▼                                                            │
-               plans and lands the work itself ──▶ draft reply ──┐               │
-                     │                                           │ 批注评审       │
-                     │                                           ▼               │
-                     │                                    critic model           │
-                     │                                    (convergent red-lines) │
-                     │ ◀── severity annotations anchored onto the draft ─────────┘│
-                     ▼                                                            │
-               one-click send-back, revise ──▶ final reply ──▶ user              │
-                     └────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    U[user request] --> E[main model explores: read / search / run]
+    E --> P{planning without consulting?}
+    P -->|yes| R[one reminder injected]
+    R --> A
+    P -->|no| A[ask_advisor · /advise]
+    A --> G{{gates: explore-first · follow-up budget}}
+    G --> M[advisor model<br>second model · ideas only]
+    M --> I[ideas · prior art · pitfalls · verification targets]
+    I --> L[main model plans and lands the work itself]
+    L --> D[draft reply]
+    D -->|annotation review| C[critic model<br>convergent red-lines]
+    C --> S[severity annotations anchored onto the draft]
+    S --> F[one-click send-back → final reply]
 ```
 
 The two pipelines are deliberately **role-separated**:
@@ -71,11 +75,20 @@ The two pipelines are deliberately **role-separated**:
   without restart.
 
 <p align="center">
+  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-demo.gif" width="640" alt="Settings card interaction: grouped folding, nested groups, catalog dropdowns">
+</p>
+<p align="center">
   <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="Structured advisor card: tiered items with framing, pitfalls and verification targets">
 </p>
 <p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups.png" width="47%" alt="Settings card folded into groups, each summarizing its current route">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic.png" width="47%" alt="Critic group expanded: provider/model dropdowns fed by the live model catalog">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-dark.png">
+    <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-light.png" width="47%" alt="Settings card folded into groups, each summarizing its current route">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-dark.png">
+    <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-light.png" width="47%" alt="Critic group expanded: provider/model dropdowns fed by the live model catalog">
+  </picture>
 </p>
 
 ## Install
