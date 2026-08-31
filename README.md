@@ -1,109 +1,109 @@
-# dsh-ciel（夏尔 Ciel）
+# dsh-ciel（夏尔）
 
 [![npm version](https://img.shields.io/npm/v/dsh-ciel)](https://www.npmjs.com/package/dsh-ciel)
 [![license](https://img.shields.io/npm/l/dsh-ciel)](./LICENSE)
 
-**English** | [中文](./README.zh.md)
+[English](./README.en.md) | **中文**
 
-A pre-planning advisor and a convergent critic for
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) —
-a second, knowledge-rich model that offers directions, prior art, pitfalls,
-and verification checklists **before** the main model commits to a plan.
-Ideas, never steps. Named after Ciel, the in-head advisor from *That Time I
-Got Reincarnated as a Slime*.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的**规划前顾问 + 收敛批评者**：在主模型制定计划之前，由一个知识分布不同的顾问模型提供思路、领域知识与陷阱清单——只给思路，不给步骤；另附每条助手回复的「批注评审」按钮，由批评者模型（默认 `google/gemini-3.7-flash`）对草案做红线批注。命名灵感：《关于我转生变成史莱姆这档事》中主角的脑内参谋大贤者夏尔。
 
-The value is not "the advisor is smarter" — it is **distribution diversity**
-plus a forced separation of the exploring and executing cognitive roles. By
-constraining the advisor to ideas only, understanding and landing the work
-stays with the main model. Full argument: [docs/design.md](docs/design.md).
+顾问模式的价值不在于"顾问更聪明"，而在于**引入分布多样性 + 分离探索与执行两种认知角色**，并用"只给思路"的约束把理解和落地的工作强制留在主模型身上。完整论证见 [docs/design.md](docs/design.md)。
 
-## What you get
+## 工作流程
 
-- **`ask_advisor` tool** — one synchronous consultation with the advisor
-  model, gated by an explore-first protocol and a bounded follow-up budget.
-- **Guidance prompt section** — the consultation protocol injected into the
-  system prompt (toggleable).
-- **Annotation review (批注评审)** — a per-reply button that runs the
-  convergent critic (default `google/gemini-3.7-flash`) over the draft and
-  anchors red-line annotations onto the reply text, with severity
-  underlines, badges, and a full review panel. Reviews persist across
-  restarts.
-- **`/advise` command** — human-triggered consultation with auto-assembled
-  context; the result card is shown inline and the main model is notified
-  automatically.
-- **Settings card** — Settings → Plugins → 插件配置 → 夏尔 Ciel, hot-applied
-  without restart.
+```text
+                        ┌──────────────── 主模型（探索 + 执行）────────────────┐
+                        │                                                      │
+ 用户请求 ──▶ 探查（读/搜/跑）──┐                                          │
+                        │      └─ 规划时刻仍未咨询？──▶ 注入一次提醒 ──┐      │
+                        │                                            ▼      │
+                        │                                   ask_advisor ────┼──▶ 顾问模型
+                        │                                            │      │   （第二模型 ·
+                        │                                            │      │    只给思路）
+                        │ ◀── 思路 · 先例 · 陷阱 · 验证清单 ──────────┘      │
+                        ▼                                                      │
+                  自己定计划、自己落地 ──▶ 回复草稿 ──┐                       │
+                        │                            │ 「批注评审」按钮      │
+                        │                            ▼                      │
+                        │                     批评者模型（收敛红线）          │
+                        │                            │                      │
+                        │ ◀── severity 批注长在原文 ───┘                      │
+                        ▼                                                      │
+                  一键回传，按批注修正 ──▶ 终稿 ──▶ 用户                     │
+                        └──────────────────────────────────────────────────────┘
+```
+
+两条管道刻意**角色分离**：
+
+```text
+  发散（规划前）                    收敛（成稿后）
+  ─────────────                    ─────────────
+  顾问管道                          批评者管道
+  ask_advisor · /advise            批注评审
+  思路 · 先例 · 陷阱 · 验证清单      红线批注 · severity 分级
+  只给方向，不下场                  证伪输出，不复盘心路
+  开阔主模型的解空间                收窄成稿的风险面
+```
+
+## 功能
+
+- **`ask_advisor` 工具**——一次同步咨询：思路、先例、陷阱、验证清单；受「先探查后咨询」门与追问预算约束。
+- **指导 prompt section**——咨询协议注入系统提示词（可开关）。
+- **批注评审**——每条助手回复操作区的「批注评审」按钮：批评者对草案做收敛型红线评审，批注以 severity 波浪下划线 + 角标长在原文上，另有完整评审面板；评审记录持久化、跨重启水合。
+- **`/advise` 命令**——人类触发咨询：上下文自动装配、结果卡片、自动知会主模型。
+- **设置卡片**——设置 → 插件 → 插件配置 → 夏尔 Ciel，热生效无需重启。
 
 <p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="Structured advisor card: tiered items with framing, pitfalls and verification targets">
+  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="结构化顾问卡片：分档条目带思路、陷阱与验证目标">
 </p>
 <p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups.png" width="47%" alt="Settings card folded into groups, each summarizing its current route">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic.png" width="47%" alt="Critic group expanded: provider/model dropdowns fed by the live model catalog">
+  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups.png" width="47%" alt="设置卡片折叠为分组，闭组显示当前路由摘要">
+  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic.png" width="47%" alt="批评者分组展开：由实时模型目录供给的 provider/model 下拉">
 </p>
 
-## Install
+## 安装
 
 ```sh
 dsh plugin --profile web add dsh-ciel
 ```
 
-Restart DSH. The plugin activates globally: the `ask_advisor` tool and the
-guidance section reach every agent in every preset; the settings card
-appears under **Settings → Plugins → 插件配置**.
+重启 DSH 后生效：工具与指导 section 对所有 preset 全局可用，设置卡片出现在 **设置 → 插件 → 插件配置**。
 
-> Upgrading from `dsh-advisor` (≤ 0.10.x)? Your `advisor:` section in
-> `settings.yaml` is copied into the new `ciel` namespace automatically on
-> first boot. The legacy section is left in place — remove it by hand
-> whenever you like.
+> 从 dsh-advisor（≤ 0.10.x）升级？`settings.yaml` 里的 `advisor:` 节会在首次启动时**自动迁入**新的 `ciel` 命名空间；旧节保留不删，可随时手工移除。
 
-## Configuration
+## 配置项（`ciel` 命名空间）
 
-All fields live in the `ciel` settings namespace (the settings card or the
-`ciel:` section of `settings.yaml`):
-
-| Field | Default | Description |
+| 字段 | 默认 | 说明 |
 |---|---|---|
-| `provider` | `kimi-coding` | Advisor provider route (must be registered under Settings → Models) |
-| `model` | `kimi-for-coding` | Advisor model id; cross-family diversity pays most |
-| `reasoningEffort` | `provider` | Thinking depth pinned onto each advisor request; `provider` follows the provider default |
-| `maxTokens` | `4096` | Advisor reply length cap (256–32768) |
-| `maxCallsPerTurn` | `3` | Consultations per turn: 1 divergence + follow-up budget |
-| `requireExploration` | `true` | First consultation requires a prior non-advisor tool call |
-| `enforceFollowupGap` | `true` | Follow-ups require independent work in between |
-| `planReminderEnabled` | `true` | One reminder when planning starts unconsulted |
-| `guidanceEnabled` | `true` | Inject the consultation protocol into the system prompt |
-| `criticProvider` | `google` | Critic provider route (independent of the advisor pipeline) |
-| `criticModel` | `gemini-3.7-flash` | Critic model id |
-| `criticEffort` | `medium` | Thinking depth pinned onto critic requests; `provider` also accepted |
+| `provider` | `kimi-coding` | 顾问提供方路由（须已在设置 → 模型 注册） |
+| `model` | `kimi-for-coding` | 顾问模型 id；跨家族模型多样性收益更大 |
+| `reasoningEffort` | `provider` | 注入每次咨询的思考深度；`provider` 跟随提供方默认 |
+| `maxTokens` | `4096` | 顾问单次输出上限（256–32768） |
+| `maxCallsPerTurn` | `3` | 每轮咨询额度：1 次发散 + 追问预算 |
+| `requireExploration` | `true` | 首次咨询前要求先探查 |
+| `enforceFollowupGap` | `true` | 追问之间要求独立工作 |
+| `planReminderEnabled` | `true` | 规划时刻提醒 |
+| `guidanceEnabled` | `true` | 注入使用协议到系统提示词 |
+| `criticProvider` | `google` | 批评者提供方路由（独立于顾问管道） |
+| `criticModel` | `gemini-3.7-flash` | 批评者模型 id |
+| `criticEffort` | `medium` | 注入评审请求的思考深度；亦接受 `provider` |
 
-## Compatibility
+## 兼容性
 
-- DSH **≥ 0.1.0-rc.7** (keyed `settings.plugin.item` slot); developed and
-  verified against **0.1.2-alpha.1**.
-- Node.js ≥ 22.
-- Designed to coexist with [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor):
-  the settings namespace moved to `ciel` in 0.11.0 so both plugins can be
-  installed side by side.
+- DSH **≥ 0.1.0-rc.7**（keyed `settings.plugin.item` 槽）；在 **0.1.2-alpha.1** 上开发与验证。
+- Node.js ≥ 22。
+- 可与 [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor) 共存：0.11.0 起设置命名空间迁至 `ciel`，两插件可同装。
 
-## Development
+## 开发验证（独立测试实例，不动主 GUI）
 
 ```sh
-# install the checkout into a throwaway profile (never the main GUI's):
 dsh plugin --profile advisor-test add /path/to/dsh-ciel/plugin
 pnpm dsh --profile advisor-test --patch /path/to/dsh-ciel/scripts/dev-instance.patch.yml
-# open http://127.0.0.1:3180 → Settings → Plugins
+# 打开 http://127.0.0.1:3180 → 设置 → 插件 → 插件配置
 ```
 
-Run the unit tests with `node --test` inside `plugin/`.
+单元测试：在 `plugin/` 下 `node --test`。
 
-> After a local `pnpm install` inside `plugin/`, run
-> `scripts/relink-dev.sh` once: the two `@deepseek-ai/*` devDependencies
-> (cordis, typert-protocol) must stay symlinked to the profile's shared
-> copies — a real second copy carries its own registry state and breaks the
-> linked plugin. npm-installed deployments are unaffected (devDependencies
-> are never installed for consumers).
-
-## License
+## 许可证
 
 [MIT](./LICENSE) © hgk
