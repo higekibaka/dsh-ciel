@@ -850,6 +850,36 @@ window.__ModuleLoader__.load({
       '.dsrf-note{margin-left:8px;font-size:11px;opacity:.75}',
       '.dsr-item.dsrf-sent{opacity:.55}',
       '.dsr-item.dsrf-sent .dsrf-box{pointer-events:none}',
+      // ── 0.12.0 ①裁决卡 + 块级 gutter（demo: prototypes/verdict-card-demo.html）
+      '.dsr-tail.dsr-verdict{border-left:3px solid rgba(130,130,130,.4)}',
+      '.dsr-tail.dsr-verdict-pass{border-left-color:#3fb950}',
+      '.dsr-tail.dsr-verdict-changes{border-left-color:#d29922}',
+      '.dsr-tail.dsr-rise{animation:dsrRise .3s ease}',
+      '@keyframes dsrRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
+      '.dsr-vbadge{flex:none;font-size:13px;font-weight:700}',
+      '.dsr-vbadge-pass{color:#3fb950}',
+      '.dsr-vbadge-changes{color:#d29922}',
+      '.dsr-vsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:12.5px}',
+      '.dsr-vchips{display:inline-flex;gap:6px;flex:none}',
+      '.dsr-vchip{font-size:10.5px;font-family:ui-monospace,monospace;font-weight:600;line-height:16px;padding:0 8px;border-radius:999px}',
+      '.dsr-vchip-b{color:#f85149;background:rgba(248,81,73,.13)}',
+      '.dsr-vchip-n{color:#d29922;background:rgba(210,153,34,.13)}',
+      '.dsr-vchip-ok{color:#3fb950;background:rgba(63,185,80,.13)}',
+      '.dsr-vcaret{flex:none;width:14px;opacity:.55;font-size:11px;transition:transform .18s}',
+      '.dsr-tail.dsr-collapsed .dsr-vcaret{transform:rotate(-90deg)}',
+      '.dsr-tail.dsr-collapsed .dsr-vbody{display:none}',
+      '.dsr-blk{position:relative}',
+      '.dsr-gutter{position:absolute;left:-24px;top:2px;display:flex;flex-direction:column;gap:4px;z-index:2}',
+      '.dsr-gmark{width:17px;height:17px;border-radius:4px;font-size:10px;font-family:ui-monospace,monospace;line-height:15px;text-align:center;cursor:pointer;user-select:none;border:1px solid}',
+      '.dsr-gmark-blocker{color:#f85149;border-color:#f85149;background:rgba(248,81,73,.12)}',
+      '.dsr-gmark-nit{color:#d29922;border-color:#d29922;background:rgba(210,153,34,.10)}',
+      '.dsr-blk-hl{outline:1px solid rgba(88,166,255,.45);outline-offset:2px;border-radius:4px;background:rgba(88,166,255,.06)}',
+      '.dsr-blocktag{font-size:10px;font-family:ui-monospace,monospace;opacity:.5;margin-left:6px}',
+      '.dsrf-filter{display:inline-flex;border:1px solid rgba(130,130,130,.35);border-radius:6px;overflow:hidden;margin-left:10px}',
+      '.dsrf-filter button{appearance:none;background:none;border:none;color:inherit;opacity:.6;padding:2px 9px;font-size:11px;cursor:pointer;font-family:inherit}',
+      '.dsrf-filter button.on{opacity:1;background:rgba(130,130,130,.18)}',
+      '.dsrf-blockers{margin-left:6px;padding:2px 10px;font-size:11px;border:1px solid rgba(130,130,130,.4);border-radius:4px;background:transparent;color:inherit;opacity:.8;cursor:pointer;font-family:inherit}',
+      '.dsrf-blockers:hover{opacity:1}',
     ].join('\n')
 
     // ═══════════════ M3-④ 顾问输出卡片（advcrd 原型 v2 移植） ═══════════════
@@ -1210,6 +1240,7 @@ window.__ModuleLoader__.load({
           note: new Map(),     // reviewId -> 面板头注记文本
           sending: new Set(),  // 有在途回传的 reviewId
           tick: new Map(),     // messageId -> 重绘计数器（回传 settle 后 bump）
+          filter: new Map(),   // reviewId -> 'all' | 'blocker'（分诊过滤）
         },
       }
       const emit = () => { for (const l of Array.from(listeners)) l() }
@@ -1310,6 +1341,11 @@ window.__ModuleLoader__.load({
       function clearOwned(created) {
         for (const item of created) {
           const span = item.el
+          if (item.kind === 'gutter') {
+            if (span.isConnected && span.parentNode) span.parentNode.removeChild(span)
+            if (item.host && item.host.classList) item.host.classList.remove('dsr-blk', 'dsr-blk-hl')
+            continue
+          }
           if (!span.isConnected || !span.parentNode) continue
           const parent = span.parentNode
           if (item.kind === 'badge') {
@@ -1319,6 +1355,52 @@ window.__ModuleLoader__.load({
           }
           parent.normalize()
         }
+      }
+
+      // ── 0.12.0 ①块级解析：entry.blocks（host 落库的 id+type 序号空间）对到
+      // 渲染 DOM 的顶层块元素。规则与切分器同纪律——宁简勿繁 + 失败退回
+      // proximity：候选 = root 内按文档序、位于按钮之前的块元素（P/H1-6/PRE/
+      // UL/OL/TABLE/BLOCKQUOTE/HR，未分类的薄壳 div 下降一层），取末尾
+      // blocks.length 个按序号 zip；类型不符即放弃该块映射。
+      function classifyBlockEl(el) {
+        const tag = el.tagName
+        if (/^H[1-6]$/.test(tag)) return 'heading'
+        if (tag === 'PRE') return 'code'
+        if (tag === 'UL' || tag === 'OL') return 'list'
+        if (tag === 'TABLE') return 'table'
+        if (tag === 'BLOCKQUOTE') return 'quote'
+        if (tag === 'HR') return 'hr'
+        if (tag === 'P') return 'paragraph'
+        return null
+      }
+      function resolveBlockDoms(root, beforeEl, blocks) {
+        const map = new Map()
+        if (!root || !Array.isArray(blocks) || blocks.length === 0) return map
+        const candidates = []
+        const precedes = (el) => {
+          if (!beforeEl || el === beforeEl || beforeEl.contains(el)) return false
+          const pos = el.compareDocumentPosition(beforeEl)
+          return (pos & 4) !== 0 // beforeEl follows el
+        }
+        // 有界 DFS：文档序收集按钮之前的块元素。命中的元素不再下降（块内嵌套
+        // 如 blockquote>p 只记外层）；评审自身的 chrome 与按钮操作区跳过。
+        const visit = (el) => {
+          if (el.classList && (el.classList.contains('dsr-tail') || el.classList.contains('dsr-pop') || el.classList.contains('dsr-gutter'))) return
+          if (beforeEl && el !== beforeEl && beforeEl.contains(el)) return
+          const type = classifyBlockEl(el)
+          if (type !== null) {
+            if (precedes(el)) candidates.push({ el, type })
+            return
+          }
+          for (const child of el.children) visit(child)
+        }
+        visit(root)
+        if (candidates.length < blocks.length) return map
+        const offset = candidates.length - blocks.length
+        for (let i = 0; i < blocks.length; i += 1) {
+          if (candidates[offset + i].type === blocks[i].type) map.set(blocks[i].id, candidates[offset + i].el)
+        }
+        return map
       }
 
       // ── locate one normalized anchor in the concatenated text (whitespace
@@ -1421,8 +1503,52 @@ window.__ModuleLoader__.load({
           return { root: null, stats, created, byIndex: new Map() }
         }
         const doc = root.ownerDocument
+        // 0.12.0 ①：有块地图时先解析块级 DOM；块命中的批注挂 gutter 徽章
+        // （零文本侵入），未命中的退回旧 proximity 划线（旧记录/解析失败）。
+        const blockDoms = resolveBlockDoms(root, anchorEl, entry.blocks)
+        const gutterByBlock = new Map() // blockEl -> gutter el（多块共用去重）
         annotations.forEach((a, i) => {
           if (!a || typeof a.anchor !== 'string') return
+          const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
+          const open = (event) => {
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            const docEl = doc.documentElement
+            const maxX = Math.max(12, (docEl ? docEl.clientWidth : 800) - 440)
+            store.popover = {
+              annotation: a,
+              index: i + 1,
+              x: Math.min(Math.max(12, rect.left), maxX),
+              y: rect.bottom + 6,
+            }
+            emit()
+          }
+          const blockEl = typeof a.block === 'string' ? blockDoms.get(a.block) : undefined
+          if (blockEl !== undefined) {
+            stats.total += 1
+            try {
+              blockEl.classList.add('dsr-blk')
+              let gutter = gutterByBlock.get(blockEl)
+              if (gutter === undefined) {
+                gutter = doc.createElement('span')
+                gutter.className = 'dsr-gutter'
+                blockEl.insertBefore(gutter, blockEl.firstChild)
+                gutterByBlock.set(blockEl, gutter)
+                created.push({ kind: 'gutter', el: gutter, host: blockEl })
+              }
+              const mark = doc.createElement('span')
+              mark.className = 'dsr-gmark dsr-gmark-' + sev
+              mark.textContent = String(i + 1)
+              mark.title = (a.severity === 'blocker' ? 'blocker' : 'nit') + ' · ' + (a.title || '')
+              mark.addEventListener('click', open)
+              gutter.appendChild(mark)
+              created.push({ kind: 'badge', el: mark, index: i })
+              stats.marked += 1
+            } catch (error) {
+              stats.failures.push('#' + (i + 1) + ' ' + String(error && error.message || error))
+            }
+            return
+          }
           const needle = normalizeAnchor(a.anchor)
           if (needle.length < 4) return
           stats.total += 1
@@ -1431,20 +1557,6 @@ window.__ModuleLoader__.load({
             if (!range) {
               stats.failures.push('#' + (i + 1) + ' anchor not found in DOM text')
               return
-            }
-            const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
-            const open = (event) => {
-              event.stopPropagation()
-              const rect = event.currentTarget.getBoundingClientRect()
-              const docEl = doc.documentElement
-              const maxX = Math.max(12, (docEl ? docEl.clientWidth : 800) - 440)
-              store.popover = {
-                annotation: a,
-                index: i + 1,
-                x: Math.min(Math.max(12, rect.left), maxX),
-                y: rect.bottom + 6,
-              }
-              emit()
             }
             const badge = doc.createElement('span')
             badge.className = 'dsr-badge dsr-badge-' + sev
@@ -1500,16 +1612,67 @@ window.__ModuleLoader__.load({
         const targetsNote = typeof entry.targetsProvided === 'number' && entry.targetsProvided > 0
           ? ' · 含顾问验证清单 ' + entry.targetsProvided + ' 条'
           : ''
+        // 0.12.0 ①：v2 评审（带 verdict）渲染裁决卡头——verdict 徽标 + 总评 +
+        // 统计 chips + 可折叠；旧 entry 保持纯文本头，逐字节不动。
+        const isV2 = typeof entry.verdict === 'string'
+        if (isV2) panel.classList.add('dsr-verdict', 'dsr-verdict-' + entry.verdict, 'dsr-rise')
         const head = doc.createElement('div')
         head.className = 'dsr-tail-head'
-        head.textContent = (entry.status === 'sound'
-          ? '✓ 批评者：草案整体成立'
-          : '批评者批注 · ' + annotations.length + ' 条'
-            + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
-            + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
-            + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
-            + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : ''))
-          + targetsNote
+        if (isV2) {
+          head.style.cursor = 'pointer'
+          head.title = '点击折叠/展开批注列表'
+          const caret = doc.createElement('span')
+          caret.className = 'dsr-vcaret'
+          caret.textContent = '▾'
+          head.appendChild(caret)
+          const badge = doc.createElement('span')
+          badge.className = 'dsr-vbadge dsr-vbadge-' + entry.verdict
+          badge.textContent = entry.verdict === 'pass' ? '✓ 整体成立' : '⚠ 建议修改'
+          head.appendChild(badge)
+          const sum = doc.createElement('span')
+          sum.className = 'dsr-vsum'
+          sum.textContent = entry.summary || '批评者批注 · ' + annotations.length + ' 条'
+          head.appendChild(sum)
+          const blockers = annotations.filter((a) => a && a.severity === 'blocker').length
+          const nits = annotations.length - blockers
+          const chips = doc.createElement('span')
+          chips.className = 'dsr-vchips'
+          if (blockers > 0) {
+            const c = doc.createElement('span')
+            c.className = 'dsr-vchip dsr-vchip-b'
+            c.textContent = blockers + ' blocker'
+            chips.appendChild(c)
+          }
+          if (nits > 0) {
+            const c = doc.createElement('span')
+            c.className = 'dsr-vchip dsr-vchip-n'
+            c.textContent = nits + ' nit'
+            chips.appendChild(c)
+          }
+          if (blockers === 0 && nits === 0) {
+            const c = doc.createElement('span')
+            c.className = 'dsr-vchip dsr-vchip-ok'
+            c.textContent = '0 批注'
+            chips.appendChild(c)
+          }
+          head.appendChild(chips)
+          if (targetsNote !== '') {
+            const tn = doc.createElement('span')
+            tn.className = 'dsrf-note'
+            tn.textContent = targetsNote
+            head.appendChild(tn)
+          }
+          head.addEventListener('click', () => panel.classList.toggle('dsr-collapsed'))
+        } else {
+          head.textContent = (entry.status === 'sound'
+            ? '✓ 批评者：草案整体成立'
+            : '批评者批注 · ' + annotations.length + ' 条'
+              + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
+              + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
+              + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
+              + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : ''))
+            + targetsNote
+        }
         // ── 回传选中：勾选态/已回传态都在 store.feedback（随重绘重读），
         // reviewId 直接取自 entry——原型里的 title 匹配猜测链已删除。
         if (fb && annotations.length > 0) {
@@ -1517,7 +1680,7 @@ window.__ModuleLoader__.load({
           sendBtn.className = 'dsrf-send'
           sendBtn.title = '把勾选的批注回传给主模型修复（author-owns-the-remedy）'
           const syncLabel = () => {
-            sendBtn.textContent = fb.sending ? '回传中…' : (fb.sel.size > 0 ? '回传选中 (' + fb.sel.size + ')' : '回传选中')
+            sendBtn.textContent = fb.sending ? '回传中…' : (fb.sel.size > 0 ? '回传 ' + fb.sel.size + ' 条批注' : '回传选中')
           }
           syncLabel()
           sendBtn.disabled = fb.sending
@@ -1532,7 +1695,10 @@ window.__ModuleLoader__.load({
           fb._syncLabel = syncLabel
         }
         panel.appendChild(head)
+        const vbody = doc.createElement('div')
+        vbody.className = 'dsr-vbody'
         annotations.forEach((a, i) => {
+          if (fb && fb.filter === 'blocker' && a.severity !== 'blocker') return
           const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
           const item = doc.createElement('div')
           item.className = 'dsr-item'
@@ -1548,7 +1714,7 @@ window.__ModuleLoader__.load({
             cb.className = 'dsrf-box'
             cb.checked = !isSent && fb.sel.has(i)
             cb.disabled = fb.sending || isSent
-            cb.title = isSent ? '已回传过' : '勾选后点「回传选中」发给主模型修复'
+            cb.title = isSent ? '已回传过' : '取消勾选=剔除误报，不回传给主模型'
             cb.addEventListener('click', (event) => event.stopPropagation())
             cb.addEventListener('change', () => {
               fb.onToggle(i, cb.checked)
@@ -1563,7 +1729,13 @@ window.__ModuleLoader__.load({
           title.className = 'dsr-title'
           title.textContent = a.title || '（无标题）'
           row.appendChild(title)
-          if (!a.matched) {
+          if (typeof a.block === 'string') {
+            const bt = doc.createElement('span')
+            bt.className = 'dsr-blocktag'
+            bt.textContent = '⌖ ' + a.block
+            row.appendChild(bt)
+          }
+          if (!a.matched && typeof a.block !== 'string') {
             const un = doc.createElement('span')
             un.className = 'dsr-unanchored'
             un.textContent = '未锚定'
@@ -1580,14 +1752,39 @@ window.__ModuleLoader__.load({
           cm.className = 'dsr-comment'
           cm.textContent = a.comment || ''
           item.appendChild(cm)
-          panel.appendChild(item)
+          vbody.appendChild(item)
         })
         if (typeof entry.raw === 'string' && entry.raw !== '') {
           const raw = doc.createElement('div')
           raw.className = 'dsr-raw'
           raw.textContent = entry.raw
-          panel.appendChild(raw)
+          vbody.appendChild(raw)
         }
+        // 分诊脚行（v2 + 有批注）：过滤 + 「仅回传 blocker」快捷键。
+        if (isV2 && fb && annotations.length > 0) {
+          const foot = doc.createElement('div')
+          foot.className = 'dsr-tail-head'
+          foot.style.borderBottom = 'none'
+          foot.style.borderTop = '1px solid rgba(130,130,130,.2)'
+          const filter = doc.createElement('span')
+          filter.className = 'dsrf-filter'
+          for (const [f, label] of [['all', '全部'], ['blocker', '只看 blocker']]) {
+            const b = doc.createElement('button')
+            b.className = fb.filter === f ? 'on' : ''
+            b.textContent = label
+            b.addEventListener('click', (event) => { event.stopPropagation(); fb.onFilter(f) })
+            filter.appendChild(b)
+          }
+          foot.appendChild(filter)
+          const blockersBtn = doc.createElement('button')
+          blockersBtn.className = 'dsrf-blockers'
+          blockersBtn.textContent = '仅选 blocker'
+          blockersBtn.title = '采纳全部 blocker、剔除其余（随后可点「回传」）'
+          blockersBtn.addEventListener('click', (event) => { event.stopPropagation(); fb.onBlockers() })
+          foot.appendChild(blockersBtn)
+          vbody.appendChild(foot)
+        }
+        panel.appendChild(vbody)
         return panel
       }
 
@@ -1624,8 +1821,16 @@ window.__ModuleLoader__.load({
           const reviewId = typeof entry.reviewId === 'string' ? entry.reviewId : ''
           let fb
           if (entry.status !== 'error' && reviewId !== '') {
-            if (!store.feedback.sel.has(reviewId)) store.feedback.sel.set(reviewId, new Set())
             if (!store.feedback.sent.has(reviewId)) store.feedback.sent.set(reviewId, new Set())
+            // 0.12.0 ④默认采纳：首次见到该评审时 sel 预填全部（扣除已回传），
+            // 复选框的语义随之是「剔除」而非「挑选」。
+            if (!store.feedback.sel.has(reviewId)) {
+              const initial = new Set()
+              const anns = Array.isArray(entry.annotations) ? entry.annotations : []
+              const sentSet0 = store.feedback.sent.get(reviewId)
+              anns.forEach((a, i) => { if (!sentSet0.has(i)) initial.add(i) })
+              store.feedback.sel.set(reviewId, initial)
+            }
             const sel = store.feedback.sel.get(reviewId)
             const sent = store.feedback.sent.get(reviewId)
             fb = {
@@ -1633,7 +1838,16 @@ window.__ModuleLoader__.load({
               sent,
               note: store.feedback.note.get(reviewId) || '',
               sending: store.feedback.sending.has(reviewId),
+              filter: store.feedback.filter.get(reviewId) || 'all',
               onToggle: (index, checked) => { if (checked) sel.add(index); else sel.delete(index) },
+              onFilter: (f) => { store.feedback.filter.set(reviewId, f === 'blocker' ? 'blocker' : 'all'); bumpTick() },
+              onBlockers: () => {
+                const anns = Array.isArray(entry.annotations) ? entry.annotations : []
+                sel.clear()
+                anns.forEach((a, i) => { if (a && a.severity === 'blocker' && !sent.has(i)) sel.add(i) })
+                store.feedback.note.set(reviewId, '已选全部 blocker，其余剔除')
+                bumpTick()
+              },
               onSend: () => {
                 if (store.feedback.sending.has(reviewId)) return
                 const indices = Array.from(sel).sort((a, b) => a - b)
@@ -1773,11 +1987,13 @@ window.__ModuleLoader__.load({
           ? '评审中…'
           : entry === undefined
             ? '批注评审'
-            : entry.status === 'sound'
+            : entry.status === 'sound' || entry.verdict === 'pass'
               ? '✓ 无阻断 (' + count + ')'
               : entry.status === 'error'
                 ? '评审失败 · 重试'
-                : '批注 ' + count + ' · 复审'
+                : entry.verdict === 'changes'
+                  ? '⚠ 批注 ' + count + ' · 复审'
+                  : '批注 ' + count + ' · 复审'
         const onClick = () => {
           if (busy) return
           setBusy(true)

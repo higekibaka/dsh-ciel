@@ -1054,6 +1054,9 @@ class AdvisorReviewService extends TypertRemoteService {
         sound,
         ...(parsed.verdict === undefined ? {} : { verdict: parsed.verdict }),
         ...(parsed.summary === '' ? {} : { summary: parsed.summary }),
+        // 块地图（仅 id+type）——浏览器端用同一序号空间把 gutter 徽章对到
+        // 渲染 DOM 的顶层块；块解析失败的批注退回旧 proximity 定位。
+        ...(draftBlocks.length === 0 ? {} : { blocks: draftBlocks.map((b) => ({ id: b.id, type: b.type })) }),
         annotations,
         // ③深化：本次评审携带的顾问验证目标条数（0 = 无清单，基线行为）——
         // 评估回路的地面真值：回传数据可与清单有无交叉分析批注质量。
