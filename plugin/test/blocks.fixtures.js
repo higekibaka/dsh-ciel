@@ -50,6 +50,18 @@ export const BLOCK_FIXTURES = [
     expect: [['list', '- 甲\n\n- 乙\n\n- 丙']],
   },
   {
+    // 真实事故（2026-09-01）：j === i 时 i = j 原地死循环，同步循环卡死宿主
+    // 事件循环（实例端口全灭）。延续必须以严格前进（j > i）为前提。
+    name: 'list followed by indented fence WITHOUT blank line (hang regression)',
+    text: '- 甲\n  ```js\ncode\n  ```',
+    expect: [['list', '- 甲'], ['code', '  ```js\ncode\n  ```']],
+  },
+  {
+    name: 'list followed by indented heading without blank line (hang regression)',
+    text: '- 甲\n  ## 标题',
+    expect: [['list', '- 甲'], ['heading', '  ## 标题']],
+  },
+  {
     name: 'list with indented continuation',
     text: '- 甲\n  续行内容\n- 乙',
     expect: [['list', '- 甲\n  续行内容\n- 乙']],

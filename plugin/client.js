@@ -749,7 +749,7 @@ window.__ModuleLoader__.load({
       const lines = String(text).split('\n')
       const blocks = []
       const isBlank = (l) => /^\s*$/.test(l)
-      const isHeading = (l) => /^#{1,6}\s/.test(l)
+      const isHeading = (l) => /^\s{0,3}#{1,6}\s/.test(l)
       const fenceMark = (l) => {
         const m = /^(\s*)(`{3,}|~{3,})/.exec(l)
         return m ? { ch: m[2][0], len: m[2].length } : null
@@ -798,7 +798,9 @@ window.__ModuleLoader__.load({
             while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isHr(lines[i])) i += 1
             let j = i
             while (j < lines.length && isBlank(lines[j])) j += 1
-            if (j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
+            // 松散列表延续必须以严格前进为前提：j === i 意味着下一行就是边界
+            // （缩进围栏/缩进标题等），i = j 会原地死循环——与 host 副本逐行一致。
+            if (j > i && j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
             break
           }
           push('list', start, i)

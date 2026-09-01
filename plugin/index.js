@@ -628,7 +628,7 @@ function splitMarkdownBlocks(text) {
   const lines = String(text).split('\n')
   const blocks = []
   const isBlank = (l) => /^\s*$/.test(l)
-  const isHeading = (l) => /^#{1,6}\s/.test(l)
+  const isHeading = (l) => /^\s{0,3}#{1,6}\s/.test(l)
   const fenceMark = (l) => {
     const m = /^(\s*)(`{3,}|~{3,})/.exec(l)
     return m ? { ch: m[2][0], len: m[2].length } : null
@@ -677,7 +677,10 @@ function splitMarkdownBlocks(text) {
         while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isHr(lines[i])) i += 1
         let j = i
         while (j < lines.length && isBlank(lines[j])) j += 1
-        if (j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
+        // 松散列表延续必须以严格前进为前提：j === i 意味着下一行就是边界
+        // （缩进围栏/缩进标题等），i = j 会原地死循环——生产实例曾因此被
+        // 事件循环卡死（真实教训，见 test 夹具）。
+        if (j > i && j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
         break
       }
       push('list', start, i)
@@ -1063,7 +1066,9 @@ class AdvisorReviewService extends TypertRemoteService {
         targetsProvided: targets.items.length,
         createdAt: Date.now(),
       }
-      if (annotations.length === 0) entry.raw = text.slice(0, 2000)
+      // raw 回退只服务于「无 verdict 且零批注」的未解析形态（completed-unparsed）；
+      // v2 pass（零批注但 verdict 有效）的 verdict/summary 已在卡头，raw 是噪音。
+      if (annotations.length === 0 && parsed.verdict === undefined) entry.raw = text.slice(0, 2000)
       try {
         await persistReview(sessionId, entry)
       } catch (persistError) {
