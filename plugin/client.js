@@ -1329,12 +1329,17 @@ window.__ModuleLoader__.load({
           .filter((s) => s.length >= 4)
           .map((s) => s.slice(0, 40))
         let node = anchorEl.parentElement
+        // 渐进挂载兜底：长消息分多个 mutation 周期上树，probe 可能暂时落空。
+        // 记住沿途第一个「够大」的祖先——被评审文本总在按钮自己的 flow item
+        // 里，而匹配本来就是 proximity 消歧，落到这里不跨消息串味。
+        let firstBig = null
         for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
-          if (node === (anchorEl.ownerDocument && anchorEl.ownerDocument.body)) return null
+          if (node === (anchorEl.ownerDocument && anchorEl.ownerDocument.body)) break
           const hay = textOf(node, anchorEl).replace(/\s+/g, ' ')
+          if (firstBig === null && hay.length > 200) firstBig = node
           if (probes.length === 0 ? hay.length > 200 : probes.some((p) => hay.includes(p))) return node
         }
-        return null
+        return firstBig
       }
 
       // ── undo exactly what one effect created: mark spans unwrap back to
@@ -1397,10 +1402,34 @@ window.__ModuleLoader__.load({
           for (const child of el.children) visit(child)
         }
         visit(root)
-        if (candidates.length < blocks.length) return map
-        const offset = candidates.length - blocks.length
-        for (let i = 0; i < blocks.length; i += 1) {
-          if (candidates[offset + i].type === blocks[i].type) map.set(blocks[i].id, candidates[offset + i].el)
+        if (candidates.length === 0) return map
+        // 类型序列对齐 + 前缀位置对齐的混合：正文之后的交付物/折叠段会让
+        // 候选比块少（渲染器把富代码卡渲成自定义组件而非 pre，折叠段整块
+        // 不上树），盲目取末尾 N 个或要求全长相等都会清零。做法：对每个偏移
+        // 按「类型一致数 / 重叠长度」打分取最优；匹配率 ≥60% 时按位置映射
+        // 全部重叠块（吸收组件分类噪音），否则只映射类型一致的位置——对不
+        // 上的块保持未映射，消费方退回 proximity。
+        const overlap = (o) => Math.min(candidates.length - o, blocks.length)
+        let bestOffset = -1
+        let bestRatio = 0
+        for (let o = 0; o < candidates.length; o += 1) {
+          const n = overlap(o)
+          if (n <= 0) break
+          let score = 0
+          for (let i = 0; i < n; i += 1) {
+            if (candidates[o + i].type === blocks[i].type) score += 1
+          }
+          const ratio = score / n
+          if (ratio > bestRatio) { bestRatio = ratio; bestOffset = o }
+          if (ratio === 1) break
+        }
+        if (bestOffset < 0) return map
+        const n = overlap(bestOffset)
+        const positional = bestRatio >= 0.6
+        for (let i = 0; i < n; i += 1) {
+          if (positional || candidates[bestOffset + i].type === blocks[i].type) {
+            map.set(blocks[i].id, candidates[bestOffset + i].el)
+          }
         }
         return map
       }
@@ -1525,7 +1554,17 @@ window.__ModuleLoader__.load({
             }
             emit()
           }
-          const blockEl = typeof a.block === 'string' ? blockDoms.get(a.block) : undefined
+          const mapped = typeof a.block === 'string' ? blockDoms.get(a.block) : undefined
+          // 证据护栏：位置映射只是猜测，锚引文才是证据。块元素文本不含锚引文
+          // 时（渲染器折叠/改写了块，如富代码卡）退回 proximity 找精确位置，
+          // 绝把徽章挂到错块上。
+          const blockEl = (() => {
+            if (mapped === undefined) return undefined
+            const probe = normalizeAnchor(a.anchor)
+            if (probe.length < 4) return mapped
+            const hay = textOf(mapped, anchorEl).replace(/\s+/g, ' ')
+            return hay.includes(probe) ? mapped : undefined
+          })()
           if (blockEl !== undefined) {
             stats.total += 1
             try {
