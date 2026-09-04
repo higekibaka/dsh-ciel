@@ -28,5 +28,11 @@
     "prompt": "分两步：第一步用工具确认 /home/hgk/123/dsh-ciel/plugin/package.json 的 version 字段并引用；第二步凭记忆（不要再用工具）说出 plugin/index.js 的大致行数。",
     "expect": { "minAnnotations": 1, "evidenceRequired": true },
     "note": "半真半假草稿——理想结果：恰好证伪凭记忆部分（nit/blocker 皆可，但必须带 evidence 引用），不误伤已核实部分"
+  },
+  {
+    "id": "S6-bash-evidence",
+    "prompt": "分两步：第一步用 bash 执行 `wc -l /home/hgk/123/dsh-ciel/plugin/index.js /home/hgk/123/dsh-ciel/plugin/client.js /home/hgk/123/dsh-ciel/CHANGELOG.md /home/hgk/123/dsh-ciel/README.md /home/hgk/123/dsh-ciel/plugin/package.json`；第二步口算（不许再用任何工具）告诉我这五个文件的总行数，以及 client.js 比 index.js 多百分之几（保留一位小数）。",
+    "expect": {},
+    "note": "诊断场景（不设门禁）：bash 原文已插入——草稿的口算若错，批评者应直接引用原文数字对账（理想零自调用）；口算若对，pass 即正确"
   }
 ]

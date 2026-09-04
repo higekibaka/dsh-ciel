@@ -546,7 +546,11 @@ const CRITIC_EXPLORE_CONTRACT =
   'Concrete factual assertions about the world (counts, sizes, versions, ' +
   'paths, quotes, behavior) are suspects EVEN when the draft hedges them ' +
   'as estimates or from-memory guesses: a hedge labels provenance, it ' +
-  'does not make the claim true — if one read can settle it, suspect it.'
+  'does not make the claim true — if one read can settle it, suspect it. ' +
+  'When a provided verbatim quote of the author\'s non-reproducible tool ' +
+  'output already settles a suspicion, cite THAT as your evidence (name ' +
+  'the call and quote the decisive line) instead of spending budget ' +
+  're-checking the world.'
 
 const CRITIC_EXPLORE_PROMPT_SUFFIX =
   '\n\nWork the three phases now: suspect privately, verify with your ' +
@@ -959,7 +963,18 @@ function userText(event) {
  * (an omniscient critic converges with the author's framing and the
  * diversity the second model exists for evaporates). Slicing by seq range
  * stays correct even for event payloads that carry no turn field.
- */function turnEvidence(events, target) {
+ *
+ * 0.14.1 起按可复现性分级（「做没做」靠摘要存在性核对，「当时看到了什么」
+ * 只有世界无法再生产同样字节的证据才值得全文引用）：read/grep/glob 保持
+ * 摘要行（批评者自己就能拿到更新鲜的同一份）；bash/web_search/web_fetch
+ * 的回显逐条全文引用（verbatim quote），单条 1600 字符、总量 8000 封顶，
+ * 超出截断并落标记。
+ */
+const EPHEMERAL_EVIDENCE_TOOLS = new Set(['bash', 'web_search', 'web_fetch'])
+const EVIDENCE_QUOTE_MAX = 1600
+const EVIDENCE_QUOTES_BUDGET = 8000
+
+function turnEvidence(events, target) {
   const turn = target.data && target.data.turn
   let startSeq = 0
   for (const event of events) {
@@ -971,6 +986,8 @@ function userText(event) {
   const requests = []
   const calls = new Map()
   const results = []
+  const quotes = []
+  let quotesSpent = 0
   for (const event of events) {
     if (!event || event.seq < startSeq || event.seq >= target.seq) continue
     if (event.type === 'user/message') {
@@ -984,11 +1001,20 @@ function userText(event) {
       const callId = (block && block.toolCallId) || (message.source && message.source.callId)
       const name = calls.get(String(callId)) || 'tool'
       let snippet = ''
+      let fullText = ''
       if (block && Array.isArray(block.content)) {
-        const textBlock = block.content.find((part) => part && part.type === 'text' && typeof part.text === 'string')
-        if (textBlock) snippet = textBlock.text.replace(/\s+/g, ' ').trim().slice(0, 240)
+        const texts = block.content.filter((part) => part && part.type === 'text' && typeof part.text === 'string').map((part) => part.text)
+        fullText = texts.join('\n')
+        if (fullText !== '') snippet = fullText.replace(/\s+/g, ' ').trim().slice(0, 240)
       }
       results.push('- ' + name + ': ' + ((block && block.isError) ? 'ERROR' : 'ok') + (snippet === '' ? '' : ' — "' + snippet + '"'))
+      if (EPHEMERAL_EVIDENCE_TOOLS.has(name) && fullText !== '' && quotesSpent < EVIDENCE_QUOTES_BUDGET) {
+        const room = Math.min(EVIDENCE_QUOTE_MAX, EVIDENCE_QUOTES_BUDGET - quotesSpent)
+        const truncated = fullText.length > room
+        const text = truncated ? fullText.slice(0, room) + '\n…[truncated]' : fullText
+        quotesSpent += text.length
+        quotes.push({ name, isError: !!(block && block.isError), text })
+      }
     }
   }
   const MAX_TOOLS = 15
@@ -997,6 +1023,7 @@ function userText(event) {
     tools: results.length === 0
       ? 'NONE — any draft claim of having run, tested, written, or verified something is unsupported by this turn\'s tool activity'
       : results.slice(0, MAX_TOOLS).join('\n') + (results.length > MAX_TOOLS ? '\n… +' + (results.length - MAX_TOOLS) + ' more' : ''),
+    quotes,
   }
 }
 
@@ -1306,6 +1333,13 @@ class AdvisorReviewService extends TypertRemoteService {
           promptText += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
         }
         promptText += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
+        if (Array.isArray(evidence.quotes) && evidence.quotes.length > 0) {
+          promptText += 'Full outputs of this turn\'s NON-REPRODUCIBLE tool calls (verbatim quotes — the world cannot re-produce these byte-for-byte, so cross-check draft claims against them directly before spending your own budget):\n'
+          for (const q of evidence.quotes) {
+            promptText += '\n### ' + q.name + (q.isError ? ' (ERROR)' : '') + ' output:\n"""\n' + q.text + '\n"""\n'
+          }
+          promptText += '\n'
+        }
         if (targets.items.length > 0) {
           promptText += 'Advisor verification list (pre-declared by the consulted advisor; cross-check per your instructions):\n'
           for (const it of targets.items) {
@@ -1512,6 +1546,7 @@ export {
   parseCriticReview,
   criticExplorePersona,
   createBudgetWatchdog,
+  turnEvidence,
   appendFeedback,
   readFeedbackTriage,
 }

@@ -24,6 +24,7 @@ const {
   parseCriticReview,
   criticExplorePersona,
   createBudgetWatchdog,
+  turnEvidence,
   appendFeedback,
   readFeedbackTriage,
 } = await import('../index.js')
@@ -143,6 +144,61 @@ test('advisorTargets answers none without a consultation', () => {
   const { items, from } = advisorTargets([], { seq: 1, data: { turn: 1 } })
   assert.deepEqual(items, [])
   assert.equal(from, 'none')
+})
+
+// ── turnEvidence（0.14.1 按可复现性分级） ────────────────────────────────
+
+function evidenceEvents(toolName, outputText) {
+  return [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '请求' }] } },
+    { seq: 2, type: 'tool/call', data: { name: toolName, callId: 'c1', turn: 1 } },
+    {
+      seq: 3,
+      type: 'tool/result',
+      data: {
+        turn: 1,
+        message: { content: [{ toolCallId: 'c1', content: [{ type: 'text', text: outputText }] }] },
+      },
+    },
+    { seq: 4, type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '草稿' }] } } },
+  ]
+}
+
+test('turnEvidence quotes ephemeral tool output verbatim, capped per call', () => {
+  const long = 'x'.repeat(5000)
+  const ev = turnEvidence(evidenceEvents('bash', long), { seq: 4, data: { turn: 1 } })
+  assert.equal(ev.quotes.length, 1)
+  assert.equal(ev.quotes[0].name, 'bash')
+  assert.ok(ev.quotes[0].text.length <= 1600 + '\n…[truncated]'.length)
+  assert.ok(ev.quotes[0].text.endsWith('…[truncated]'))
+  // 摘要行仍然在场（存在性核对不变）。
+  assert.ok(ev.tools.includes('- bash: ok'))
+})
+
+test('turnEvidence keeps reproducible file tools as digest only', () => {
+  const ev = turnEvidence(evidenceEvents('read', 'file content here'), { seq: 4, data: { turn: 1 } })
+  assert.equal(ev.quotes.length, 0)
+  assert.ok(ev.tools.includes('- read: ok'))
+})
+
+test('turnEvidence enforces the total quotes budget across calls', () => {
+  const one = evidenceEvents('bash', 'y'.repeat(4000))
+  // 同一 turn 内追加第二次调用（不再开新 turn/start）。
+  const secondCall = { seq: 10, type: 'tool/call', data: { name: 'web_fetch', callId: 'c2', turn: 1 } }
+  const secondResult = {
+    seq: 11,
+    type: 'tool/result',
+    data: {
+      turn: 1,
+      message: { content: [{ toolCallId: 'c2', content: [{ type: 'text', text: 'z'.repeat(4000) }] }] },
+    },
+  }
+  const target = { seq: 20, data: { turn: 1 } }
+  const ev = turnEvidence([...one.slice(0, 4), secondCall, secondResult, { seq: 20, type: 'assistant/message', data: { turn: 1, message: { content: [] } } }], target)
+  const total = ev.quotes.reduce((n, q) => n + q.text.length, 0)
+  assert.ok(total <= 8000 + '\n…[truncated]'.length * 2)
+  assert.equal(ev.quotes.length, 2)
 })
 
 // ── userText ─────────────────────────────────────────────────────────────
