@@ -867,6 +867,10 @@ window.__ModuleLoader__.load({
       '.dsr-vchip-b{color:#f85149;background:rgba(248,81,73,.13)}',
       '.dsr-vchip-n{color:#d29922;background:rgba(210,153,34,.13)}',
       '.dsr-vchip-ok{color:#3fb950;background:rgba(63,185,80,.13)}',
+      // 0.13.0 契约 v3：排查统计 chip（中性蓝灰，区别于批注计数的红黄）
+      '.dsr-vchip-s{color:#79a7e8;background:rgba(88,166,255,.12);cursor:default}',
+      '.dsr-evidence{margin:4px 0 2px;padding:3px 8px;border-left:2px solid rgba(88,166,255,.5);font-size:11.5px;opacity:.85;white-space:pre-wrap;word-break:break-word}',
+      '.dsr-downgraded{font-size:10px;font-family:ui-monospace,monospace;color:#79a7e8;border:1px solid rgba(88,166,255,.4);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap;cursor:help}',
       '.dsr-vcaret{flex:none;width:14px;opacity:.55;font-size:11px;transition:transform .18s}',
       '.dsr-tail.dsr-collapsed .dsr-vcaret{transform:rotate(-90deg)}',
       '.dsr-tail.dsr-collapsed .dsr-vbody{display:none}',
@@ -1716,6 +1720,20 @@ window.__ModuleLoader__.load({
             c.textContent = '0 批注'
             chips.appendChild(c)
           }
+          // 0.13.0 契约 v3：排查/证伪/排除统计（模型自报）与实测只读调用数
+          // （运行时事件流采样）并列展示——自报失真时两者对不上，一眼可见。
+          if (entry.stats && typeof entry.stats.checked === 'number') {
+            const c = doc.createElement('span')
+            c.className = 'dsr-vchip dsr-vchip-s'
+            c.textContent = '排查 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
+            if (entry.explore) c.title = '实测只读调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget + '（事件流采样，非模型自报）'
+            chips.appendChild(c)
+          } else if (entry.explore) {
+            const c = doc.createElement('span')
+            c.className = 'dsr-vchip dsr-vchip-s'
+            c.textContent = '探索调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget
+            chips.appendChild(c)
+          }
           head.appendChild(chips)
           if (targetsNote !== '') {
             const tn = doc.createElement('span')
@@ -1796,6 +1814,14 @@ window.__ModuleLoader__.load({
             bt.textContent = '⌖ ' + a.block
             row.appendChild(bt)
           }
+          // 0.13.0 契约 v3：探索模式下无证据 blocker 被降为 nit，标记原因。
+          if (a.downgraded === 'evidence-missing') {
+            const dg = doc.createElement('span')
+            dg.className = 'dsr-downgraded'
+            dg.textContent = '缺证据·降级'
+            dg.title = '探索契约要求 blocker 引用本轮只读工具所得证据；该批注未通过核验，已降为 nit'
+            row.appendChild(dg)
+          }
           if (!a.matched && typeof a.block !== 'string') {
             const un = doc.createElement('span')
             un.className = 'dsr-unanchored'
@@ -1808,6 +1834,13 @@ window.__ModuleLoader__.load({
             an.className = 'dsr-anchor'
             an.textContent = a.anchor.length > 220 ? a.anchor.slice(0, 219) + '…' : a.anchor
             item.appendChild(an)
+          }
+          // 0.13.0 契约 v3：探索取证的证据行（批评者只读核实所得）。
+          if (typeof a.evidence === 'string' && a.evidence !== '') {
+            const ev = doc.createElement('div')
+            ev.className = 'dsr-evidence'
+            ev.textContent = '证据：' + (a.evidence.length > 260 ? a.evidence.slice(0, 259) + '…' : a.evidence)
+            item.appendChild(ev)
           }
           const cm = doc.createElement('div')
           cm.className = 'dsr-comment'
