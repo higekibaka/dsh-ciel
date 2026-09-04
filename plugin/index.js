@@ -550,7 +550,10 @@ const CRITIC_EXPLORE_CONTRACT =
   'When a provided verbatim quote of the author\'s non-reproducible tool ' +
   'output already settles a suspicion, cite THAT as your evidence (name ' +
   'the call and quote the decisive line) instead of spending budget ' +
-  're-checking the world.'
+  're-checking the world. NEVER spend calls investigating your own ' +
+  'instructions or this review contract (searching the codebase for the ' +
+  'format rules you were given): the contract is a given, not a draft ' +
+  'claim — your tools exist to falsify the DRAFT, nothing else.'
 
 const CRITIC_EXPLORE_PROMPT_SUFFIX =
   '\n\nWork the three phases now: suspect privately, verify with your ' +

@@ -464,11 +464,12 @@ test('createBudgetWatchdog narrates the running tool and thinking phases', async
   const wd = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'c', budget: 5, intervalMs: 5, onBreach: () => {} })
   await sleep(15)
   assert.deepEqual(wd.action(), { kind: 'thinking' })
-  evsRef.evs = [{ type: 'tool/call', data: { name: 'read', arguments: '{"file_path":"/home/hgk/123/dsh-ciel/plugin/index.js"}' } }]
+  evsRef.evs = [{ type: 'tool/call', data: { name: 'read', arguments: '{"file_path":"/some/fairly/long/path/to/plugin/index.js"}' } }]
   await sleep(15)
   assert.equal(wd.action().kind, 'tool')
   assert.equal(wd.action().name, 'read')
-  assert.equal(wd.action().target, '…me/hgk/123/dsh-ciel/plugin/index.js')
+  // 超过 36 字符的目标截断为 '…' + 末 35 字符。
+  assert.equal(wd.action().target, '…fairly/long/path/to/plugin/index.js')
   evsRef.evs = [...evsRef.evs, { type: 'tool/result', data: {} }]
   await sleep(15)
   assert.equal(wd.action().kind, 'thinking')

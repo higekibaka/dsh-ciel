@@ -9,18 +9,35 @@
  *
  * 用法：
  *   node scripts/ab-harness.js <实例URL带token> <输出前缀> [场景id逗号过滤]
- * 依赖：playwright（harness checkout 的依赖树）、实例侧 dsh-ciel 为最新代码。
- * 评审条目源：$DSH_HOME/dsh-advisor/reviews/<sessionId>.jsonl（按 mtime 归属）。
+ * 依赖与环境（均可移植，不含本机路径）：
+ *   - playwright：默认 require('playwright')；找不到时设 CIEL_AB_PLAYWRIGHT
+ *     指向其模块入口（如某 checkout 的 node_modules/playwright）。
+ *   - 浏览器：默认 playwright 的 channel:'chrome'；或设 CIEL_AB_CHROME 指向
+ *     可执行文件。
+ *   - 语料里的 {REPO} 占位符替换为本仓库根目录（scripts/.. 自动推导）——
+ *     被评审的文件随仓库走，任何机器克隆后即可跑。
+ *   - 评审条目源：$DSH_HOME（缺省 ~/.dsh）/dsh-advisor/reviews/<sessionId>.jsonl。
  */
-const { chromium } = require('/home/hgk/deepseek-harness/node_modules/.pnpm/playwright@1.61.1/node_modules/playwright')
+let chromium
+try {
+  chromium = (process.env.CIEL_AB_PLAYWRIGHT
+    ? require(process.env.CIEL_AB_PLAYWRIGHT)
+    : require('playwright')).chromium
+} catch {
+  console.error('playwright not found: run `npm i playwright`, or set CIEL_AB_PLAYWRIGHT to its module path')
+  process.exit(1)
+}
 const { readFileSync, writeFileSync, readdirSync, statSync } = require('fs')
-const { join } = require('path')
+const { join, dirname } = require('path')
 
 const BASE = process.argv[2]
 const OUT = process.argv[3] || '/tmp/ab'
 const FILTER = process.argv[4] ? process.argv[4].split(',') : null
+const REPO_ROOT = dirname(__dirname)
 const CORPUS = JSON.parse(readFileSync(join(__dirname, 'ab-corpus.json'), 'utf8'))
-const REVIEWS_DIR = join(process.env.HOME, '.dsh', 'dsh-advisor', 'reviews')
+  .map((s) => ({ ...s, prompt: s.prompt.replaceAll('{REPO}', REPO_ROOT) }))
+const REVIEWS_DIR = join(process.env.DSH_HOME || join(process.env.HOME, '.dsh'), 'dsh-advisor', 'reviews')
+const CHROME = process.env.CIEL_AB_CHROME || undefined
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -151,7 +168,9 @@ async function runScenario(page, scenario) {
 
 ;(async () => {
   const scenarios = FILTER ? CORPUS.filter((s) => FILTER.includes(s.id)) : CORPUS
-  const browser = await chromium.launch({ executablePath: '/home/hgk/.local/bin/dsh-chrome', args: ['--no-sandbox'] })
+  const browser = await chromium.launch(CHROME
+    ? { executablePath: CHROME, args: ['--no-sandbox'] }
+    : { channel: 'chrome', args: ['--no-sandbox'] })
   const page = await browser.newPage()
   await page.setViewportSize({ width: 1400, height: 1100 })
   await page.goto(BASE, { waitUntil: 'load', timeout: 30000 })

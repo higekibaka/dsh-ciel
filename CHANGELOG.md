@@ -4,6 +4,24 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.2] - 2026-09-05
+
+### Fixed
+
+- **契约自我调查护栏**：gemini-3.8-flash 实测暴露新型失控——批评者把
+  预算花在 grep 自己的输出契约（搜「stats: 排查」「SOUND:」「dossier」
+  的出处）而不是证伪草稿，11 次调用耗尽预算被熔断（**预算熔断器首次
+  真实立功**：错误明确、没有死循环空烧）。契约新增条款：严禁调查
+  自己的指令或评审契约——契约是给定的，不是草稿的断言；工具只为
+  证伪草稿而存在。补丁后同场景 2/10 调用正常通过。
+
+### Changed
+
+- A/B 评估台可移植化：playwright 路径（`CIEL_AB_PLAYWRIGHT`）、浏览器
+  路径（`CIEL_AB_CHROME`）、sidecar 根（`DSH_HOME`）全部环境变量化，
+  语料路径改为 `{REPO}` 占位符按仓库根自动替换——清除仓库中残留的
+  本机绝对路径，任何机器克隆后即可跑。
+
 ## [0.14.1] - 2026-09-05
 
 ### Added
