@@ -25,6 +25,8 @@ const {
   criticExplorePersona,
   createBudgetWatchdog,
   turnEvidence,
+  parseSuspectList,
+  triageSuspects,
   appendFeedback,
   readFeedbackTriage,
 } = await import('../index.js')
@@ -417,6 +419,57 @@ test('criticExplorePersona swaps the no-tools clause for a budgeted read-only cl
   assert.equal(persona.includes('HARD BUDGET of 5'), true)
   assert.equal(persona.includes('## dossier'), true)
   assert.equal(persona.includes('read, grep, glob'), true)
+})
+
+// ── 契约 v4 两阶段：parseSuspectList / triageSuspects / stats 未查 ──────
+
+const SUSPECT_REPLY = [
+  '## suspects',
+  '- suspect: index.js 行数声称 150 行 | block: b2 | bearing: high | falsify: read 该文件看末行号',
+  '- suspect: 顾问默认值声称是 openai | bearing: low | falsify: grep provider default',
+  '- suspect: 版本号声称 0.14.0 | block: b3 | bearing: high | falsify: read package.json',
+  '这行不是清单，应被忽略',
+  '- suspect: 全稿层面的口气问题',
+].join('\n')
+
+test('parseSuspectList parses fields with tolerant defaults', () => {
+  const list = parseSuspectList(SUSPECT_REPLY)
+  assert.equal(list.length, 4)
+  assert.deepEqual(list[0], { suspect: 'index.js 行数声称 150 行', block: 'b2', bearing: 'high', falsify: 'read 该文件看末行号' })
+  assert.equal(list[1].block, undefined)
+  assert.equal(list[1].bearing, 'low')
+  assert.equal(list[2].bearing, 'high')
+  assert.equal(list[3].falsify, '')
+  assert.equal(list[3].bearing, 'low')
+})
+
+test('parseSuspectList caps at 8 and drops empty suspects', () => {
+  const many = Array.from({ length: 12 }, (_, i) => '- suspect: s' + i + ' | bearing: low | falsify: f').join('\n')
+  assert.equal(parseSuspectList(many).length, 8)
+  assert.equal(parseSuspectList('## suspects\n- suspect:    \n- suspect: ok').length, 1)
+})
+
+test('triageSuspects orders high-bearing first (stable) and caps to budget', () => {
+  const list = parseSuspectList(SUSPECT_REPLY)
+  const { chosen, skipped } = triageSuspects(list, 2)
+  assert.equal(chosen.length, 2)
+  assert.equal(skipped.length, 2)
+  // high 在前且保持原顺序（b2 先于 b3）。
+  assert.equal(chosen[0].suspect, 'index.js 行数声称 150 行')
+  assert.equal(chosen[1].suspect, '版本号声称 0.14.0')
+  assert.equal(skipped[0].suspect, '顾问默认值声称是 openai')
+  // budget 0/负数也至少保留 1 条。
+  assert.equal(triageSuspects(list, 0).chosen.length, 1)
+})
+
+test('parseCriticReview stats line reads the optional 未查 component', () => {
+  const withZ = '## verdict: pass\nsummary: ok\nstats: 排查 5 · 证伪 1 · 排除 2 · 未查 2'
+  assert.deepEqual(parseCriticReview(withZ, CRITIC_DRAFT, CRITIC_BLOCKS).stats, { checked: 5, confirmed: 1, excluded: 2, unchecked: 2 })
+  const bare = '## verdict: pass\nsummary: ok\nstats: 5 1 2 2'
+  assert.deepEqual(parseCriticReview(bare, CRITIC_DRAFT, CRITIC_BLOCKS).stats, { checked: 5, confirmed: 1, excluded: 2, unchecked: 2 })
+  // 旧三元格式不受影响（无 unchecked 字段）。
+  const tri = '## verdict: pass\nsummary: ok\nstats: 排查 3 · 证伪 1 · 排除 2'
+  assert.deepEqual(parseCriticReview(tri, CRITIC_DRAFT, CRITIC_BLOCKS).stats, { checked: 3, confirmed: 1, excluded: 2 })
 })
 
 // ── 预算看门狗（0.13.0 契约 v3 硬熔断） ─────────────────────────────────

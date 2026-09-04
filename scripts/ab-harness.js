@@ -69,10 +69,28 @@ async function newSession(page) {
     if (btn) btn.click()
   })
   await sleep(600)
-  await page.evaluate(() => {
-    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && /Gemini 3/i.test(e.textContent || ''))
-    for (const e of els) { const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { e.click(); return } }
+  // 0.1.3 新版选择器：chip → 「Model <当前>」行 → 模型列表（provider 分组，
+  // 可能需展开）→ 精确点 gemini-3.8-flash。任一环节失败打印可见文本排查。
+  const expandRow = await page.evaluate(() => {
+    const els = Array.from(document.querySelectorAll('*')).filter((e) => {
+      const t = (e.textContent || '').trim()
+      return /^Model\b/.test(t) && t.length < 30
+    })
+    const vis = els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 })
+    const el = vis[vis.length - 1]
+    if (el) { el.click(); return (el.textContent || '').trim().slice(0, 40) }
+    return null
   })
+  await sleep(800)
+  const picked = await page.evaluate(() => {
+    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && /gemini-3\.8-flash|Gemini 3\.8/i.test(e.textContent || ''))
+    for (const e of els) { const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { e.click(); return (e.textContent || '').trim().slice(0, 40) } }
+    return null
+  })
+  if (picked === null) {
+    const visible = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 300))
+    console.log('  ⚠ model picker: gemini-3.8 not found (row:', expandRow, '); visible:', visible)
+  }
   await sleep(600)
 }
 
@@ -88,7 +106,7 @@ async function runScenario(page, scenario) {
   // 等回复完成（该消息出现评审按钮）
   const baseCount = await page.evaluate(() => document.querySelectorAll('.dsr-btn').length)
   let replyReady = false
-  for (let i = 0; i < 150; i += 1) {
+  for (let i = 0; i < 300; i += 1) {
     await sleep(1000)
     const n = await page.evaluate(() => document.querySelectorAll('.dsr-btn').length)
     if (n > baseCount) { replyReady = true; break }
