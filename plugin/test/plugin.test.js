@@ -22,6 +22,7 @@ const {
   settingsUserSection,
   splitMarkdownBlocks,
   parseCriticReview,
+  criticExplorePersona,
   appendFeedback,
   readFeedbackTriage,
 } = await import('../index.js')
@@ -289,6 +290,76 @@ test('parseCriticReview reads pass verdicts with zero annotations', () => {
   const { verdict, annotations } = parseCriticReview('## verdict: pass\nsummary: 没发现问题。', CRITIC_DRAFT, CRITIC_BLOCKS)
   assert.equal(verdict, 'pass')
   assert.equal(annotations.length, 0)
+})
+
+// ── parseCriticReview（契约 v3：dossier/verdict 分离 + stats + evidence） ──
+
+const V3_REPLY = [
+  '## dossier',
+  '- suspect: b3 的代码有未处理越界 → confirmed: src/list.js:40 无长度校验',
+  '- suspect: 摘要可能丢脏状态 → excluded: read 显示闭组仍渲染徽标',
+  '### [blocker] 已排除疑点在卷宗里伪装复发',
+  'comment: 这行属于 dossier 段，绝不应落进批注。',
+  '',
+  '## verdict: changes',
+  'summary: 越界访问是阻断性问题。',
+  'stats: 排查 2 · 证伪 1 · 排除 1',
+  '',
+  '### [blocker] 越界访问',
+  'block: b3',
+  'evidence: src/list.js:40 直接索引 items[i]，上方无长度校验',
+  'anchor: const a = 1',
+  'comment: i 可等于 items.length。',
+  '',
+  '### [blocker] 无证据的高危断言应降级',
+  'block: b2',
+  'comment: 没有任何工具取证支撑。',
+].join('\n')
+
+test('parseCriticReview v3 consumes only the verdict section (dossier leak-proof)', () => {
+  const { verdict, summary, stats, annotations } = parseCriticReview(V3_REPLY, CRITIC_DRAFT, CRITIC_BLOCKS, { explore: true })
+  assert.equal(verdict, 'changes')
+  assert.equal(summary, '越界访问是阻断性问题。')
+  assert.deepEqual(stats, { checked: 2, confirmed: 1, excluded: 1 })
+  // dossier 里的伪装 ### 头不得落批注；只有 verdict 段的两条。
+  assert.equal(annotations.length, 2)
+  assert.equal(annotations[0].title, '越界访问')
+  assert.equal(annotations[0].evidence, 'src/list.js:40 直接索引 items[i]，上方无长度校验')
+  assert.equal(annotations[0].severity, 'blocker')
+  assert.equal(annotations[0].block, 'b3')
+})
+
+test('parseCriticReview v3 downgrades evidence-less blockers to nit in explore mode', () => {
+  const { annotations } = parseCriticReview(V3_REPLY, CRITIC_DRAFT, CRITIC_BLOCKS, { explore: true })
+  assert.equal(annotations[1].severity, 'nit')
+  assert.equal(annotations[1].downgraded, 'evidence-missing')
+  assert.equal(annotations[1].evidence, undefined)
+})
+
+test('parseCriticReview v2 mode keeps evidence-less blockers as blocker', () => {
+  const { annotations, stats } = parseCriticReview(V3_REPLY, CRITIC_DRAFT, CRITIC_BLOCKS)
+  assert.equal(annotations[1].severity, 'blocker')
+  assert.equal(annotations[1].downgraded, undefined)
+  // stats 行与 evidence 字段在 v2 模式下同样解析（结构是增强不是门槛）。
+  assert.deepEqual(stats, { checked: 2, confirmed: 1, excluded: 1 })
+  assert.equal(annotations[0].evidence, 'src/list.js:40 直接索引 items[i]，上方无长度校验')
+})
+
+test('parseCriticReview stats line tolerates separator variants and omission', () => {
+  const variant = '## verdict: pass\nsummary: ok\nstats: 排查 3，证伪 1，排除 2'
+  assert.deepEqual(parseCriticReview(variant, CRITIC_DRAFT, CRITIC_BLOCKS).stats, { checked: 3, confirmed: 1, excluded: 2 })
+  const bare = '## verdict: pass\nsummary: ok\nstats: 3 1 2'
+  assert.deepEqual(parseCriticReview(bare, CRITIC_DRAFT, CRITIC_BLOCKS).stats, { checked: 3, confirmed: 1, excluded: 2 })
+  const none = '## verdict: pass\nsummary: ok'
+  assert.equal(parseCriticReview(none, CRITIC_DRAFT, CRITIC_BLOCKS).stats, undefined)
+})
+
+test('criticExplorePersona swaps the no-tools clause for a budgeted read-only clause', () => {
+  const persona = criticExplorePersona(5)
+  assert.equal(persona.includes('You have NO tools'), false)
+  assert.equal(persona.includes('HARD BUDGET of 5'), true)
+  assert.equal(persona.includes('## dossier'), true)
+  assert.equal(persona.includes('read, grep, glob'), true)
 })
 
 // ── 分诊 WAL（0.12.0 ④） ────────────────────────────────────────────────
