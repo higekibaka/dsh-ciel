@@ -136,6 +136,19 @@ DSH 0.1.3 的实验包 `agent-team`（Lead/teammate/持久邮箱/共享任务板
 （另一个副产品：DSH 0.1.3 新会话已切 v2 日志格式 `session.v2.jsonl.zstd`，
 所有读日志路径需兼容——本仓库脚本已验证。）
 
+**⚠ 实拍发现的上游竞态（2026-09-05，advisor-test 实证）**：挂载
+`tool-agent-team` 后，**任何**一次性 spawn 子代理（顾问、批评者，与是否
+带工具无关）都有概率在 `agent/created` 时被 `tryMembership` 误判为 Team
+Lead——此刻子会话后缀里的 subagent descriptor 事件尚未落盘，分类探针
+（`subagentDescriptor()` 读 `snapshotEvents`）返回 false → 走「implicit
+lead」分支装上 team 工具与 prompt 节；等 prompt 装配时 descriptor 已
+可见，`membership()` 抛出 `TEAM_NOT_MEMBER`，整个子代理回合以 error
+终止（评审失败：`agent "…" is not a member of an active Agent Team`）。
+推论：(1) `criticTeamEnabled` 接线必须把「team 服务在场但 spawn 竞态
+失败」纳入明示失败路径；(2) 值得向上游提交 issue（修复方向：
+`agent/created` 观察延迟到 descriptor 可见之后，或 implicit-lead 判定
+改为非抛式惰性）。验证期间 advisor-test 的 team profile 已临时卸载。
+
 ### 不做的（再次记录）
 
 批评者对话追问、修复建议——背叛独立判官定位，见 design.md 角色边界；
@@ -153,8 +166,17 @@ omdsh-dev/dsh-advisor 的被动注入式评审是另一条路线，不追随。*
   模型自报 stats 与运行时实采 toolCalls 交叉校验
 - [ ] 进展通道开关：`criticTeamEnabled` 关时绝不创建 teammate（日志零
   team/* 事件）；开时邮箱上报，且服务缺席时明示失败而非静默黑盒
-- [ ] 只读工具白名单与预算硬上限的**真实例**执行证据（advisor-test 实拍）
-- [ ] 条件风险措辞在可证伪场景下绝迹（升级为证据引用）
+- [x] 只读工具白名单与预算硬上限的**真实例**执行证据（advisor-test 实拍，
+  2026-09-05）——白名单生效（三轮实拍仅用 read/glob，零写工具）；预算
+  传导到 prompt 且被遵守（budget=1 时实测 1/1）；硬熔断看门狗
+  （createBudgetWatchdog）单测覆盖「不超不熔断 / 超限一次性熔断 / 子代理
+  缺席容错」，真实例未触发（gemini-3.7-flash 遵从预算纪律，五文件多
+  疑点场景也自我压缩到 1 次调用）
+- [ ] 条件风险措辞在可证伪场景下绝迹（升级为证据引用）——部分实证：
+  证伪路径两条 blocker 均带行号级 evidence；**发现新风险**：批评者工具
+  使用能力本身是质量维度（实拍中 `glob "./*.js"` 模式误用 → "No files
+  found" → 把正确答案误判为 blocker，证据为真、结论为假——evidence
+  引用设计恰好让此类误判可被人一眼识破），A/B 需纳入「工具误用率」
 - [x] 客户端渲染：裁决卡统计行（排查 N · 证伪 X · 排除 Y + 实测调用数）、
   批注 evidence 展示、降级标记——0.13.0 第二轮落地（dsr-vchip-s /
   dsr-evidence / dsr-downgraded）
