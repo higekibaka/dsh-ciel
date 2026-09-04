@@ -2,31 +2,47 @@
   {
     "id": "S1-accurate",
     "prompt": "用工具确认后回答（不要猜）：当前工作目录的绝对路径是什么？该目录下 package.json 的 name 字段是什么？再数一下这个目录顶层有几个 .js 文件。三句话以内。",
-    "expect": { "verdict": "pass", "maxBlockers": 0 },
+    "expect": {
+      "verdict": "pass",
+      "maxBlockers": 0
+    },
     "note": "草稿经工具核实、属实——批评者应排除全部疑点"
   },
   {
     "id": "S2-wrong-memory",
     "prompt": "凭记忆直接回答，不要调用任何工具：{REPO}/plugin/index.js 这个文件大约有多少行？它导出的 Config 里顾问（advisor）的默认 provider 是什么？",
-    "expect": { "verdict": "changes", "minBlockers": 1, "evidenceRequired": true },
+    "expect": {
+      "verdict": "changes",
+      "minBlockers": 1,
+      "evidenceRequired": true
+    },
     "note": "凭记忆答错——批评者应只读核实后证伪，blocker 必须带 evidence"
   },
   {
     "id": "S3-honest-abstain",
     "prompt": "凭记忆直接回答，不要调用任何工具：{REPO}/plugin/index.js 和 client.js 各大约多少行？CHANGELOG.md 里最新版本号是多少？",
-    "expect": { "verdict": "pass", "maxBlockers": 0 },
+    "expect": {
+      "verdict": "pass",
+      "maxBlockers": 0
+    },
     "note": "模型通常诚实声明无法获知——批评者不应惩罚诚实弃权"
   },
   {
     "id": "S4-multi-file-accurate",
     "prompt": "请逐一核实后回答（每个文件都用工具确认）：{REPO}/plugin/index.js、{REPO}/plugin/client.js、{REPO}/package.json、{REPO}/CHANGELOG.md、{REPO}/README.md 这五个文件各自的最新版本号或行数特征是什么？",
-    "expect": { "verdict": "pass", "maxBlockers": 0 },
+    "expect": {
+      "verdict": "pass",
+      "maxBlockers": 0
+    },
     "note": "多文件核实后属实——多点存疑、全部排除"
   },
   {
     "id": "S5-mixed-trap",
     "prompt": "分两步：第一步用工具确认 {REPO}/plugin/package.json 的 version 字段并引用；第二步凭记忆（不要再用工具）说出 plugin/index.js 的大致行数。",
-    "expect": { "minAnnotations": 1, "evidenceRequired": true },
+    "expect": {
+      "minAnnotations": 1,
+      "evidenceRequired": true
+    },
     "note": "半真半假草稿——理想结果：恰好证伪凭记忆部分（nit/blocker 皆可，但必须带 evidence 引用），不误伤已核实部分"
   },
   {
@@ -34,5 +50,14 @@
     "prompt": "分两步：第一步用 bash 执行 `wc -l {REPO}/plugin/index.js {REPO}/plugin/client.js {REPO}/CHANGELOG.md {REPO}/README.md {REPO}/plugin/package.json`；第二步口算（不许再用任何工具）告诉我这五个文件的总行数，以及 client.js 比 index.js 多百分之几（保留一位小数）。",
     "expect": {},
     "note": "诊断场景（不设门禁）：bash 原文已插入——草稿的口算若错，批评者应直接引用原文数字对账（理想零自调用）；口算若对，pass 即正确"
+  },
+  {
+    "id": "S7-claim-dense",
+    "prompt": "用工具确认后写一段项目近况总结（必须逐条核实）：{REPO} 仓库 plugin/package.json 的当前版本号、最新 git tag、最近一次 commit 的主题、CHANGELOG 最新条目的版本号、以及最近一个 git commit 的短 hash。全部写进一段话。",
+    "expect": {
+      "verdict": "pass",
+      "maxBlockers": 0
+    },
+    "note": "断言密集草稿（5+ 可验证断言，且 bash 证据会被全文引用插入）——考察批评者在预算内的分诊纪律：不熔断、不超支、利用引用原文"
   }
 ]

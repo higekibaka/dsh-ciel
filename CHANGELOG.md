@@ -4,6 +4,24 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.4] - 2026-09-05
+
+### Fixed
+
+- **评审在途状态跨会话恢复**：点击评审后切换会话（或页面重挂）按钮曾
+  复位成「批注评审」——busy 是组件内 state 随卸载丢失，而 host 侧评审
+  仍在跑。现挂载即探测远端 inFlight 恢复在途态，进展徽标继续实时
+  更新；在途消失时强制重水合拿到 verdict/失败条目。无在途时轮询空转，
+  零远端流量。
+- **预算熔断在按钮上可识别**：熔断失败的按钮从通用的「评审失败 · 重试」
+  改为「**预算熔断 · 重试**」（tooltip 含完整原因），与普通失败区分。
+
+### 实测记录（3.7 vs 3.8 预算纪律对照，docs/ab/ab-3[78].*）
+
+- 3.7 全语料 0 次熔断（≤4 次调用/场景）；3.8 在 S4（五文件）过度探索
+  熔断（>10 次）；但 3.8 在 S2 抓到了 3.7 这轮漏报的凭记忆错误——
+  探索激进是双刃剑：覆盖率更高、预算纪律更差。延迟 3.7 全面更快。
+
 ## [0.14.3] - 2026-09-05
 
 ### Added
