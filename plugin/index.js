@@ -123,6 +123,10 @@ export const Config = Schema.object({
   criticEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     .default('medium')
     .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.7-flash 仅支持 low/medium/high）'),
+  criticExploreEnabled: Schema.boolean().default(true)
+    .description('探索型批评者（0.13.0）：评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单，世界可碰、过程不许碰）；关闭后退回纯草稿裁决'),
+  criticExploreBudget: Schema.number().min(0).max(10).default(5)
+    .description('探索预算硬上限：单次评审允许的只读工具调用次数，超出即熔断该次评审（0 = 有工具但不许调用，等同关闭探索）'),
 })
 
 /**
@@ -407,14 +411,17 @@ function reminderTextFor(agent, current) {
 // settings description says so.
 
 /** Critic persona: convergent red-line annotations, visible text only. */
+const CRITIC_NO_TOOLS_CLAUSE =
+  'You have NO tools: never plan or attempt tool calls; judge from the ' +
+  'draft, the provided evidence, and your own knowledge.'
+
 const CRITIC_PERSONA =
   'You are a convergent plan critic. You receive a DRAFT (a reply a model ' +
   'is about to show the user), the REQUEST it answers, and the VERDICT-LEVEL ' +
   'tool activity of the turn that produced it. Your only job is to find what ' +
   'is wrong, missing, or unverified in the draft — red-line annotations, ' +
-  'never a rewrite, never an alternative plan of your own. You have NO tools: ' +
-  'never plan or attempt tool calls; judge from the draft, the provided ' +
-  'evidence, and your own knowledge. Your deliverable is your VISIBLE reply ' +
+  'never a rewrite, never an alternative plan of your own. ' +
+  CRITIC_NO_TOOLS_CLAUSE + ' Your deliverable is your VISIBLE reply ' +
   'text — private reasoning without a visible answer is a failed review. ' +
   'Open your reply with the verdict header, then one annotation per issue, ' +
   'each field on its own line:\n\n' +
@@ -493,6 +500,55 @@ const CRITIC_PROMPT_SUFFIX =
   'You have no tools; judge from the draft and the provided request/tool ' +
   'evidence.'
 
+/**
+ * 契约 v3（0.13.0）探索模式：只读工具条款替换 no-tools 条款（同一常量
+ * 拼装，replace 恒命中），persona 其余部分（角色、红线路径、块锚纪律）
+ * 一字不动。三段式：存疑（私下）→ 核实（只读工具，预算硬上限）→ 断言
+ * （dossier 在前、verdict 在后，解析层只消费 verdict 段——侦查卷宗与
+ * 判决书形式隔离，排除的疑点结构上不可能混进批注）。
+ */
+function criticExploreToolsClause(budget) {
+  return 'You have READ-ONLY exploration tools (read, grep, glob — no ' +
+    'writes, no shell, no session history) and a HARD BUDGET of ' + budget +
+    ' tool calls for this review; exceeding it aborts the review.'
+}
+
+const CRITIC_EXPLORE_CONTRACT =
+  '\n\nEXPLORATION CONTRACT (v3): work in three phases. Phase 1 — SUSPECT: ' +
+  'privately list every suspicion the draft raises, each with the ' +
+  'falsification method you would run. Phase 2 — VERIFY: run those methods ' +
+  'with your read-only tools, cheapest first, staying within budget; skip ' +
+  'suspicions that are not load-bearing, and spend ZERO calls when nothing ' +
+  'in the draft is falsifiable with your tools. Phase 3 — ASSERT: reply ' +
+  'with exactly two sections, dossier FIRST, verdict SECOND:\n\n' +
+  '## dossier\n' +
+  '- suspect: <one line> → confirmed: <what a tool actually returned, citing file:line or the grep hit>\n' +
+  '- suspect: <one line> → excluded: <what a tool actually returned>\n\n' +
+  '## verdict: pass|changes\n' +
+  'summary: <one sentence>\n' +
+  'stats: 排查 N · 证伪 X · 排除 Y\n\n' +
+  '### [blocker] title\n' +
+  'block: b2\n' +
+  'evidence: <the tool finding behind this annotation>\n' +
+  'anchor: <verbatim quote from that block>\n' +
+  'comment: <what is wrong and why it matters>\n\n' +
+  'Rules: the verdict section is the ONLY part the pipeline parses. A ' +
+  'suspicion your tools cleared is DEAD — it must not reappear there in ' +
+  'any form (not as an annotation, a nit, a warning, or a suggestion). ' +
+  'Every [blocker] MUST carry an evidence: line grounded in a tool result ' +
+  'from THIS turn; an ungrounded blocker is downgraded to a nit. The stats ' +
+  'line counts dossier suspects honestly (N = X + Y; zero suspects means ' +
+  'omit the stats line). All other annotation rules above still apply.'
+
+const CRITIC_EXPLORE_PROMPT_SUFFIX =
+  '\n\nWork the three phases now: suspect privately, verify with your ' +
+  'read-only tools within budget, then emit the dossier and verdict ' +
+  'sections as your visible reply.'
+
+function criticExplorePersona(budget) {
+  return CRITIC_PERSONA.replace(CRITIC_NO_TOOLS_CLAUSE, criticExploreToolsClause(budget)) + CRITIC_EXPLORE_CONTRACT
+}
+
 /** A codec that passes values through — both halves are first-party here. */
 const PASS_CODEC = { parse: (value) => value }
 
@@ -566,7 +622,8 @@ function anchorInDraft(anchor, draft) {
 }
 
 /** Parse the critic's visible answer into structured annotations. */
-function parseAnnotations(text, draft, blocks) {
+function parseAnnotations(text, draft, blocks, options) {
+  const explore = !!(options && options.explore)
   const heads = []
   const re = /^### \[(blocker|nit)\][ \t]*(.*)$/gm
   let m
@@ -579,39 +636,68 @@ function parseAnnotations(text, draft, blocks) {
     const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
     const anchorMatch = /(?:^|\n)[ \t]*anchor:[ \t]*(.*)/.exec(body)
     const blockMatch = /(?:^|\n)[ \t]*block:[ \t]*(b\d+)[ \t]*(?:\n|$)/.exec(body)
+    const evidenceMatch = /(?:^|\n)[ \t]*evidence:[ \t]*(.*)/.exec(body)
     const commentMatch = /(?:^|\n)[ \t]*comment:[ \t]*([\s\S]*)/.exec(body)
     let anchor = anchorMatch ? anchorMatch[1].trim() : ''
     anchor = anchor.replace(/^["'`「『“‘]+|["'`」』”’]+$/g, '').trim()
     const comment = commentMatch ? commentMatch[1].trim() : body.trim()
+    const evidence = evidenceMatch ? evidenceMatch[1].trim().slice(0, 400) : ''
     // 契约 v2 块号：非法 id（幻觉/越界）一律落 undefined，消费方退回旧
     // proximity 定位——锚定降级是常态，不是错误。
     const block = blockMatch && blockIds !== undefined && blockIds.has(blockMatch[1])
       ? blockMatch[1]
       : undefined
+    // 契约 v3：探索模式下 blocker 必须引用本轮工具所得证据（反「步骤塌缩」
+    // ——模型跳过核实直接臆断的高危断言），无证据者降级为 nit 而非丢弃，
+    // 信号保留、阻断性剥夺。v2 模式不做此要求。
+    let severity = heads[i].severity
+    let downgraded
+    if (explore && severity === 'blocker' && evidence === '') {
+      severity = 'nit'
+      downgraded = 'evidence-missing'
+    }
     annotations.push({
-      severity: heads[i].severity,
+      severity,
       title: heads[i].title.slice(0, 120),
       anchor: anchor.slice(0, 400),
       comment: comment.slice(0, 1200),
       matched: anchorInDraft(anchor, draft),
       ...(block === undefined ? {} : { block }),
+      ...(evidence === '' ? {} : { evidence }),
+      ...(downgraded === undefined ? {} : { downgraded }),
     })
   }
   return annotations.slice(0, 8)
+}
+
+/** 契约 v3 stats 行：`stats: 排查 N · 证伪 X · 排除 Y`（容忍分隔符变体）。 */
+function parseStatsLine(line) {
+  if (typeof line !== 'string' || line.trim() === '') return undefined
+  const m = /排查\s*(\d+)\s*[·,，、]?\s*证伪\s*(\d+)\s*[·,，、]?\s*排除\s*(\d+)/.exec(line)
+  if (m) return { checked: Number(m[1]), confirmed: Number(m[2]), excluded: Number(m[3]) }
+  const nums = (line.match(/\d+/g) || []).map(Number)
+  return nums.length >= 3 ? { checked: nums[0], confirmed: nums[1], excluded: nums[2] } : undefined
 }
 
 /**
  * 契约 v2（0.12.0）：verdict 头 + 块锚批注。无 verdict 头时 verdict 为
  * undefined（旧回复/模型未遵守），调用方按旧形态渲染——结构是增强不是门槛，
  * 与 parseAdvisorItems 同一纪律。
+ * 契约 v3（0.13.0，options.explore）：dossier 段在前、verdict 段在后，
+ * 解析只消费 verdict 段——dossier 里的 ### 头（含排除项的伪装复发）不落
+ * 批注；stats 行解析为 {checked, confirmed, excluded}。
  */
-function parseCriticReview(text, draft, blocks) {
+function parseCriticReview(text, draft, blocks, options) {
   const verdictMatch = /^## verdict:[ \t]*(pass|changes)[ \t]*$/m.exec(text)
-  const summaryMatch = /(?:^|\n)[ \t]*summary:[ \t]*(.*)/.exec(text)
+  const section = verdictMatch ? text.slice(verdictMatch.index) : text
+  const summaryMatch = /(?:^|\n)[ \t]*summary:[ \t]*(.*)/.exec(section)
+  const statsMatch = /(?:^|\n)[ \t]*stats:[ \t]*(.*)/.exec(section)
+  const stats = parseStatsLine(statsMatch ? statsMatch[1] : undefined)
   return {
     verdict: verdictMatch ? verdictMatch[1] : undefined,
     summary: summaryMatch ? summaryMatch[1].trim().slice(0, 300) : '',
-    annotations: parseAnnotations(text, draft, blocks),
+    ...(stats === undefined ? {} : { stats }),
+    annotations: parseAnnotations(section, draft, blocks, options),
   }
 }
 
@@ -1099,6 +1185,13 @@ class AdvisorReviewService extends TypertRemoteService {
       // (0.9.0 live bug: "targets is not defined").
       const targets = advisorTargets(events, target)
       const draftBlocks = splitMarkdownBlocks(draft)
+      // 契约 v3（0.13.0）探索模式：只读工具白名单（read/grep/glob——世界
+      // 可碰、过程不许碰）+ 预算硬上限。预算没有原生 toolFilter 支持，
+      // 由下方轮询子会话 tool/call 事件、超限 abort 实现硬熔断。
+      const cfg = this.getConfig()
+      const explore = cfg.criticExploreEnabled !== false && (cfg.criticExploreBudget === undefined ? 5 : cfg.criticExploreBudget) > 0
+      const budget = explore ? cfg.criticExploreBudget || 5 : 0
+      const criticAbort = new AbortController()
       try {
         const evidence = turnEvidence(events, target)
         let promptText = ''
@@ -1115,25 +1208,56 @@ class AdvisorReviewService extends TypertRemoteService {
         }
         promptText += 'Draft block map (cite these ids in each annotation\'s `block:` field):\n'
         for (const b of draftBlocks) promptText += b.id + ': ' + b.type + '\n'
-        promptText += '\nDraft under review:\n"""\n' + draft + '\n"""' + CRITIC_PROMPT_SUFFIX
+        promptText += '\nDraft under review:\n"""\n' + draft + '\n"""' + (explore ? CRITIC_EXPLORE_PROMPT_SUFFIX : CRITIC_PROMPT_SUFFIX)
         run = await subagents.start('spawn', {
           label: 'critic',
           parent: agent,
-          signal: new AbortController().signal,
+          signal: criticAbort.signal,
           prompt: [{ type: 'text', text: promptText }],
-          agentOptions: { provider: this.getConfig().criticProvider, model: this.getConfig().criticModel, maxTokens: 4096 },
-          persona: CRITIC_PERSONA + RUBRIC_ADDENDUM,
+          agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: explore ? 8192 : 4096 },
+          persona: (explore ? criticExplorePersona(budget) : CRITIC_PERSONA) + RUBRIC_ADDENDUM,
           maxDepth: 1,
-          toolFilter: { allow: [] },
+          toolFilter: explore ? { allow: ['read', 'grep', 'glob'] } : { allow: [] },
         })
       } catch (spawnError) {
         return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
       }
       this.liveCriticChildren.add(run.id)
+      // 预算看门狗：轮询子会话 tool/call 计数（同时供评审条目的实际调用
+      // 数取证——统计不信模型自报，以运行时事件流为准）。轮询有滞后，
+      // 熔断语义是「防失控断路器」，不是精确计数闸门。
+      let toolCalls = 0
+      let budgetAborted = false
+      const countCalls = () => {
+        try {
+          const child = agents.get(run.id)
+          const evs = child && sessionEvents(child.session)
+          if (!Array.isArray(evs)) return
+          let n = 0
+          for (const e of evs) if (e && e.type === 'tool/call') n += 1
+          toolCalls = n
+        } catch { /* 看门狗尽力而为；spawn signal 仍是运行边界 */ }
+      }
+      let watchdog
+      if (explore) {
+        watchdog = setInterval(() => {
+          countCalls()
+          if (toolCalls > budget && !budgetAborted) {
+            budgetAborted = true
+            criticAbort.abort()
+            clearInterval(watchdog)
+          }
+        }, 400)
+        if (typeof watchdog.unref === 'function') watchdog.unref()
+      }
       let text = ''
       try {
         const result = await run.result
         text = outputText(result.output)
+        if (budgetAborted) {
+          return fail('exploration budget exceeded: critic made more than ' + budget +
+            ' read-only tool calls; review aborted (raise criticExploreBudget or disable criticExploreEnabled)')
+        }
         if (result.stopReason !== 'completed') {
           const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
           return fail('critic ended with "' + result.stopReason + '"' + (detail === '' ? '' : ': ' + detail))
@@ -1142,10 +1266,12 @@ class AdvisorReviewService extends TypertRemoteService {
           return fail('critic returned an empty answer (reasoning only, no visible text)')
         }
       } finally {
+        if (watchdog) clearInterval(watchdog)
+        countCalls()
         this.liveCriticChildren.delete(run.id)
         await run.dispose()
       }
-      const parsed = parseCriticReview(text, draft, draftBlocks)
+      const parsed = parseCriticReview(text, draft, draftBlocks, { explore })
       const annotations = parsed.annotations
       const sound = /^SOUND:/m.test(text)
         || (parsed.verdict === 'pass' && annotations.length === 0)
@@ -1155,6 +1281,11 @@ class AdvisorReviewService extends TypertRemoteService {
         sound,
         ...(parsed.verdict === undefined ? {} : { verdict: parsed.verdict }),
         ...(parsed.summary === '' ? {} : { summary: parsed.summary }),
+        // 契约 v3：模型自报的排查/证伪/排除统计 + 运行时实采的探索元数据
+        // （预算与实际 tool/call 计数——自报与实测并列，交叉校验失真一眼
+        // 可见；A/B 评估回路的地面真值）。
+        ...(parsed.stats === undefined ? {} : { stats: parsed.stats }),
+        ...(explore ? { explore: { budget, toolCalls } } : {}),
         // 块地图（仅 id+type）——浏览器端用同一序号空间把 gutter 徽章对到
         // 渲染 DOM 的顶层块；块解析失败的批注退回旧 proximity 定位。
         ...(draftBlocks.length === 0 ? {} : { blocks: draftBlocks.map((b) => ({ id: b.id, type: b.type })) }),
@@ -1282,6 +1413,7 @@ export {
   persistReview,
   splitMarkdownBlocks,
   parseCriticReview,
+  criticExplorePersona,
   appendFeedback,
   readFeedbackTriage,
 }
