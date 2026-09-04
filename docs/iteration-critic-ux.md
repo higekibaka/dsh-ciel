@@ -2,7 +2,9 @@
 
 > 状态：已立项（2026-09-01，会话内与作者对齐）。本文档是实施层计划；
 > 哲学论证见 [design.md](design.md)，本计划的每一项都标注了对设计原则的
-> 影响审计。体验原型：`prototypes/verdict-card-demo.html`。
+> 影响审计。体验原型：`prototypes/verdict-card-demo.html`（0.12.0 裁决卡）、
+> `prototypes/exploratory-critic-demo.html`（0.13.0 探索型批评者：进展流 +
+> 排查/证伪/排除统计 + 已核实/条件风险证据标签）。
 
 ## 背景诊断（为什么现在「怪」）
 
