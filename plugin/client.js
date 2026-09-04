@@ -872,6 +872,8 @@ window.__ModuleLoader__.load({
       '.dsr-tail.dsr-collapsed .dsr-vbody{display:none}',
       '.dsr-blk{position:relative}',
       '.dsr-gutter{position:absolute;left:-24px;top:2px;display:flex;flex-direction:column;gap:4px;z-index:2}',
+      // 代码块（pre 横向 overflow 会裁掉左外侧徽章）→ 收进右上内沿，横排。
+      'pre.dsr-blk>span.dsr-gutter{left:auto;right:6px;top:6px;flex-direction:row}',
       '.dsr-gmark{width:17px;height:17px;border-radius:4px;font-size:10px;font-family:ui-monospace,monospace;line-height:15px;text-align:center;cursor:pointer;user-select:none;border:1px solid}',
       '.dsr-gmark-blocker{color:#f85149;border-color:#f85149;background:rgba(248,81,73,.12)}',
       '.dsr-gmark-nit{color:#d29922;border-color:#d29922;background:rgba(210,153,34,.10)}',
@@ -1243,6 +1245,7 @@ window.__ModuleLoader__.load({
           sending: new Set(),  // 有在途回传的 reviewId
           tick: new Map(),     // messageId -> 重绘计数器（回传 settle 后 bump）
           filter: new Map(),   // reviewId -> 'all' | 'blocker'（分诊过滤）
+          triageSeen: new Set(), // 有 WAL 持久分诊的 reviewId——跳过默认全采纳预填
         },
       }
       const emit = () => { for (const l of Array.from(listeners)) l() }
@@ -1276,6 +1279,23 @@ window.__ModuleLoader__.load({
             if (!Number.isInteger(idx)) continue
             if (!store.feedback.sent.has(rid)) store.feedback.sent.set(rid, new Set())
             store.feedback.sent.get(rid).add(idx)
+          }
+          // 0.12.0 ④分诊水合：WAL 里的采纳/忽略与过滤器恢复进 store；
+          // 有持久状态的评审打上 triageSeen，fb 初始化时跳过默认全采纳预填。
+          const triage = res && res.triage && typeof res.triage === 'object' ? res.triage : {}
+          for (const [rid, t] of Object.entries(triage)) {
+            if (!t || typeof t !== 'object') continue
+            store.feedback.triageSeen.add(rid)
+            if (!store.feedback.sel.has(rid)) store.feedback.sel.set(rid, new Set())
+            const sel = store.feedback.sel.get(rid)
+            const states = t.states && typeof t.states === 'object' ? t.states : {}
+            for (const [idxText, state] of Object.entries(states)) {
+              const idx = Number(idxText)
+              if (!Number.isInteger(idx)) continue
+              if (state === 'accept') sel.add(idx)
+              else if (state === 'dismiss') sel.delete(idx)
+            }
+            if (t.filter === 'all' || t.filter === 'blocker') store.feedback.filter.set(rid, t.filter)
           }
           emit()
         } catch (error) {
@@ -1864,15 +1884,17 @@ window.__ModuleLoader__.load({
           if (entry.status !== 'error' && reviewId !== '') {
             if (!store.feedback.sent.has(reviewId)) store.feedback.sent.set(reviewId, new Set())
             // 0.12.0 ④默认采纳：首次见到该评审时 sel 预填全部（扣除已回传），
-            // 复选框的语义随之是「剔除」而非「挑选」。
-            if (!store.feedback.sel.has(reviewId)) {
+            // 复选框的语义随之是「剔除」而非「挑选」；WAL 里已有分诊状态的
+            // 评审（triageSeen）跳过预填——恢复态优先。
+            if (!store.feedback.sel.has(reviewId) && !store.feedback.triageSeen.has(reviewId)) {
               const initial = new Set()
               const anns = Array.isArray(entry.annotations) ? entry.annotations : []
               const sentSet0 = store.feedback.sent.get(reviewId)
               anns.forEach((a, i) => { if (!sentSet0.has(i)) initial.add(i) })
               store.feedback.sel.set(reviewId, initial)
             }
-            const sel = store.feedback.sel.get(reviewId)
+            const sel = store.feedback.sel.get(reviewId) ?? new Set()
+            if (!store.feedback.sel.has(reviewId)) store.feedback.sel.set(reviewId, sel)
             const sent = store.feedback.sent.get(reviewId)
             fb = {
               sel,
@@ -1880,12 +1902,29 @@ window.__ModuleLoader__.load({
               note: store.feedback.note.get(reviewId) || '',
               sending: store.feedback.sending.has(reviewId),
               filter: store.feedback.filter.get(reviewId) || 'all',
-              onToggle: (index, checked) => { if (checked) sel.add(index); else sel.delete(index) },
-              onFilter: (f) => { store.feedback.filter.set(reviewId, f === 'blocker' ? 'blocker' : 'all'); bumpTick() },
+              onToggle: (index, checked) => {
+                if (checked) sel.add(index); else sel.delete(index)
+                // ④分诊持久化：变更即写 WAL（fire-and-forget，失败不进 UI）。
+                void reviewCall('triage', {
+                  sessionId, reviewId,
+                  changes: [{ index, state: checked ? 'accept' : 'dismiss' }],
+                })
+              },
+              onFilter: (f) => {
+                store.feedback.filter.set(reviewId, f === 'blocker' ? 'blocker' : 'all')
+                void reviewCall('triage', { sessionId, reviewId, filter: f === 'blocker' ? 'blocker' : 'all' })
+                bumpTick()
+              },
               onBlockers: () => {
                 const anns = Array.isArray(entry.annotations) ? entry.annotations : []
                 sel.clear()
-                anns.forEach((a, i) => { if (a && a.severity === 'blocker' && !sent.has(i)) sel.add(i) })
+                const changes = []
+                anns.forEach((a, i) => {
+                  const accept = a && a.severity === 'blocker' && !sent.has(i)
+                  if (accept) sel.add(i)
+                  changes.push({ index: i, state: accept ? 'accept' : 'dismiss' })
+                })
+                void reviewCall('triage', { sessionId, reviewId, changes })
                 store.feedback.note.set(reviewId, '已选全部 blocker，其余剔除')
                 bumpTick()
               },

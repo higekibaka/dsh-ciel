@@ -916,6 +916,37 @@ async function readFeedbackKeys(sessionId) {
   return keys
 }
 
+/**
+ * 0.12.0 ④分诊持久化：同一 WAL 里的两类新记录——
+ *   { triage: { reviewId, index, state } }        state: 'accept' | 'dismiss'
+ *   { triageFilter: { reviewId, filter } }        filter: 'all' | 'blocker'
+ * 逐 (reviewId,index) 与逐 reviewId 后写胜出；撕裂尾行按惯例跳过。
+ */
+async function readFeedbackTriage(sessionId) {
+  const triage = new Map()
+  const path = feedbackPath(sessionId)
+  if (path === undefined) return triage
+  let text
+  try { text = await readFile(path, 'utf8') } catch { return triage }
+  for (const line of text.split('\n')) {
+    if (line === '') continue
+    let record
+    try { record = JSON.parse(line) } catch { continue }
+    const t = record && record.triage
+    if (t && typeof t.reviewId === 'string' && Number.isInteger(t.index) && (t.state === 'accept' || t.state === 'dismiss')) {
+      if (!triage.has(t.reviewId)) triage.set(t.reviewId, { states: new Map(), filter: undefined })
+      triage.get(t.reviewId).states.set(t.index, t.state)
+      continue
+    }
+    const f = record && record.triageFilter
+    if (f && typeof f.reviewId === 'string' && (f.filter === 'all' || f.filter === 'blocker')) {
+      if (!triage.has(f.reviewId)) triage.set(f.reviewId, { states: new Map(), filter: undefined })
+      triage.get(f.reviewId).filter = f.filter
+    }
+  }
+  return triage
+}
+
 /** Append one feedback record to the session's WAL. */
 async function appendFeedback(sessionId, record) {
   const path = feedbackPath(sessionId)
@@ -947,11 +978,13 @@ class AdvisorReviewService extends TypertRemoteService {
     // Per-session dedup ledgers, each a Promise<Set> so concurrent first
     // touches share one WAL read and one Set instance.
     this.sentBySession = new Map()
+    this.triageBySession = new Map()
     // SRC-fallback markers: let the gateway claim these endpoints even if the
     // strict descriptor registration lost a boot race.
     remoteMarker(Object.getPrototypeOf(this), 'list').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'start').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'feedback').call(this)
+    remoteMarker(Object.getPrototypeOf(this), 'triage').call(this)
   }
 
   /** The dedup ledger for one session, seeded from the WAL on first touch. */
@@ -965,13 +998,66 @@ class AdvisorReviewService extends TypertRemoteService {
     return pending
   }
 
+  /** The triage ledger for one session, seeded from the WAL on first touch. */
+  triageSet(sessionId) {
+    const sid = String(sessionId || '')
+    let pending = this.triageBySession.get(sid)
+    if (pending === undefined) {
+      pending = readFeedbackTriage(sid)
+      this.triageBySession.set(sid, pending)
+    }
+    return pending
+  }
+
   /** List every persisted review of one session (sidecar store — the session need not be live). */
   async list(request) {
     const entries = await readReviews(request && request.sessionId)
     // The dedup keys ride along so the client can grey out already-returned
     // annotations after a reload, not just within one page lifetime.
     const sent = await this.sentSet(request && request.sessionId)
-    return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })), sentKeys: Array.from(sent) }
+    // 分诊状态随行：采纳/忽略逐条 + 过滤器，客户端水合后恢复（0.12.0 ④）。
+    const triage = await this.triageSet(request && request.sessionId)
+    const triageOut = {}
+    for (const [reviewId, t] of triage) {
+      triageOut[reviewId] = {
+        states: Object.fromEntries(t.states),
+        ...(t.filter === undefined ? {} : { filter: t.filter }),
+      }
+    }
+    return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })), sentKeys: Array.from(sent), triage: triageOut }
+  }
+
+  /**
+   * Persist one triage batch from the card (0.12.0 ④): per-annotation
+   * accept/dismiss and/or the review's filter, appended to the same feedback
+   * WAL as the dedup keys. Last write wins by construction (read side is
+   * last-wins), so replays and repaints stay idempotent in effect.
+   */
+  async triage(request) {
+    const sessionId = request && request.sessionId
+    const reviewId = request && request.reviewId
+    if (typeof reviewId !== 'string' || reviewId === '') return { ok: false, error: 'reviewId required' }
+    const changes = Array.isArray(request.changes) ? request.changes : []
+    const filter = request.filter
+    try {
+      for (const change of changes) {
+        if (!change || !Number.isInteger(change.index) || (change.state !== 'accept' && change.state !== 'dismiss')) continue
+        await appendFeedback(sessionId, { triage: { reviewId, index: change.index, state: change.state } })
+        const ledger = await this.triageSet(sessionId)
+        if (!ledger.has(reviewId)) ledger.set(reviewId, { states: new Map(), filter: undefined })
+        ledger.get(reviewId).states.set(change.index, change.state)
+      }
+      if (filter === 'all' || filter === 'blocker') {
+        await appendFeedback(sessionId, { triageFilter: { reviewId, filter } })
+        const ledger = await this.triageSet(sessionId)
+        if (!ledger.has(reviewId)) ledger.set(reviewId, { states: new Map(), filter: undefined })
+        ledger.get(reviewId).filter = filter
+      }
+      return { ok: true }
+    } catch (error) {
+      this.ctx.logger?.warn('dsh-advisor: triage WAL append failed: %s', error && error.message)
+      return { ok: false, error: String(error && error.message || error) }
+    }
   }
 
   /** Run the critic over one assistant message and persist the review. */
@@ -1196,6 +1282,8 @@ export {
   persistReview,
   splitMarkdownBlocks,
   parseCriticReview,
+  appendFeedback,
+  readFeedbackTriage,
 }
 
 export function apply(ctx, config) {
@@ -1371,7 +1459,7 @@ export function apply(ctx, config) {
         face: 'host',
         schemas: [],
         model: { services: [], events: [], objects: [] },
-        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback')],
+        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback'), reviewInvocation('triage')],
       }),
       'dsh-advisor: review remote descriptors',
     )

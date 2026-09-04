@@ -22,6 +22,8 @@ const {
   settingsUserSection,
   splitMarkdownBlocks,
   parseCriticReview,
+  appendFeedback,
+  readFeedbackTriage,
 } = await import('../index.js')
 
 // ── Config schema ────────────────────────────────────────────────────────
@@ -287,6 +289,25 @@ test('parseCriticReview reads pass verdicts with zero annotations', () => {
   const { verdict, annotations } = parseCriticReview('## verdict: pass\nsummary: 没发现问题。', CRITIC_DRAFT, CRITIC_BLOCKS)
   assert.equal(verdict, 'pass')
   assert.equal(annotations.length, 0)
+})
+
+// ── 分诊 WAL（0.12.0 ④） ────────────────────────────────────────────────
+
+test('triage WAL: last-write-wins per annotation and per filter', async () => {
+  await appendFeedback('sess-triage', { triage: { reviewId: 'r1', index: 0, state: 'accept' } })
+  await appendFeedback('sess-triage', { triage: { reviewId: 'r1', index: 1, state: 'dismiss' } })
+  await appendFeedback('sess-triage', { triage: { reviewId: 'r1', index: 0, state: 'dismiss' } })
+  await appendFeedback('sess-triage', { triageFilter: { reviewId: 'r1', filter: 'blocker' } })
+  await appendFeedback('sess-triage', { triageFilter: { reviewId: 'r1', filter: 'all' } })
+  await appendFeedback('sess-triage', { triage: { reviewId: 'r2', index: 3, state: 'accept' } })
+
+  const triage = await readFeedbackTriage('sess-triage')
+  assert.equal(triage.get('r1').states.get(0), 'dismiss')
+  assert.equal(triage.get('r1').states.get(1), 'dismiss')
+  assert.equal(triage.get('r1').filter, 'all')
+  assert.equal(triage.get('r2').states.get(3), 'accept')
+  assert.equal(triage.get('r2').filter, undefined)
+  assert.equal((await readFeedbackTriage('sess-missing-triage')).size, 0)
 })
 
 process.on('exit', () => {
