@@ -4,6 +4,23 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-09-05
+
+### Added
+
+- **叙事化评审进展**（无 team 依赖的「路线 3」）：进展采样从 tool/call
+  计数扩展到**当前动作**——徽标按阶段显示
+  `存疑分析中… → 排查 2/5 · read index.js… → 排查 2/5 · 分析 read index.js 结果…`，
+  正在执行的工具带名字与目标摘要，思考间隙附带刚完成的取证摘要；
+  客户端轮询加密到 1s。邮箱叙事（agent-team）被两个上游缺陷卡住期间，
+  这条通道覆盖其大部分黑盒焦虑，零竞态、零路由失控。
+
+### Changed
+
+- 默认批评者模型 gemini-3.7-flash → **gemini-3.8-flash**（3.8 发布；
+  thinking 档位 low/medium/high 不变）。注意：设置里已存的
+  `ciel.criticModel` 覆盖值不随 schema 默认值迁移，需自行切换。
+
 ## [0.13.1] - 2026-09-05
 
 ### Fixed

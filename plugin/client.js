@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
       reasoningEffort: 'provider',
       guidanceEnabled: true,
       criticProvider: 'google',
-      criticModel: 'gemini-3.7-flash',
+      criticModel: 'gemini-3.8-flash',
       criticEffort: 'medium',
       criticExploreEnabled: true,
       criticExploreBudget: '5',
@@ -107,10 +107,10 @@ window.__ModuleLoader__.load({
         summarize: (staged) => `${staged.criticProvider} / ${staged.criticModel} · ${staged.criticEffort}`,
         children: [
           { kind: 'route', key: 'criticProvider', label: '批评者提供方', options: 'provider', hint: '评审子代理的 provider 路由；跨家族纠错收益最大。独立于上面的顾问管道。' },
-          { kind: 'route', key: 'criticModel', label: '批评者模型', options: 'criticModel', hint: 'gemini-3.7-flash 过载时可临时切走（如 deepseek flash）。' },
+          { kind: 'route', key: 'criticModel', label: '批评者模型', options: 'criticModel', hint: 'gemini-3.8-flash 过载时可临时切走（如 deepseek flash）。' },
           {
             kind: 'effort', key: 'criticEffort', label: '批评者思考深度', opts: 'critic', fallback: 'medium',
-            hintReady: '注入评审子代理的每个请求；跟随提供方默认则不注入。选项与所选模型声明的档位一致（gemini-3.7-flash 仅 low/medium/high）。',
+            hintReady: '注入评审子代理的每个请求；跟随提供方默认则不注入。选项与所选模型声明的档位一致（gemini-3.8-flash 仅 low/medium/high）。',
             hintFallback: '注入评审子代理的每个请求；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
           },
           {
@@ -1911,7 +1911,7 @@ window.__ModuleLoader__.load({
               .catch(() => {})
           }
           tick()
-          const iv = setInterval(tick, 2000)
+          const iv = setInterval(tick, 1000)
           return () => { live = false; clearInterval(iv) }
         }, [busy])
         const rootRef = React.useRef(null)
@@ -2125,7 +2125,14 @@ window.__ModuleLoader__.load({
         const count = entry && Array.isArray(entry.annotations) ? entry.annotations.length : 0
         const label = busy
           ? (prog && prog.explore
-            ? '评审中 · 排查 ' + prog.toolCalls + '/' + prog.budget + '…'
+            ? '评审中 · ' + (prog.toolCalls === 0
+              ? '存疑分析中'
+              : prog.action && prog.action.kind === 'tool'
+                ? '排查 ' + prog.toolCalls + '/' + prog.budget + ' · ' + prog.action.name + (prog.action.target ? ' ' + prog.action.target : '')
+                : prog.action && prog.action.last
+                  ? '排查 ' + prog.toolCalls + '/' + prog.budget + ' · 分析 ' + prog.action.last.name + (prog.action.last.target ? ' ' + prog.action.last.target : '') + ' 结果'
+                  : '排查 ' + prog.toolCalls + '/' + prog.budget + ' · 分析取证结果')
+            + '…'
             : '评审中…')
           : entry === undefined
             ? '批注评审'
