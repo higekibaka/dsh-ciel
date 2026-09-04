@@ -188,14 +188,14 @@ omdsh-dev/dsh-advisor 的被动注入式评审是另一条路线，不追随。*
 - [x] 客户端渲染：裁决卡统计行（排查 N · 证伪 X · 排除 Y + 实测调用数）、
   批注 evidence 展示、降级标记——0.13.0 第二轮落地（dsr-vchip-s /
   dsr-evidence / dsr-downgraded）
-- [ ] A/B 报告：确认率/误报率/工具误用率/耗时，默认路由决策——**评估台
-  与 flash 基线已就位**（`scripts/ab-harness.js` + `ab-corpus.json`
-  五场景自动对账 verdict/stats/toolCalls/耗时/预期符合度；基线
-  `docs/ab/ab-flash-v3.md` 5/5，耗时 4–16s 远低于 30–60s 预估）。
-  基线建设过程中契约 v3 经两轮真实漏洞修补：v3.1 对冲辞免疫条款
-  （修复 S5 假阴性——批评者只查形式合规不查事实内容）、v3.2 探索
-  支撑批注全级别强制 evidence（修复证伪结论以裸 nit 滑出）。
-  第二路由（kimi 或其他强模型）待用户续 key 后开跑
+- [x] A/B 报告：确认率/误报率/工具误用率/耗时，默认路由决策——**完成**
+  （`docs/ab/ab-comparison-0.13.0.md`：flash vs deepseek-v4-pro 五场景
+  对照，预期符合 5/5 vs 5/5，耗时差 3–12 倍；决策维持 flash 默认，
+  复评触发条件记录在案）。评估台与 flash 基线：`scripts/ab-harness.js`
+  + `ab-corpus.json`、`docs/ab/ab-flash-v3.md`。基线建设过程中契约 v3
+  经两轮真实漏洞修补：v3.1 对冲辞免疫条款（修复 S5 假阴性——批评者
+  只查形式合规不查事实内容）、v3.2 探索支撑批注全级别强制 evidence
+  （修复证伪结论以裸 nit 滑出）
 
 ---
 
