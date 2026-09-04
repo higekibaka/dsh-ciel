@@ -553,7 +553,11 @@ const CRITIC_EXPLORE_CONTRACT =
   're-checking the world. NEVER spend calls investigating your own ' +
   'instructions or this review contract (searching the codebase for the ' +
   'format rules you were given): the contract is a given, not a draft ' +
-  'claim — your tools exist to falsify the DRAFT, nothing else.'
+  'claim — your tools exist to falsify the DRAFT, nothing else. BUDGET ' +
+  'TRIAGE: when the draft carries more verifiable claims than your ' +
+  'budget, verify the most load-bearing first; as soon as only ONE call ' +
+  'remains, stop exploring and write the verdict with what you have — a ' +
+  'partial verdict with honest stats beats an aborted review.'
 
 const CRITIC_EXPLORE_PROMPT_SUFFIX =
   '\n\nWork the three phases now: suspect privately, verify with your ' +
