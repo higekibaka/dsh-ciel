@@ -53,7 +53,7 @@ async function newSession(page) {
   })
   await sleep(600)
   await page.evaluate(() => {
-    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && /Gemini 3.7/i.test(e.textContent || ''))
+    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && /Gemini 3/i.test(e.textContent || ''))
     for (const e of els) { const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { e.click(); return } }
   })
   await sleep(600)

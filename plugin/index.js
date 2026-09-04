@@ -118,11 +118,11 @@ export const Config = Schema.object({
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
   criticProvider: Schema.string().default('google')
     .description('批评者路由的提供方（0.9.1 起可配；跨家族路由的纠错收益最高）'),
-  criticModel: Schema.string().default('gemini-3.7-flash')
+  criticModel: Schema.string().default('gemini-3.8-flash')
     .description('批评者模型 id'),
   criticEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     .default('medium')
-    .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.7-flash 仅支持 low/medium/high）'),
+    .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.8-flash 仅支持 low/medium/high）'),
   criticExploreEnabled: Schema.boolean().default(true)
     .description('探索型批评者（0.13.0）：评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单，世界可碰、过程不许碰）；关闭后退回纯草稿裁决'),
   criticExploreBudget: Schema.number().min(0).max(10).default(5)
@@ -622,11 +622,36 @@ function sessionEvents(session) {
 }
 
 /**
+ * 从子会话末尾的工具事件推断「当前动作」：最后一次事件是 tool/call 则该
+ * 工具正在执行（带名字与目标摘要）；是 tool/result 则模型在消化上一次
+ * 取证（附带刚完成的工具摘要）；尚无任何工具事件则在存疑分析。
+ * 叙事进展通道的采样原子——无 team 依赖。
+ */
+function probeCriticAction(lastToolEvent, lastCallEvent) {
+  const summarize = (e) => {
+    const name = String(e.data && e.data.name || 'tool')
+    let target = ''
+    try {
+      const args = JSON.parse(e.data && e.data.arguments || '{}')
+      target = String(args.file_path || args.path || args.pattern || args.url || '')
+      if (target.length > 36) target = '…' + target.slice(-35)
+    } catch { /* 参数不是 JSON 就省略目标 */ }
+    return { name, target }
+  }
+  if (lastToolEvent && lastToolEvent.type === 'tool/call') {
+    return { kind: 'tool', ...summarize(lastToolEvent) }
+  }
+  if (lastCallEvent) return { kind: 'thinking', last: summarize(lastCallEvent) }
+  return { kind: 'thinking' }
+}
+
+/**
  * 预算看门狗（0.13.0 契约 v3）：toolFilter 无原生调用计数闸门，硬上限由
  * 轮询子会话 tool/call 事件实现——定位是防失控断路器，不是精确计数闸门
  * （轮询有滞后，超限 1-2 次内熔断）。预算的主要传导仍是 prompt 纪律，
- * 看门狗只兜住模型失约/死循环。
- * @returns {{ stop(): number, breached(): boolean }} stop 停表并返回末次采样计数。
+ * 看门狗只兜住模型失约/死循环。0.14.0 起同一采样顺带产出叙事进展
+ * （action）：当前正在执行的工具与目标，徽标从计数升级为动作流。
+ * @returns {{ stop(): number, calls(): number, breached(): boolean, action(): object }}
  */
 function createBudgetWatchdog(options) {
   const agents = options.agents
@@ -636,14 +661,22 @@ function createBudgetWatchdog(options) {
   const onBreach = options.onBreach
   let calls = 0
   let breached = false
+  let action = { kind: 'thinking' }
   const sample = () => {
     try {
       const child = agents.get(runId)
       const evs = child && sessionEvents(child.session)
       if (!Array.isArray(evs)) return
       let n = 0
-      for (const e of evs) if (e && e.type === 'tool/call') n += 1
+      let lastTool
+      let lastCall
+      for (const e of evs) {
+        if (!e) continue
+        if (e.type === 'tool/call') { n += 1; lastTool = e; lastCall = e }
+        else if (e.type === 'tool/result') lastTool = e
+      }
       calls = n
+      action = probeCriticAction(lastTool, lastCall)
     } catch { /* 看门狗尽力而为；spawn signal 仍是运行边界 */ }
   }
   const timer = setInterval(() => {
@@ -658,6 +691,7 @@ function createBudgetWatchdog(options) {
     stop: () => { clearInterval(timer); sample(); return calls },
     calls: () => calls,
     breached: () => breached,
+    action: () => action,
   }
 }
 
@@ -1181,6 +1215,7 @@ class AdvisorReviewService extends TypertRemoteService {
       explore: p.explore,
       budget: p.budget,
       toolCalls: p.toolCalls(),
+      action: typeof p.action === 'function' ? p.action() : { kind: 'thinking' },
       elapsedMs: Date.now() - p.startedAt,
     }
   }
@@ -1309,6 +1344,7 @@ class AdvisorReviewService extends TypertRemoteService {
         budget,
         startedAt: Date.now(),
         toolCalls: () => (watchdog ? watchdog.calls() : 0),
+        action: () => (watchdog ? watchdog.action() : { kind: 'thinking' }),
       })
       let toolCalls = 0
       let text = ''

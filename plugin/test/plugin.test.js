@@ -39,7 +39,7 @@ test('Config resolves schema defaults', () => {
   assert.equal(value.requireExploration, true)
   assert.equal(value.reasoningEffort, 'provider')
   assert.equal(value.criticProvider, 'google')
-  assert.equal(value.criticModel, 'gemini-3.7-flash')
+  assert.equal(value.criticModel, 'gemini-3.8-flash')
   assert.equal(value.criticEffort, 'medium')
 })
 
@@ -401,6 +401,28 @@ test('createBudgetWatchdog tolerates missing child and non-tool events', async (
   await sleep(15)
   assert.equal(breaches, 0)
   assert.equal(wd2.stop(), 0)
+})
+
+test('createBudgetWatchdog narrates the running tool and thinking phases', async () => {
+  const evsRef = { evs: [] }
+  const wd = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'c', budget: 5, intervalMs: 5, onBreach: () => {} })
+  await sleep(15)
+  assert.deepEqual(wd.action(), { kind: 'thinking' })
+  evsRef.evs = [{ type: 'tool/call', data: { name: 'read', arguments: '{"file_path":"/home/hgk/123/dsh-ciel/plugin/index.js"}' } }]
+  await sleep(15)
+  assert.equal(wd.action().kind, 'tool')
+  assert.equal(wd.action().name, 'read')
+  assert.equal(wd.action().target, '…me/hgk/123/dsh-ciel/plugin/index.js')
+  evsRef.evs = [...evsRef.evs, { type: 'tool/result', data: {} }]
+  await sleep(15)
+  assert.equal(wd.action().kind, 'thinking')
+  // 新一次 call 覆盖旧 result——动作跟随事件流末尾。
+  evsRef.evs = [...evsRef.evs, { type: 'tool/call', data: { name: 'grep', arguments: '{"pattern":"criticExplore"}' } }]
+  await sleep(15)
+  assert.equal(wd.action().kind, 'tool')
+  assert.equal(wd.action().name, 'grep')
+  assert.equal(wd.action().target, 'criticExplore')
+  assert.equal(wd.stop(), 2)
 })
 
 // ── 分诊 WAL（0.12.0 ④） ────────────────────────────────────────────────
