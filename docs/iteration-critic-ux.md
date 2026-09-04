@@ -111,14 +111,39 @@ comment: …
   可配做 A/B（flash vs 更强模型），按「批注确认率 / 误报率 / 耗时」决定
   默认路由是否上调。
 
+### 进展通道：可选借力 agent-team（2026-09-04 原型实证）
+
+DSH 0.1.3 的实验包 `agent-team`（Lead/teammate/持久邮箱/共享任务板）经
+原型验证可用：lead 以 `spawn_teammate` 创建批评者，critic 边审边经邮箱
+回传「存疑→证实」进展，lead 会话日志耐久落 `team/message/queued` ×13 +
+`team/message/delivered` ×13（官方事件类型，非 ignorable 黑户）。
+
+对 0.13.0 的三根接线与纪律：
+
+1. **进展映射**：host 监听 `team/message/queued`（session/event 或
+   sessionQuery）→ 生命周期徽标显示「排查疑点 N/M…」——替代 30–60s 黑盒；
+2. **路由桥接**：teammate 的 spawn 路由在 profile 层（fresh/forkProvider），
+   criticProvider/criticModel/effort pin 需显式桥接，不自动生效；
+3. **纪律归 ciel**：收敛判官的 persona/预算/报告纪律照旧由本插件契约约束
+   （原型中的裸 teammate 批评者越权产出重写方案——机制不背锅）。
+
+**激活策略：可选降级**。检测到 `agentTeams` 服务则走邮箱进展通道；否则
+退回 ③ 的黑盒等待。experimental API 无稳定性承诺，不进硬依赖。
+（另一个副产品：DSH 0.1.3 新会话已切 v2 日志格式 `session.v2.jsonl.zstd`，
+所有读日志路径需兼容——本仓库脚本已验证。）
+
 ### 不做的（再次记录）
 
 批评者对话追问、修复建议——背叛独立判官定位，见 design.md 角色边界；
-omdsh-dev/dsh-advisor 的被动注入式评审是另一条路线，不追随。
+omdsh-dev/dsh-advisor 的被动注入式评审是另一条路线，不追随。**持久顾问**
+（teammate 化的 ask_advisor）同样不做：顾问的价值来自每次咨询的独立性，
+持久上下文会积累共同框架、损害分布多样性——邮箱改变通信成本，不改变
+这个认识论约束。
 
 ### 0.13.0 验收清单
 
 - [ ] 疑点→证伪→断言三段式契约单测（含排除项不得泄漏进批注）
+- [ ] 进展通道双形态：agentTeams 在时邮箱上报、缺席时黑盒等待的降级证据
 - [ ] 只读工具白名单与预算硬上限的执行证据
 - [ ] 条件风险措辞在可证伪场景下绝迹（升级为证据引用）
 - [ ] A/B 报告：确认率/误报率/耗时，默认路由决策记录
