@@ -113,41 +113,44 @@ comment: …
   可配做 A/B（flash vs 更强模型），按「批注确认率 / 误报率 / 耗时」决定
   默认路由是否上调。
 
-### 进展通道：可选借力 agent-team（2026-09-04 原型实证）
+### 进展通道：轮询制落地，agent-team 推迟（2026-09-05 再修订）
 
-DSH 0.1.3 的实验包 `agent-team`（Lead/teammate/持久邮箱/共享任务板）经
-原型验证可用：lead 以 `spawn_teammate` 创建批评者，critic 边审边经邮箱
-回传「存疑→证实」进展，lead 会话日志耐久落 `team/message/queued` ×13 +
-`team/message/delivered` ×13（官方事件类型，非 ignorable 黑户）。
+**新事实**（本日实拍，见上方 ⚠ 竞态记录）：(1) `tool-agent-team` 挂载即概率性
+打死所有一次性 spawn——邮箱通道的地基本身不稳；(2) `spawnTeammate` 请求
+**不支持按次 pin 模型路由**（provider 字段指 spawn 提供方，LLM 路由在
+team 包 profile 配置层），接入即丢失 criticProvider/criticModel/effort
+三枚 pin——而 A/B 恰好在评估期需要它们。
 
-对 0.13.0 的三根接线与纪律：
+**决策**：黑盒问题（30–60s 无反馈）由**轮询制进展通道**解决，已上线：
+- host 新增 `advisorReview/progress` Remote 方法：评审在途期间返回
+  `{inFlight, explore, budget, toolCalls, elapsedMs}`，计数来自预算看门狗的
+  事件流采样（与熔断同源，非模型自报）；
+- client 评审中每 2s 轮询，徽标 `评审中 · 排查 k/预算…` 实时递增；
+- 实拍证据：标签序列 `0/5 → 1/5 → 3/5 → ✓ 无阻断`，终态自报
+  `排查 3 · 排除 3` 与采样递增精确吻合。
 
-1. **进展映射**：host 监听 `team/message/queued`（session/event 或
-   sessionQuery）→ 生命周期徽标显示「排查疑点 N/M…」——替代 30–60s 黑盒；
-2. **路由桥接**：teammate 的 spawn 路由在 profile 层（fresh/forkProvider），
-   criticProvider/criticModel/effort pin 需显式桥接，不自动生效；
-3. **纪律归 ciel**：收敛判官的 persona/预算/报告纪律照旧由本插件契约约束
-   （原型中的裸 teammate 批评者越权产出重写方案——机制不背锅）。
+`criticTeamEnabled`（邮箱叙事进展「疑点 i/M」+ teammate 化）**推迟**到上游
+竞态修复且路由桥接有官方通道之后；设置项暂不注册，避免挂出一个必坏的
+开关（验收项随之改写，原「服务缺席明示失败」诉求由轮询通道的
+`{inFlight:false}` 语义天然满足——通道不存在即退回黑盒，无需配置）。
 
-**激活策略：手动勾选（2026-09-05 修订）**。settings ns 新增
-`criticTeamEnabled`（默认 **关**）——用户显式开启后才创建 teammate 并走
-邮箱进展通道；关闭时一律退回 ③ 的黑盒等待。experimental API 无稳定性
-承诺，不做自动检测激活，更不进硬依赖；开启入口旁注明其实验性质。
-（另一个副产品：DSH 0.1.3 新会话已切 v2 日志格式 `session.v2.jsonl.zstd`，
-所有读日志路径需兼容——本仓库脚本已验证。）
+> 旧方案存档（9-04/9-05 版）：agent-team 邮箱通道 + 手动勾选
+> `criticTeamEnabled`。原型实证（lead 会话 `team/message/queued` ×13 +
+> `delivered` ×13 耐久落盘）仍然有效，竞态修复后可直接复活：三根接线
+> （进展映射 / 路由桥接 / 纪律归 ciel）与本节护栏不变。
 
-**⚠ 实拍发现的上游竞态（2026-09-05，advisor-test 实证）**：挂载
-`tool-agent-team` 后，**任何**一次性 spawn 子代理（顾问、批评者，与是否
-带工具无关）都有概率在 `agent/created` 时被 `tryMembership` 误判为 Team
-Lead——此刻子会话后缀里的 subagent descriptor 事件尚未落盘，分类探针
-（`subagentDescriptor()` 读 `snapshotEvents`）返回 false → 走「implicit
-lead」分支装上 team 工具与 prompt 节；等 prompt 装配时 descriptor 已
-可见，`membership()` 抛出 `TEAM_NOT_MEMBER`，整个子代理回合以 error
-终止（评审失败：`agent "…" is not a member of an active Agent Team`）。
-推论：(1) `criticTeamEnabled` 接线必须把「team 服务在场但 spawn 竞态
-失败」纳入明示失败路径；(2) 值得向上游提交 issue（修复方向：
-`agent/created` 观察延迟到 descriptor 可见之后，或 implicit-lead 判定
-改为非抛式惰性）。验证期间 advisor-test 的 team profile 已临时卸载。
+### 护栏（红线内的探索）
+
+- **世界可以碰，过程不许碰**：只读工具白名单（read/grep/glob），
+  禁会话历史访问，禁写操作，禁子代理套娃；
+- 探索预算硬上限（默认 5，进设置 ns）：prompt 纪律为主、看门狗熔断兜底
+  （实拍：budget=1 时模型自限 1/1；熔断单测覆盖）；
+- 延迟代价：评审时长 5–10s → 30–60s，③（生命周期徽标）+ 轮询进展通道
+  已消化；
+- 模型能力：多步调查超出 gemini-flash 量级舒适区，上线前用 critic 路由
+  可配做 A/B（flash vs 更强模型），按「批注确认率 / 误报率 / 工具误用率 /
+  耗时」决定默认路由是否上调——实拍已记录一例 glob 模式误用造成的
+  「证据为真、结论为假」误判（工具误用率的地面真值首样本）。
 
 ### 不做的（再次记录）
 
@@ -164,8 +167,11 @@ omdsh-dev/dsh-advisor 的被动注入式评审是另一条路线，不追随。*
   落地：parse 层 dossier/verdict 分段、stats 行、evidence 字段、
   只读白名单（read/grep/glob）+ 预算轮询硬熔断（abort）、评审条目带
   模型自报 stats 与运行时实采 toolCalls 交叉校验
-- [ ] 进展通道开关：`criticTeamEnabled` 关时绝不创建 teammate（日志零
-  team/* 事件）；开时邮箱上报，且服务缺席时明示失败而非静默黑盒
+- [x] 进展通道：`advisorReview/progress` 轮询制上线（实拍标签
+  `排查 0/5 → 1/5 → 3/5` 与终态自报精确吻合）；**修复两处 Remote 注册
+  缺口**——客户端 `ADVISOR_REMOTE` 描述符漏 `triage`/`progress`（triage
+  自 0.12.0 起从未真正到达 host，现一并补上）；agent-team 邮箱通道因
+  上游竞态 + 路由 pin 缺口推迟（决策与复活条件见正文）
 - [x] 只读工具白名单与预算硬上限的**真实例**执行证据（advisor-test 实拍，
   2026-09-05）——白名单生效（三轮实拍仅用 read/glob，零写工具）；预算
   传导到 prompt 且被遵守（budget=1 时实测 1/1）；硬熔断看门狗
