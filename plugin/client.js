@@ -1899,21 +1899,35 @@ window.__ModuleLoader__.load({
         const messageId = props.messageId
         const sessionId = props.sessionId
         const [busy, setBusy] = useState(false)
-        // 0.13.0 契约 v3 进展通道：评审在途期间每 2s 轮询 host 的实时探索
-        // 计数（事件流采样，非模型自报），徽标从黑盒升级为「排查 k/预算」。
+        // 0.13.0 契约 v3 进展通道 + 在途恢复（修复「点评审后切换会话按钮
+        // 复位」）：busy 是组件内 state，随卸载丢失；挂载即探一次远端
+        // inFlight（host 侧评审可能仍在跑），在途期间每秒轮询，在途消失
+        // 时强制重水合（完成/失败条目此刻已落 sidecar）。无在途时 tick
+        // 空转，不产生远端流量。
         const [prog, setProg] = useState(null)
+        const progRef = React.useRef(null)
         useEffect(() => {
-          if (!busy) { setProg(null); return undefined }
           let live = true
-          const tick = () => {
+          const probe = () => {
             reviewCall('progress', { sessionId, messageId })
-              .then((res) => { if (live) setProg(res && res.inFlight ? res : null) })
+              .then((res) => {
+                if (!live) return
+                const next = res && res.inFlight ? res : null
+                if (progRef.current && !next) {
+                  // 评审在别处（或本页上一生命周期）结束：条目已持久化，
+                  // 强制重水合拿到 verdict/失败态。
+                  store.hydrated.delete(sessionId)
+                  hydrate(sessionId)
+                }
+                progRef.current = next
+                setProg(next)
+              })
               .catch(() => {})
           }
-          tick()
-          const iv = setInterval(tick, 1000)
+          probe()
+          const iv = setInterval(() => { if (busy || progRef.current) probe() }, 1000)
           return () => { live = false; clearInterval(iv) }
-        }, [busy])
+        }, [busy, messageId, sessionId])
         const rootRef = React.useRef(null)
         useEffect(() => { void hydrate(sessionId) }, [sessionId])
         const entry = store.byMessage.get(messageId)
@@ -2123,7 +2137,9 @@ window.__ModuleLoader__.load({
           }
         }, [entry, fbTick])
         const count = entry && Array.isArray(entry.annotations) ? entry.annotations.length : 0
-        const label = busy
+        // 在途 = 本地点击 busy 或远端 inFlight（跨会话/页面生命周期恢复）。
+        const inFlight = busy || (prog !== null && prog.inFlight === true)
+        const label = inFlight
           ? (prog && prog.explore
             ? '评审中 · ' + (prog.toolCalls === 0
               ? '存疑分析中'
@@ -2139,12 +2155,12 @@ window.__ModuleLoader__.load({
             : entry.status === 'sound' || entry.verdict === 'pass'
               ? '✓ 无阻断 (' + count + ')'
               : entry.status === 'error'
-                ? '评审失败 · 重试'
+                ? (/budget exceeded/i.test(String(entry.error || '')) ? '预算熔断 · 重试' : '评审失败 · 重试')
                 : entry.verdict === 'changes'
                   ? '⚠ 批注 ' + count + ' · 复审'
                   : '批注 ' + count + ' · 复审'
         const onClick = () => {
-          if (busy) return
+          if (inFlight) return
           setBusy(true)
           reviewCall('start', { sessionId, messageId })
             .then((res) => {
@@ -2170,7 +2186,7 @@ window.__ModuleLoader__.load({
         return h('button', {
           className: 'dsr-btn',
           onClick,
-          disabled: busy,
+          disabled: inFlight,
           title: tip,
           ref: rootRef,
         }, label)

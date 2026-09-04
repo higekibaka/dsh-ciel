@@ -1,0 +1,288 @@
+{
+ "at": "2026-09-04T18:49:19.749Z",
+ "base": "http://127.0.0.1:3180/?token=…",
+ "results": [
+  {
+   "id": "S1-accurate",
+   "file": "session-9ebadb31-85a4-4905-a72f-57295a4c1840.jsonl",
+   "reviewMs": 10443,
+   "verdict": "pass",
+   "status": "sound",
+   "stats": {
+    "checked": 2,
+    "confirmed": 0,
+    "excluded": 2
+   },
+   "explore": {
+    "budget": 10,
+    "toolCalls": 2
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt用工具确认后回答（不要猜）：当前工作目录的绝对路径是什么？该目录下 package.json 的 name 字段是什么？再数一下这个目录顶层有几个 .js 文件。三句话以内。02:444 tool callsContext injection@deepseek-ai/dsh-system-promptBashPrint working directoryFailedReadError: cannot read \"/home/hgk/123/package.json\": not foundBashList top-level js filesBashList all f",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "评审中 · 排查 1/10 · 分析 glob /home/hgk/123 结果…",
+    "评审中 · 排查 2/10 · 分析 read /home/hgk/123/package.json 结果…",
+    "✓ 无阻断 (0)"
+   ]
+  },
+  {
+   "id": "S2-wrong-memory",
+   "file": "session-5856be3c-4a69-4fe1-bce5-644df7e4cda6.jsonl",
+   "reviewMs": 23693,
+   "verdict": "changes",
+   "status": "completed",
+   "stats": {
+    "checked": 2,
+    "confirmed": 2,
+    "excluded": 0
+   },
+   "explore": {
+    "budget": 10,
+    "toolCalls": 1
+   },
+   "counts": {
+    "annotations": 2,
+    "blockers": 1,
+    "withEvidence": 2,
+    "downgraded": 0,
+    "anchorMatched": 2
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [
+    {
+     "sev": "blocker",
+     "title": "顾问默认 provider 推测与代码实际配置不符",
+     "evidence": "read `/home/hgk/123/dsh-ciel/plugin/index.js:100` 显示 `provider: Schema.string().default('kimi-coding')`",
+     "downgraded": null,
+     "comment": "`Config` 中明确声明顾问的默认 provider 为 `'kimi-coding'`。若用户依据草稿中 `deepseek` 等推测配置下游依赖或环境路由，将直接导致模型路由解析失败。"
+    },
+    {
+     "sev": "nit",
+     "title": "文件规模估计与实际行数相差一个数量级",
+     "evidence": "read `/home/hgk/123/dsh-ciel/plugin/index.js` 显示该文件共 1959 行",
+     "downgraded": null,
+     "comment": "该入口文件集成了 Typert 协议对接、上下文装配及完整的顾问/批评者运行时逻辑，实际行数达 1959 行，草稿给出的 50~200 行估计严重脱离实际代码体量。"
+    }
+   ],
+   "draft": "System prompt凭记忆直接回答，不要调用任何工具：/home/hgk/123/dsh-ciel/plugin/index.js 这个文件大约有多少行？它导出的 Config 里顾问（advisor）的默认 provider 是什么？02:45Thought for a whileContext injection@deepseek-ai/dsh-system-promptThink**Analyzing File Contents**由于 /home/hgk/123/dsh-ciel/plugin/index.js 是您本地环境中的工作区文件，且当前处于新会话中，我的预训练记忆中并未",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "评审中 · 排查 1/10 · 分析 read …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "⚠ 批注 2 · 复审"
+   ]
+  },
+  {
+   "id": "S3-honest-abstain",
+   "file": "session-a256deb6-f9b2-439c-a713-382b02cfe461.jsonl",
+   "reviewMs": 19671,
+   "verdict": "pass",
+   "status": "sound",
+   "explore": {
+    "budget": 10,
+    "toolCalls": 0
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt凭记忆直接回答，不要调用任何工具：/home/hgk/123/dsh-ciel/plugin/index.js 和 client.js 各大约多少行？CHANGELOG.md 里最新版本号是多少？02:45Thought for a whileContext injection@deepseek-ai/dsh-system-promptThink**Recalling Project Details**在不调用任何工具、仅凭当前模型内置记忆的前提下，我无法得知您本地工作区 /home/hgk/123/dsh-ciel 中具体文件的实时内容与状态。 因为每次新会话启动时",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "✓ 无阻断 (0)"
+   ]
+  },
+  {
+   "id": "S4-multi-file-accurate",
+   "file": "session-f92cea7c-602c-4184-bc61-2f9918341c19.jsonl",
+   "reviewMs": 28911,
+   "status": "error",
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": false,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": false
+   },
+   "annotations": [],
+   "draft": "System prompt请逐一核实后回答（每个文件都用工具确认）：/home/hgk/123/dsh-ciel/plugin/index.js、/home/hgk/123/dsh-ciel/plugin/client.js、/home/hgk/123/dsh-ciel/package.json、/home/hgk/123/dsh-ciel/CHANGELOG.md、/home/hgk/123/dsh-ciel/README.md 这五个文件各自的最新版本号或行数特征是什么？02:4619 tool callsContext injection@deepseek-ai/dsh-system-p",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "评审中 · 排查 1/10 · 分析 read /home/hgk/123/dsh-ciel/CHANGELOG.md 结果…",
+    "评审中 · 排查 2/10 · 分析 read /home/hgk/123/dsh-ciel/README.md 结果…",
+    "评审中 · 排查 3/10 · 分析 read /home/hgk/123/dsh-ciel/README.md 结果…",
+    "评审中 · 排查 4/10 · 分析 read …gk/123/dsh-ciel/plugin/package.json 结果…",
+    "评审中 · 排查 5/10 · 分析 read …e/hgk/123/dsh-ciel/plugin/client.js 结果…",
+    "评审中 · 排查 6/10 · 分析 grep …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "评审中 · 排查 7/10 · 分析 grep …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "评审中 · 排查 8/10 · 分析 grep …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "评审中 · 排查 9/10 · 分析 read …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "评审中 · 排查 10/10 · 分析 grep …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "评审失败 · 重试"
+   ]
+  },
+  {
+   "id": "S5-mixed-trap",
+   "file": "session-f0913446-f868-45ba-9d57-b6ea715a9cb0.jsonl",
+   "reviewMs": 18468,
+   "verdict": "pass",
+   "status": "completed",
+   "stats": {
+    "checked": 1,
+    "confirmed": 1,
+    "excluded": 0
+   },
+   "explore": {
+    "budget": 10,
+    "toolCalls": 1
+   },
+   "counts": {
+    "annotations": 1,
+    "blockers": 0,
+    "withEvidence": 1,
+    "downgraded": 0,
+    "anchorMatched": 1
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [
+    {
+     "sev": "nit",
+     "title": "凭记忆推测的行数与实际代码规模偏差较大",
+     "evidence": "read `/home/hgk/123/dsh-ciel/plugin/index.js` 返回 lines 1-50 of 1959，实际全长为 1959 行",
+     "downgraded": null,
+     "comment": "草稿遵守了用户“不要再用工具”的操作约束，但给出的记忆估算（250~350 行）远小于实际规模（1959 行），若后续交互或任务对该文件体量有隐式假设需注意此偏差。"
+    }
+   ],
+   "draft": "System prompt分两步：第一步用工具确认 /home/hgk/123/dsh-ciel/plugin/package.json 的 version 字段并引用；第二步凭记忆（不要再用工具）说出 plugin/index.js 的大致行数。02:481 tool callContext injection@deepseek-ai/dsh-system-promptThink**Analyzing Package.json**Readdsh-ciel/plugin/package.jsonThink**Recalling Plugin Details**第一步：工具确认与引用 通过读取 ",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "评审中 · 排查 1/10 · 分析 read …me/hgk/123/dsh-ciel/plugin/index.js 结果…",
+    "✓ 无阻断 (1)"
+   ]
+  },
+  {
+   "id": "S6-bash-evidence",
+   "file": "session-67235549-201a-4e0d-a5e8-0fe9212939c0.jsonl",
+   "reviewMs": 10041,
+   "verdict": "pass",
+   "status": "sound",
+   "stats": {
+    "checked": 1,
+    "confirmed": 0,
+    "excluded": 1
+   },
+   "explore": {
+    "budget": 10,
+    "toolCalls": 0
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt分两步：第一步用 bash 执行 `wc -l /home/hgk/123/dsh-ciel/plugin/index.js /home/hgk/123/dsh-ciel/plugin/client.js /home/hgk/123/dsh-ciel/CHANGELOG.md /home/hgk/123/dsh-ciel/README.md /home/hgk/123/dsh-ciel/plugin/package.json`；第二步口算（不许再用任何工具）告诉我这五个文件的总行数，以及 client.js 比 index.js 多百分之几（保留一位小数）。02:48",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "✓ 无阻断 (0)"
+   ]
+  },
+  {
+   "id": "S7-claim-dense",
+   "file": "session-510320cd-4975-473b-ba3b-65c25d7fba3e.jsonl",
+   "reviewMs": 11239,
+   "verdict": "pass",
+   "status": "sound",
+   "stats": {
+    "checked": 1,
+    "confirmed": 0,
+    "excluded": 1
+   },
+   "explore": {
+    "budget": 10,
+    "toolCalls": 1
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt用工具确认后写一段项目近况总结（必须逐条核实）：/home/hgk/123/dsh-ciel 仓库 plugin/package.json 的当前版本号、最新 git tag、最近一次 commit 的主题、CHANGELOG 最新条目的版本号、以及最近一个 git commit 的短 hash。全部写进一段话。02:485 tool callsContext injection@deepseek-ai/dsh-system-promptThink**Verifying Project Status**Readdsh-ciel/plugin/package.jsonG",
+   "labels": [
+    "评审中…",
+    "评审中 · 存疑分析中…",
+    "评审中 · 排查 1/10 · 分析 read /home/hgk/123/dsh-ciel/CHANGELOG.md 结果…",
+    "✓ 无阻断 (0)"
+   ]
+  }
+ ]
+}
