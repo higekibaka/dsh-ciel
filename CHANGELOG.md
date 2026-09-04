@@ -4,6 +4,44 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-09-05
+
+两阶段评审（契约 v4）——用户提案①③的合体落地：把「存疑→核实」从单回合
+自觉变成编排强制，预算分诊从 prompt 恳求变成 host 机械截取。
+
+### Added
+
+- **阶段 1「存疑」独立 spawn**（无工具、便宜）：只交结构化疑点清单
+  （`- suspect: … | block: bN | bearing: high|low | falsify: …`），并明确
+  「提名 ≠ 判定」——证据已支撑的断言照样提名（证实也是裁决），修复
+  3.8 两次对可验证草稿交白卷。清单为空即短路 pass，不烧阶段 2。
+- **host 机械分诊**：bearing 高优先稳定排序、按预算截取，其余计
+  「未查 Z」——清单在送审前定型，模型不再掌握「查几个」的决定权。
+- **stats 四元组**：`排查 M · 证伪 X · 排除 Y · 未查 Z`，host 把预截取数
+  并入 Z 持久化；评审条目带 `suspects: {total, triaged, skipped}` 地面
+  真值；裁决卡 chip 显示未查数。
+- **熔断抢救书写员（仅一次）**：阶段 2 被熔断（或任何非 completed
+  终态）时，抓子代理死前部分卷宗 → 无工具书写员出最终 dossier+verdict，
+  未了结疑点一律进未查、不落批注；条目标记 `explore.salvaged`，chip
+  tooltip 注明抢救产出。**设计评审抓出并修复致命伤：抢救 spawn 最初
+  与阶段 2 共享 abort signal（breach 时已耗尽）——现每个 spawn 独立
+  控制器。** 真实例未触发（triage 后 3.8 不再超支——特性生效的表现），
+  路径已代码评审+值守。
+- 进展徽标分母从「预算」升级为阶段 1 清单送审数（真 M）。
+
+### Changed
+
+- A/B 评估台：模型选择器适配 0.1.3 新版两步弹层（chip → Model 行 →
+  条目），回复等待 150s → 300s（多步核实场景）。
+
+### 实证记录
+
+- S4（历史熔断场景）v4 下 3 疑点 4 调用 25s 正常通过；S7 全链
+  （清单→分诊→核实→四元 stats）；budget=1 实测 排查 1 · 排除 1 ·
+  未查 2/3——机械分诊与 Z 合并精确；
+- 顺带修复评测台被新版选择器静默放倒的问题（模糊匹配点不中 gemini
+  条目，会话回落到无效 key 的默认模型整批哑火）。
+
 ## [0.14.4] - 2026-09-05
 
 ### Fixed

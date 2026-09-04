@@ -501,32 +501,53 @@ const CRITIC_PROMPT_SUFFIX =
   'evidence.'
 
 /**
- * 契约 v3（0.13.0）探索模式：只读工具条款替换 no-tools 条款（同一常量
- * 拼装，replace 恒命中），persona 其余部分（角色、红线路径、块锚纪律）
- * 一字不动。三段式：存疑（私下）→ 核实（只读工具，预算硬上限）→ 断言
- * （dossier 在前、verdict 在后，解析层只消费 verdict 段——侦查卷宗与
- * 判决书形式隔离，排除的疑点结构上不可能混进批注）。
+ * 契约 v4（0.15.0）两阶段显式化：阶段 1「存疑」独立成无工具 spawn，只交
+ * 结构化疑点清单——阶段边界由编排强制（根治单回合步骤塌缩），清单随后
+ * 经 host 机械分诊（bearing 排序 + 预算截取），stats 的 M/Z 由此诚实。
+ * 阶段 2 沿用只读工具条款替换（同一常量拼装，replace 恒命中）。
  */
-function criticExploreToolsClause(budget) {
-  return 'You have READ-ONLY exploration tools (read, grep, glob — no ' +
-    'writes, no shell, no session history) and a HARD BUDGET of ' + budget +
-    ' tool calls for this review; exceeding it aborts the review.'
-}
+const CRITIC_SUSPECT_PERSONA =
+  'You are phase 1 (SUSPECT) of a two-phase convergent review. You receive ' +
+  'a DRAFT (a reply a model is about to show the user), the REQUEST it ' +
+  'answers, the VERDICT-LEVEL tool activity of the turn that produced it, ' +
+  'and a block map of the draft. List every suspicion worth falsifying ' +
+  'about the draft: concrete factual assertions about the world (counts, ' +
+  'sizes, versions, paths, quotes, behavior) — EVEN when hedged as ' +
+  'estimates or from-memory guesses; claims of having run, tested, or ' +
+  'verified something the provided evidence cannot confirm; load-bearing ' +
+  'omissions a reader would act on. You have NO tools: never plan or ' +
+  'attempt tool calls. NO verdicts, NO fixes, NO commentary — suspicions ' +
+  'only; a suspicion is not a defect, phase 2 will settle each. You ' +
+  'NOMINATE, you do not judge: a claim fully backed by the provided ' +
+  'evidence is STILL a suspect when it is concrete and load-bearing — ' +
+  'settling (confirm OR falsify) is phase 2\'s job, and a confirmation ' +
+  'is a verdict too. When in doubt, list it. At most ' +
+  '8 suspects, most drafts need 1-4; zero is a valid answer. Output ONLY ' +
+  'this format, one per line:\n\n' +
+  '## suspects\n' +
+  '- suspect: <one line, in the draft\'s language> | block: bN | bearing: high|low | falsify: <cheapest way to settle it, one line>\n\n' +
+  'The block names the draft block carrying the suspect claim (from the ' +
+  'block map; omit only when the whole draft is the issue). bearing:high ' +
+  'means the user\'s next action collapses if the claim is false. When ' +
+  'nothing is falsifiable, output the header alone.'
 
-const CRITIC_EXPLORE_CONTRACT =
-  '\n\nEXPLORATION CONTRACT (v3): work in three phases. Phase 1 — SUSPECT: ' +
-  'privately list every suspicion the draft raises, each with the ' +
-  'falsification method you would run. Phase 2 — VERIFY: run those methods ' +
-  'with your read-only tools, cheapest first, staying within budget; skip ' +
-  'suspicions that are not load-bearing, and spend ZERO calls when nothing ' +
-  'in the draft is falsifiable with your tools. Phase 3 — ASSERT: reply ' +
-  'with exactly two sections, dossier FIRST, verdict SECOND:\n\n' +
+const CRITIC_SUSPECT_PROMPT_SUFFIX =
+  '\n\nList the suspects now in the specified format — nothing else.'
+
+/** 阶段 2 契约：清单驱动核实 + dossier/verdict 两段（v3 全部纪律继承）。 */
+const CRITIC_VERIFY_CONTRACT =
+  '\n\nVERIFY CONTRACT (v4, phase 2 of 2): the pipeline\'s phase 1 already ' +
+  'listed the suspects; they follow this message as an ORDERED list — ' +
+  'verify them in order with your read-only tools, cheapest first. You ' +
+  'may append newly discovered suspects while reading, but the list is ' +
+  'your primary duty. Then reply with exactly two sections, dossier ' +
+  'FIRST, verdict SECOND:\n\n' +
   '## dossier\n' +
   '- suspect: <one line> → confirmed: <what a tool actually returned, citing file:line or the grep hit>\n' +
   '- suspect: <one line> → excluded: <what a tool actually returned>\n\n' +
   '## verdict: pass|changes\n' +
   'summary: <one sentence>\n' +
-  'stats: 排查 N · 证伪 X · 排除 Y\n\n' +
+  'stats: 排查 M · 证伪 X · 排除 Y · 未查 Z\n\n' +
   '### [blocker] title\n' +
   'block: b2\n' +
   'evidence: <the tool finding behind this annotation>\n' +
@@ -541,32 +562,64 @@ const CRITIC_EXPLORE_CONTRACT =
   'line too — the citation is the finding\'s proof, not a severity badge; ' +
   'a confirmed defect you verified with a tool must reach the user WITH ' +
   'its citation, never as a bare "consider double-checking". The stats ' +
-  'line counts dossier suspects honestly (N = X + Y; zero suspects means ' +
-  'omit the stats line). All other annotation rules above still apply. ' +
-  'Concrete factual assertions about the world (counts, sizes, versions, ' +
-  'paths, quotes, behavior) are suspects EVEN when the draft hedges them ' +
-  'as estimates or from-memory guesses: a hedge labels provenance, it ' +
-  'does not make the claim true — if one read can settle it, suspect it. ' +
-  'When a provided verbatim quote of the author\'s non-reproducible tool ' +
-  'output already settles a suspicion, cite THAT as your evidence (name ' +
-  'the call and quote the decisive line) instead of spending budget ' +
+  'line counts honestly: M = suspects given to you PLUS any you appended, ' +
+  'X + Y = settled this turn, Z = skipped (the pipeline adds its own ' +
+  'pre-triaged count to Z when it persists). All other annotation rules ' +
+  'above still apply. Concrete factual assertions about the world ' +
+  '(counts, sizes, versions, paths, quotes, behavior) are suspects EVEN ' +
+  'when the draft hedges them as estimates or from-memory guesses: a ' +
+  'hedge labels provenance, it does not make the claim true. When a ' +
+  'provided verbatim quote of the author\'s non-reproducible tool output ' +
+  'already settles a suspicion, cite THAT as your evidence (name the ' +
+  'call and quote the decisive line) instead of spending budget ' +
   're-checking the world. NEVER spend calls investigating your own ' +
   'instructions or this review contract (searching the codebase for the ' +
   'format rules you were given): the contract is a given, not a draft ' +
   'claim — your tools exist to falsify the DRAFT, nothing else. BUDGET ' +
-  'TRIAGE: when the draft carries more verifiable claims than your ' +
-  'budget, verify the most load-bearing first; as soon as only ONE call ' +
-  'remains, stop exploring and write the verdict with what you have — a ' +
-  'partial verdict with honest stats beats an aborted review.'
+  'TRIAGE: as soon as only ONE call remains, stop exploring and write ' +
+  'the verdict with what you have — a partial verdict with honest stats ' +
+  'beats an aborted review.'
 
-const CRITIC_EXPLORE_PROMPT_SUFFIX =
-  '\n\nWork the three phases now: suspect privately, verify with your ' +
-  'read-only tools within budget, then emit the dossier and verdict ' +
-  'sections as your visible reply.'
+const CRITIC_VERIFY_PROMPT_SUFFIX =
+  '\n\nVerify the suspects in order with your read-only tools within ' +
+  'budget, then emit the dossier and verdict sections as your visible ' +
+  'reply.'
+
+function criticExploreToolsClause(budget) {
+  return 'You have READ-ONLY exploration tools (read, grep, glob — no ' +
+    'writes, no shell, no session history) and a HARD BUDGET of ' + budget +
+    ' tool calls for this review; exceeding it aborts the review.'
+}
 
 function criticExplorePersona(budget) {
-  return CRITIC_PERSONA.replace(CRITIC_NO_TOOLS_CLAUSE, criticExploreToolsClause(budget)) + CRITIC_EXPLORE_CONTRACT
+  return CRITIC_PERSONA.replace(CRITIC_NO_TOOLS_CLAUSE, criticExploreToolsClause(budget)) + CRITIC_VERIFY_CONTRACT
 }
+
+/**
+ * 熔断抢救书写员（仅一次）：探索者被预算熔断杀死后，拿着它的部分卷宗
+ * （子会话死前最后可见文本）出最终 dossier+verdict——未了结的疑点一律
+ * 进「未查 Z」，不得以任何形式落批注。
+ */
+const CRITIC_SALVAGE_PERSONA =
+  'You are the verdict writer for an ABORTED review: the exploring critic ' +
+  'was cut off by the budget breaker before writing its verdict. You ' +
+  'receive the DRAFT, its block map, the suspect list the critic worked ' +
+  'from, and the critic\'s PARTIAL dossier text (possibly empty, partial, ' +
+  'or mid-sentence). You have NO tools. Produce the final two sections, ' +
+  'dossier FIRST, verdict SECOND, in the same format: suspects the ' +
+  'partial dossier already settled keep their outcome (confirmed or ' +
+  'excluded, WITH the evidence the partial text cites); every other ' +
+  'suspect is UNCHECKED — it must NOT appear as an annotation in any ' +
+  'form (not even as a nit or a suggestion), it only counts toward 未查. ' +
+  'A settled suspect whose partial-text mention carries NO tool evidence ' +
+  'may appear at most as a nit with the partial text quoted. stats: ' +
+  '排查 M · 证伪 X · 排除 Y · 未查 Z, counted honestly (M = the full ' +
+  'suspect count given to you, Z = unchecked). verdict: changes only ' +
+  'when at least one blocker survives.'
+
+const CRITIC_SALVAGE_PROMPT_SUFFIX =
+  '\n\nWrite the final dossier and verdict sections now from the partial ' +
+  'findings — nothing else.'
 
 /** A codec that passes values through — both halves are first-party here. */
 const PASS_CODEC = { parse: (value) => value }
@@ -763,13 +816,56 @@ function parseAnnotations(text, draft, blocks, options) {
   return annotations.slice(0, 8)
 }
 
-/** 契约 v3 stats 行：`stats: 排查 N · 证伪 X · 排除 Y`（容忍分隔符变体）。 */
+/** 契约 v3 stats 行：`stats: 排查 N · 证伪 X · 排除 Y`（容忍分隔符变体）。
+ *  契约 v4 起可选第四元 `· 未查 Z`。 */
 function parseStatsLine(line) {
   if (typeof line !== 'string' || line.trim() === '') return undefined
-  const m = /排查\s*(\d+)\s*[·,，、]?\s*证伪\s*(\d+)\s*[·,，、]?\s*排除\s*(\d+)/.exec(line)
-  if (m) return { checked: Number(m[1]), confirmed: Number(m[2]), excluded: Number(m[3]) }
+  const m = /排查\s*(\d+)\s*[·,，、]?\s*证伪\s*(\d+)\s*[·,，、]?\s*排除\s*(\d+)(?:\s*[·,，、]?\s*未查\s*(\d+))?/.exec(line)
+  if (m) return { checked: Number(m[1]), confirmed: Number(m[2]), excluded: Number(m[3]), ...(m[4] === undefined ? {} : { unchecked: Number(m[4]) }) }
   const nums = (line.match(/\d+/g) || []).map(Number)
-  return nums.length >= 3 ? { checked: nums[0], confirmed: nums[1], excluded: nums[2] } : undefined
+  if (nums.length >= 3) return { checked: nums[0], confirmed: nums[1], excluded: nums[2], ...(nums.length >= 4 ? { unchecked: nums[3] } : {}) }
+  return undefined
+}
+
+/**
+ * 契约 v4 阶段 1 疑点清单解析（容错同 parse 家族：坏行掉落，不全盘崩）：
+ * `- suspect: … | block: bN | bearing: high|low | falsify: …`，字段均可缺，
+ * bearing 缺省 low，至多 8 条。
+ */
+function parseSuspectList(text) {
+  const out = []
+  const re = /^- suspect:[ \t]*(.*)$/gm
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const parts = m[1].split('|').map((p) => p.trim())
+    const suspect = (parts[0] || '').trim()
+    if (suspect === '') continue
+    let block
+    let bearing = 'low'
+    let falsify = ''
+    for (const part of parts.slice(1)) {
+      const b = /^block:[ \t]*(b\d+)$/.exec(part)
+      if (b) { block = b[1]; continue }
+      const g = /^bearing:[ \t]*(high|low)$/i.exec(part)
+      if (g) { bearing = g[1].toLowerCase(); continue }
+      const f = /^falsify:[ \t]*(.*)$/.exec(part)
+      if (f) falsify = f[1].trim()
+    }
+    out.push({ suspect: suspect.slice(0, 240), bearing, falsify: falsify.slice(0, 240), ...(block === undefined ? {} : { block }) })
+  }
+  return out.slice(0, 8)
+}
+
+/**
+ * 机械分诊（契约 v4，host 侧）：bearing 高优先稳定排序，按预算截取，
+ * 其余计未查——清单在送审前定型，模型不再掌握「查几个」的决定权。
+ */
+function triageSuspects(suspects, budget) {
+  const high = suspects.filter((s) => s.bearing === 'high')
+  const low = suspects.filter((s) => s.bearing !== 'high')
+  const ordered = [...high, ...low]
+  const cap = Math.max(1, budget)
+  return { chosen: ordered.slice(0, cap), skipped: ordered.slice(cap) }
 }
 
 /**
@@ -1248,6 +1344,8 @@ class AdvisorReviewService extends TypertRemoteService {
       inFlight: true,
       explore: p.explore,
       budget: p.budget,
+      ...(p.phase === undefined ? {} : { phase: p.phase }),
+      ...(p.suspects === undefined ? {} : { suspects: p.suspects }),
       toolCalls: p.toolCalls(),
       action: typeof p.action === 'function' ? p.action() : { kind: 'thinking' },
       elapsedMs: Date.now() - p.startedAt,
@@ -1332,83 +1430,204 @@ class AdvisorReviewService extends TypertRemoteService {
       const cfg = this.getConfig()
       const explore = cfg.criticExploreEnabled !== false && (cfg.criticExploreBudget === undefined ? 5 : cfg.criticExploreBudget) > 0
       const budget = explore ? cfg.criticExploreBudget || 5 : 0
-      const criticAbort = new AbortController()
+      // 共享上下文（请求/摘要/引用/顾问清单/块地图/草稿）——v2 单段与 v4
+      // 两阶段的每个 spawn 都以此为底。
+      let baseContext = ''
       try {
         const evidence = turnEvidence(events, target)
-        let promptText = ''
         if (evidence.request !== '') {
-          promptText += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
+          baseContext += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
         }
-        promptText += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
+        baseContext += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
         if (Array.isArray(evidence.quotes) && evidence.quotes.length > 0) {
-          promptText += 'Full outputs of this turn\'s NON-REPRODUCIBLE tool calls (verbatim quotes — the world cannot re-produce these byte-for-byte, so cross-check draft claims against them directly before spending your own budget):\n'
+          baseContext += 'Full outputs of this turn\'s NON-REPRODUCIBLE tool calls (verbatim quotes — the world cannot re-produce these byte-for-byte, so cross-check draft claims against them directly before spending your own budget):\n'
           for (const q of evidence.quotes) {
-            promptText += '\n### ' + q.name + (q.isError ? ' (ERROR)' : '') + ' output:\n"""\n' + q.text + '\n"""\n'
+            baseContext += '\n### ' + q.name + (q.isError ? ' (ERROR)' : '') + ' output:\n"""\n' + q.text + '\n"""\n'
           }
-          promptText += '\n'
+          baseContext += '\n'
         }
         if (targets.items.length > 0) {
-          promptText += 'Advisor verification list (pre-declared by the consulted advisor; cross-check per your instructions):\n'
+          baseContext += 'Advisor verification list (pre-declared by the consulted advisor; cross-check per your instructions):\n'
           for (const it of targets.items) {
-            promptText += '- [' + String(it.tier || 'low') + '] ' + String(it.title || '（无标题）') + ' — 验证目标: ' + String(it.verificationTarget) + '\n'
+            baseContext += '- [' + String(it.tier || 'low') + '] ' + String(it.title || '（无标题）') + ' — 验证目标: ' + String(it.verificationTarget) + '\n'
           }
-          promptText += '\n'
+          baseContext += '\n'
         }
-        promptText += 'Draft block map (cite these ids in each annotation\'s `block:` field):\n'
-        for (const b of draftBlocks) promptText += b.id + ': ' + b.type + '\n'
-        promptText += '\nDraft under review:\n"""\n' + draft + '\n"""' + (explore ? CRITIC_EXPLORE_PROMPT_SUFFIX : CRITIC_PROMPT_SUFFIX)
-        run = await subagents.start('spawn', {
-          label: 'critic',
-          parent: agent,
-          signal: criticAbort.signal,
-          prompt: [{ type: 'text', text: promptText }],
-          agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: explore ? 16384 : 4096 },
-          persona: (explore ? criticExplorePersona(budget) : CRITIC_PERSONA) + RUBRIC_ADDENDUM,
-          maxDepth: 1,
-          toolFilter: explore ? { allow: ['read', 'grep', 'glob'] } : { allow: [] },
-        })
-      } catch (spawnError) {
-        return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+        baseContext += 'Draft block map (cite these ids in each annotation\'s `block:` field):\n'
+        for (const b of draftBlocks) baseContext += b.id + ': ' + b.type + '\n'
+        baseContext += '\nDraft under review:\n"""\n' + draft + '\n"""'
+      } catch (evidenceError) {
+        return fail('evidence assembly failed: ' + String(evidenceError && evidenceError.message || evidenceError))
       }
-      this.liveCriticChildren.add(run.id)
-      // 预算看门狗：轮询子会话 tool/call 计数（同时供评审条目的实际调用
-      // 数取证——统计不信模型自报，以运行时事件流为准）。
-      let budgetAborted = false
-      const watchdog = explore
-        ? createBudgetWatchdog({
-          agents, runId: run.id, budget,
-          onBreach: () => { budgetAborted = true; criticAbort.abort() },
-        })
-        : undefined
-      this.progressByMessage.set(messageId, {
-        explore,
-        budget,
-        startedAt: Date.now(),
-        toolCalls: () => (watchdog ? watchdog.calls() : 0),
-        action: () => (watchdog ? watchdog.action() : { kind: 'thinking' }),
+      const spawnOnce = (spec) => subagents.start('spawn', {
+        label: spec.label,
+        parent: agent,
+        // 每个 spawn 独立控制器：预算熔断只杀阶段 2，抢救 spawn 必须用
+        // 全新 signal——共享一个在 breach 时已耗尽的 signal 会让抢救
+        // 必败（0.15.0 设计评审抓出）。
+        signal: (spec.abort || new AbortController()).signal,
+        prompt: [{ type: 'text', text: spec.prompt }],
+        agentOptions: spec.agentOptions,
+        persona: spec.persona,
+        maxDepth: 1,
+        toolFilter: spec.toolFilter,
       })
-      let toolCalls = 0
-      let text = ''
-      try {
-        const result = await run.result
-        text = outputText(result.output)
-        if (budgetAborted) {
-          return fail('exploration budget exceeded: critic made more than ' + budget +
-            ' read-only tool calls; review aborted (raise criticExploreBudget or disable criticExploreEnabled)')
+      const awaitRun = async (run) => {
+        this.liveCriticChildren.add(run.id)
+        try {
+          const result = await run.result
+          return { result, text: outputText(result.output) }
+        } finally {
+          this.liveCriticChildren.delete(run.id)
+          await run.dispose()
         }
+      }
+
+      let text = ''
+      let toolCalls = 0
+      let suspectsMeta
+      let salvaged = false
+      if (!explore) {
+        // ── v2 单段路径（探索关闭）──
+        let run
+        try {
+          run = await spawnOnce({
+            label: 'critic',
+            prompt: baseContext + CRITIC_PROMPT_SUFFIX,
+            agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 4096 },
+            persona: CRITIC_PERSONA + RUBRIC_ADDENDUM,
+            toolFilter: { allow: [] },
+          })
+        } catch (spawnError) {
+          return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+        }
+        this.progressByMessage.set(messageId, { explore, budget, startedAt: Date.now(), toolCalls: () => 0, action: () => ({ kind: 'thinking' }) })
+        const { result, text: out } = await awaitRun(run)
         if (result.stopReason !== 'completed') {
           const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
           return fail('critic ended with "' + result.stopReason + '"' + (detail === '' ? '' : ': ' + detail))
         }
-        if (text === '') {
-          return fail('critic returned an empty answer (reasoning only, no visible text)')
+        if (out === '') return fail('critic returned an empty answer (reasoning only, no visible text)')
+        text = out
+      } else {
+        // ── 契约 v4 两阶段 ──
+        const progress = { explore, budget, phase: 1, suspects: 0, startedAt: Date.now(), toolCalls: () => 0, action: () => ({ kind: 'thinking' }) }
+        this.progressByMessage.set(messageId, progress)
+        // 阶段 1：存疑（无工具、便宜，产出结构化疑点清单）
+        let suspects = []
+        try {
+          const run1 = await spawnOnce({
+            label: 'critic-suspects',
+            prompt: baseContext + CRITIC_SUSPECT_PROMPT_SUFFIX,
+            agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 4096 },
+            persona: CRITIC_SUSPECT_PERSONA,
+            toolFilter: { allow: [] },
+          })
+          const r1 = await awaitRun(run1)
+          if (r1.result.stopReason !== 'completed') return fail('suspect phase ended with "' + r1.result.stopReason + '"')
+          if (r1.text === '') return fail('suspect phase returned an empty answer')
+          suspects = parseSuspectList(r1.text)
+        } catch (suspectError) {
+          return fail('suspect phase failed: ' + String(suspectError && suspectError.message || suspectError))
         }
-      } finally {
-        if (watchdog) toolCalls = watchdog.stop()
-        this.liveCriticChildren.delete(run.id)
-        await run.dispose()
+        // host 机械分诊：bearing 排序 + 预算截取，清单定型。
+        const triage = triageSuspects(suspects, budget)
+        suspectsMeta = { total: suspects.length, triaged: triage.chosen.length, skipped: triage.skipped.length }
+        if (triage.chosen.length > 0) {
+          let listText = 'Suspect list from phase 1 (' + suspects.length + ' total; ' + triage.skipped.length +
+            ' pre-triaged as UNCHECKED by the pipeline to fit your budget — they count toward 未查, do NOT verify or annotate them):\n'
+          triage.chosen.forEach((s, i) => {
+            listText += (i + 1) + '. ' + (s.block ? '[' + s.block + '] ' : '') + s.suspect + ' — falsify: ' + (s.falsify || '（未给出）') + '\n'
+          })
+          progress.phase = 2
+          progress.suspects = triage.chosen.length
+          // 阶段 2：核实（只读白名单 + 预算看门狗）
+          let budgetAborted = false
+          let needSalvage = false
+          let salvageReason = ''
+          let partialText = ''
+          let run2
+          const phase2Abort = new AbortController()
+          try {
+            run2 = await spawnOnce({
+              label: 'critic',
+              prompt: baseContext + '\n\n' + listText + CRITIC_VERIFY_PROMPT_SUFFIX,
+              agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 16384 },
+              persona: criticExplorePersona(budget) + RUBRIC_ADDENDUM,
+              toolFilter: { allow: ['read', 'grep', 'glob'] },
+              abort: phase2Abort,
+            })
+          } catch (spawnError) {
+            return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+          }
+          const watchdog = createBudgetWatchdog({
+            agents, runId: run2.id, budget,
+            onBreach: () => { budgetAborted = true; phase2Abort.abort() },
+          })
+          progress.toolCalls = () => watchdog.calls()
+          progress.action = () => watchdog.action()
+          this.liveCriticChildren.add(run2.id)
+          try {
+            const result = await run2.result
+            text = outputText(result.output)
+            if (budgetAborted || result.stopReason !== 'completed' || text === '') {
+              // 抓死前部分卷宗（dispose 前子会话仍可读）。
+              try {
+                const child = agents.get(run2.id)
+                const evs = child && sessionEvents(child.session)
+                if (Array.isArray(evs)) {
+                  for (let i = evs.length - 1; i >= 0; i -= 1) {
+                    if (evs[i] && evs[i].type === 'assistant/message') {
+                      const t = draftText(evs[i])
+                      if (t !== '') { partialText = t; break }
+                    }
+                  }
+                }
+              } catch { /* 部分卷宗尽力而为 */ }
+              if (partialText === '') partialText = text
+              needSalvage = true
+              salvageReason = budgetAborted ? 'budget exceeded' : 'critic ended with "' + result.stopReason + '"' + (text === '' ? ' and empty output' : '')
+            }
+          } finally {
+            toolCalls = watchdog.stop()
+            this.liveCriticChildren.delete(run2.id)
+            await run2.dispose()
+          }
+          if (needSalvage) {
+            // 熔断抢救（仅一次）：无工具书写员拿部分卷宗出最终裁决。
+            this.ctx.logger?.warn('dsh-advisor: phase 2 aborted (%s); running one-shot salvage writer', salvageReason)
+            const salvagePrompt = baseContext + '\n\n' + listText +
+              '\n\nPARTIAL dossier text recovered from the aborted critic (possibly empty or mid-sentence):\n"""\n' +
+              (partialText === '' ? '（空）' : partialText.slice(0, 6000)) + '\n"""' + CRITIC_SALVAGE_PROMPT_SUFFIX
+            try {
+              const run3 = await spawnOnce({
+                label: 'critic-salvage',
+                prompt: salvagePrompt,
+                agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 8192 },
+                persona: CRITIC_SALVAGE_PERSONA,
+                toolFilter: { allow: [] },
+              })
+              const r3 = await awaitRun(run3)
+              if (r3.result.stopReason !== 'completed' || r3.text === '') {
+                return fail('phase 2 aborted (' + salvageReason + ') and the salvage writer also failed (stopReason ' + r3.result.stopReason + ')')
+              }
+              text = r3.text
+              salvaged = true
+            } catch (salvageError) {
+              return fail('phase 2 aborted (' + salvageReason + '); salvage spawn failed: ' + String(salvageError && salvageError.message || salvageError))
+            }
+          }
+        }
+      }
+      // 阶段 1 零清单短路：无可证伪疑点即 pass，不烧阶段 2 的 spawn。
+      if (explore && suspectsMeta !== undefined && suspectsMeta.triaged === 0 && text === '') {
+        text = '## verdict: pass\nsummary: 无可证伪疑点（存疑阶段清单为空）。\nstats: 排查 0 · 证伪 0 · 排除 0 · 未查 ' + suspectsMeta.skipped
       }
       const parsed = parseCriticReview(text, draft, draftBlocks, { explore })
+      // 机械分诊的未查数并入 stats（模型自报 Z + host 预截取 Z）。
+      if (parsed.stats !== undefined && suspectsMeta !== undefined && suspectsMeta.skipped > 0) {
+        parsed.stats = { ...parsed.stats, unchecked: (parsed.stats.unchecked || 0) + suspectsMeta.skipped }
+      }
       const annotations = parsed.annotations
       const sound = /^SOUND:/m.test(text)
         || (parsed.verdict === 'pass' && annotations.length === 0)
@@ -1422,7 +1641,10 @@ class AdvisorReviewService extends TypertRemoteService {
         // （预算与实际 tool/call 计数——自报与实测并列，交叉校验失真一眼
         // 可见；A/B 评估回路的地面真值）。
         ...(parsed.stats === undefined ? {} : { stats: parsed.stats }),
-        ...(explore ? { explore: { budget, toolCalls } } : {}),
+        ...(explore ? { explore: { budget, toolCalls, ...(salvaged ? { salvaged: true } : {}) } } : {}),
+        // 契约 v4：阶段 1 清单元数据（总数/送审/预截取未查）——统计诚实的
+        // M/Z 的持久化地面真值。
+        ...(suspectsMeta === undefined ? {} : { suspects: suspectsMeta }),
         // 块地图（仅 id+type）——浏览器端用同一序号空间把 gutter 徽章对到
         // 渲染 DOM 的顶层块；块解析失败的批注退回旧 proximity 定位。
         ...(draftBlocks.length === 0 ? {} : { blocks: draftBlocks.map((b) => ({ id: b.id, type: b.type })) }),
@@ -1554,6 +1776,8 @@ export {
   criticExplorePersona,
   createBudgetWatchdog,
   turnEvidence,
+  parseSuspectList,
+  triageSuspects,
   appendFeedback,
   readFeedbackTriage,
 }

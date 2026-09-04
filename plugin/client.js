@@ -1738,7 +1738,8 @@ window.__ModuleLoader__.load({
             const c = doc.createElement('span')
             c.className = 'dsr-vchip dsr-vchip-s'
             c.textContent = '排查 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
-            if (entry.explore) c.title = '实测只读调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget + '（事件流采样，非模型自报）'
+              + (typeof entry.stats.unchecked === 'number' && entry.stats.unchecked > 0 ? ' · 未查 ' + entry.stats.unchecked : '')
+            if (entry.explore) c.title = '实测只读调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget + '（事件流采样，非模型自报）' + (entry.explore.salvaged ? '；本卡由熔断抢救书写员产出' : '')
             chips.appendChild(c)
           } else if (entry.explore) {
             const c = doc.createElement('span')
@@ -2141,13 +2142,19 @@ window.__ModuleLoader__.load({
         const inFlight = busy || (prog !== null && prog.inFlight === true)
         const label = inFlight
           ? (prog && prog.explore
-            ? '评审中 · ' + (prog.toolCalls === 0
+            ? '评审中 · ' + (prog.phase === 1 || prog.toolCalls === 0
               ? '存疑分析中'
-              : prog.action && prog.action.kind === 'tool'
-                ? '排查 ' + prog.toolCalls + '/' + prog.budget + ' · ' + prog.action.name + (prog.action.target ? ' ' + prog.action.target : '')
-                : prog.action && prog.action.last
-                  ? '排查 ' + prog.toolCalls + '/' + prog.budget + ' · 分析 ' + prog.action.last.name + (prog.action.last.target ? ' ' + prog.action.last.target : '') + ' 结果'
-                  : '排查 ' + prog.toolCalls + '/' + prog.budget + ' · 分析取证结果')
+              : (() => {
+                // 契约 v4：分母优先用阶段 1 清单送审数（真 M），否则退回预算。
+                const goal = typeof prog.suspects === 'number' && prog.suspects > 0 ? prog.suspects : prog.budget
+                if (prog.action && prog.action.kind === 'tool') {
+                  return '排查 ' + prog.toolCalls + '/' + goal + ' · ' + prog.action.name + (prog.action.target ? ' ' + prog.action.target : '')
+                }
+                if (prog.action && prog.action.last) {
+                  return '排查 ' + prog.toolCalls + '/' + goal + ' · 分析 ' + prog.action.last.name + (prog.action.last.target ? ' ' + prog.action.last.target : '') + ' 结果'
+                }
+                return '排查 ' + prog.toolCalls + '/' + goal + ' · 分析取证结果'
+              })())
             + '…'
             : '评审中…')
           : entry === undefined
