@@ -648,6 +648,7 @@ function createBudgetWatchdog(options) {
   if (typeof timer.unref === 'function') timer.unref()
   return {
     stop: () => { clearInterval(timer); sample(); return calls },
+    calls: () => calls,
     breached: () => breached,
   }
 }
@@ -1100,6 +1101,8 @@ class AdvisorReviewService extends TypertRemoteService {
     this.liveCriticChildren = liveCriticChildren
     this.getConfig = getConfig
     this.inFlight = new Set()
+    // 契约 v3 进展通道（轮询制）：messageId → 在途评审的实时探索计数。
+    this.progressByMessage = new Map()
     // Per-session dedup ledgers, each a Promise<Set> so concurrent first
     // touches share one WAL read and one Set instance.
     this.sentBySession = new Map()
@@ -1110,6 +1113,7 @@ class AdvisorReviewService extends TypertRemoteService {
     remoteMarker(Object.getPrototypeOf(this), 'start').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'feedback').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'triage').call(this)
+    remoteMarker(Object.getPrototypeOf(this), 'progress').call(this)
   }
 
   /** The dedup ledger for one session, seeded from the WAL on first touch. */
@@ -1150,6 +1154,27 @@ class AdvisorReviewService extends TypertRemoteService {
       }
     }
     return { reviews: entries.map((entry) => ({ ...entry, time: entry.createdAt })), sentKeys: Array.from(sent), triage: triageOut }
+  }
+
+  /**
+   * 契约 v3 进展通道（0.13.0，轮询制）：评审在途期间客户端每 2s 拉一次，
+   * 徽标从黑盒等待升级为「排查 k/预算」实时计数。设计权衡（2026-09-05
+   * 实拍后修订）：agent-team 邮箱通道因上游 tryMembership 竞态（挂载
+   * 即概率性打死所有一次性 spawn）且 spawnTeammate 不支持按次 pin
+   * 路由，被轮询制取代——零实验依赖、路由 pin 完整保留；team 接线
+   * 推迟到上游修复后，见 docs/iteration-critic-ux.md。
+   */
+  async progress(request) {
+    const messageId = String(request && request.messageId || '')
+    const p = this.progressByMessage.get(messageId)
+    if (p === undefined) return { inFlight: false }
+    return {
+      inFlight: true,
+      explore: p.explore,
+      budget: p.budget,
+      toolCalls: p.toolCalls(),
+      elapsedMs: Date.now() - p.startedAt,
+    }
   }
 
   /**
@@ -1271,6 +1296,12 @@ class AdvisorReviewService extends TypertRemoteService {
           onBreach: () => { budgetAborted = true; criticAbort.abort() },
         })
         : undefined
+      this.progressByMessage.set(messageId, {
+        explore,
+        budget,
+        startedAt: Date.now(),
+        toolCalls: () => (watchdog ? watchdog.calls() : 0),
+      })
       let toolCalls = 0
       let text = ''
       try {
@@ -1329,6 +1360,7 @@ class AdvisorReviewService extends TypertRemoteService {
       return fail('unexpected: ' + String(error && error.message || error))
     } finally {
       this.inFlight.delete(messageId)
+      this.progressByMessage.delete(messageId)
     }
   }
 
@@ -1613,7 +1645,7 @@ export function apply(ctx, config) {
         face: 'host',
         schemas: [],
         model: { services: [], events: [], objects: [] },
-        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback'), reviewInvocation('triage')],
+        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback'), reviewInvocation('triage'), reviewInvocation('progress')],
       }),
       'dsh-advisor: review remote descriptors',
     )

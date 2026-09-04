@@ -722,7 +722,7 @@ window.__ModuleLoader__.load({
     /** The advisorReview Remote contribution this client $mounts on boot. */
     const ADVISOR_REMOTE = {
       package: 'dsh-advisor',
-      descriptors: ['list', 'start', 'feedback'].map((method) => ({
+      descriptors: ['list', 'start', 'feedback', 'triage', 'progress'].map((method) => ({
         id: `dsh-advisor#advisorReview/${method}`,
         service: 'advisorReview',
         namespace: 'advisorReview',
@@ -1887,6 +1887,21 @@ window.__ModuleLoader__.load({
         const messageId = props.messageId
         const sessionId = props.sessionId
         const [busy, setBusy] = useState(false)
+        // 0.13.0 契约 v3 进展通道：评审在途期间每 2s 轮询 host 的实时探索
+        // 计数（事件流采样，非模型自报），徽标从黑盒升级为「排查 k/预算」。
+        const [prog, setProg] = useState(null)
+        useEffect(() => {
+          if (!busy) { setProg(null); return undefined }
+          let live = true
+          const tick = () => {
+            reviewCall('progress', { sessionId, messageId })
+              .then((res) => { if (live) setProg(res && res.inFlight ? res : null) })
+              .catch(() => {})
+          }
+          tick()
+          const iv = setInterval(tick, 2000)
+          return () => { live = false; clearInterval(iv) }
+        }, [busy])
         const rootRef = React.useRef(null)
         useEffect(() => { void hydrate(sessionId) }, [sessionId])
         const entry = store.byMessage.get(messageId)
@@ -2097,7 +2112,9 @@ window.__ModuleLoader__.load({
         }, [entry, fbTick])
         const count = entry && Array.isArray(entry.annotations) ? entry.annotations.length : 0
         const label = busy
-          ? '评审中…'
+          ? (prog && prog.explore
+            ? '评审中 · 排查 ' + prog.toolCalls + '/' + prog.budget + '…'
+            : '评审中…')
           : entry === undefined
             ? '批注评审'
             : entry.status === 'sound' || entry.verdict === 'pass'
