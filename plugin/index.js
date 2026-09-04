@@ -186,7 +186,7 @@ function clip(text, max = 300) {
 function assembleAdviseContext(agent) {
   try {
     const session = agent && agent.session
-    const events = session && session.events
+    const events = sessionEvents(session)
     if (!Array.isArray(events)) return ''
     const parts = []
     let budget = 1800
@@ -247,7 +247,7 @@ function childErrorDetail(run) {
   if (agent === undefined) return ''
   let events
   try {
-    events = agent.session.events
+    events = sessionEvents(agent.session)
   } catch {
     return ''
   }
@@ -286,7 +286,7 @@ const GATE_REJECTION_HEAD = /^(?:Error: )?(?:context is required:|explore first:
 function gateFacts(parent) {
   try {
     const session = parent && parent.session
-    const events = session && session.events
+    const events = sessionEvents(session)
     if (!Array.isArray(events)) return undefined
     let turnStart = -1
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -358,7 +358,7 @@ const PLAN_REMINDER_TEXT =
 function reminderTextFor(agent, current) {
   try {
     if (!current().planReminderEnabled) return ''
-    const events = agent.session && agent.session.events
+    const events = sessionEvents(agent.session)
     if (!Array.isArray(events)) return ''
     let turnStart = -1
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -543,6 +543,18 @@ function draftText(event) {
     .map((block) => block.text)
     .join('\n')
     .trim()
+}
+
+/**
+ * Session 事件读取（双形态兼容）：0.1.3 起 `Session.events` 数组属性退役，
+ * 由 `snapshotEvents()` 方法（frozen 快照）接任；旧运行时回退原属性。
+ * 只读消费，快照与原数组同等对待。
+ */
+function sessionEvents(session) {
+  if (!session) return undefined
+  if (typeof session.snapshotEvents === 'function') return session.snapshotEvents()
+  const events = session.events
+  return Array.isArray(events) ? events : undefined
 }
 
 /** Anchor fidelity check against the raw markdown draft (display hint only — the DOM side matches normalized text). */
@@ -973,7 +985,7 @@ class AdvisorReviewService extends TypertRemoteService {
     }
     const agent = agents.get(sessionId)
     if (agent === undefined) return { ok: false, error: 'session is not live: ' + sessionId }
-    const events = agent.session && agent.session.events
+    const events = sessionEvents(agent.session)
     if (!Array.isArray(events)) return { ok: false, error: 'session events unreadable' }
     let target
     for (const event of events) {

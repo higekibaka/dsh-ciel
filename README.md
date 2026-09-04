@@ -102,7 +102,7 @@ dsh plugin --profile web add dsh-ciel
 
 ## 兼容性
 
-- DSH **≥ 0.1.0-rc.7**（keyed `settings.plugin.item` 槽）；在 **0.1.2-alpha.1** 上开发与验证。
+- DSH **≥ 0.1.0-rc.7**（keyed `settings.plugin.item` 槽）；在 **0.1.2-alpha.1 / 0.1.3-alpha.1** 上开发与验证（0.1.3 的 `Session.events` 退役已适配，双形态兼容）。
 - Node.js ≥ 22。
 - 可与 [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor) 共存：0.11.0 起设置命名空间迁至 `ciel`，两插件可同装。
 

@@ -129,7 +129,7 @@ All fields live in the `ciel` settings namespace (the settings card or the
 ## Compatibility
 
 - DSH **≥ 0.1.0-rc.7** (keyed `settings.plugin.item` slot); developed and
-  verified against **0.1.2-alpha.1**.
+  verified against **0.1.2-alpha.1 / 0.1.3-alpha.1** (the 0.1.3 `Session.events` retirement is handled with a dual-shape reader).
 - Node.js ≥ 22.
 - Designed to coexist with [omdsh-dev/dsh-advisor](https://github.com/omdsh-dev/dsh-advisor):
   the settings namespace moved to `ciel` in 0.11.0 so both plugins can be
