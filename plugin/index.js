@@ -536,9 +536,17 @@ const CRITIC_EXPLORE_CONTRACT =
   'suspicion your tools cleared is DEAD — it must not reappear there in ' +
   'any form (not as an annotation, a nit, a warning, or a suggestion). ' +
   'Every [blocker] MUST carry an evidence: line grounded in a tool result ' +
-  'from THIS turn; an ungrounded blocker is downgraded to a nit. The stats ' +
+  'from THIS turn; an ungrounded blocker is downgraded to a nit. ANY ' +
+  'annotation grounded in this turn\'s exploration carries its evidence: ' +
+  'line too — the citation is the finding\'s proof, not a severity badge; ' +
+  'a confirmed defect you verified with a tool must reach the user WITH ' +
+  'its citation, never as a bare "consider double-checking". The stats ' +
   'line counts dossier suspects honestly (N = X + Y; zero suspects means ' +
-  'omit the stats line). All other annotation rules above still apply.'
+  'omit the stats line). All other annotation rules above still apply. ' +
+  'Concrete factual assertions about the world (counts, sizes, versions, ' +
+  'paths, quotes, behavior) are suspects EVEN when the draft hedges them ' +
+  'as estimates or from-memory guesses: a hedge labels provenance, it ' +
+  'does not make the claim true — if one read can settle it, suspect it.'
 
 const CRITIC_EXPLORE_PROMPT_SUFFIX =
   '\n\nWork the three phases now: suspect privately, verify with your ' +
