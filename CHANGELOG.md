@@ -4,6 +4,54 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-09-05
+
+探索型批评者：从「凭直觉下裁决的判官」升级为「先调查取证、再下裁决的
+判官」（契约 v3，计划与验收见
+[docs/iteration-critic-ux.md](docs/iteration-critic-ux.md)，A/B 报告见
+[docs/ab/ab-comparison-0.13.0.md](docs/ab/ab-comparison-0.13.0.md)）。
+
+### Added
+
+- **评审契约 v3（存疑 → 核实 → 断言）**：批评者获得只读工具白名单
+  （read/grep/glob——世界可碰、过程不许碰），先私下列疑点、再定点
+  证伪、最后输出 `## dossier`（侦查卷宗）+ `## verdict`（判决书）两段；
+  解析层只消费 verdict 段，排除的疑点**结构上不可能**漏进批注。
+- **证据强制**：blocker 必须带 `evidence:` 行引用本轮工具所得，无证据者
+  自动降为 nit（批注卡显示「缺证据·降级」标记）；v3.2 起探索支撑的
+  批注无论级别都必须带证据引用——证伪结论连同行号一并送达，不再以
+  「若…请先核实」的条件措辞踢回给人。
+- **排查统计**：裁决卡新增 `排查 N · 证伪 X · 排除 Y` chip，tooltip 挂
+  运行时事件流实测调用数（自报与实测并列，失真立现）。
+- **进展通道**：评审徽标从黑盒等待升级为 `评审中 · 排查 k/预算…` 实时
+  计数（客户端 2s 轮询 host `advisorReview/progress`，与预算熔断同源
+  采样）。
+- **设置**：`criticExploreEnabled`（默认开）、`criticExploreBudget`
+  （默认 5，0–10）——探索预算硬上限，超出即熔断该次评审并明确报错。
+- **A/B 评估台**：`scripts/ab-harness.js` + `ab-corpus.json` 五场景自动
+  对账（verdict/stats/实测调用/证据覆盖/耗时/预期符合度），两路由对照
+  报告与默认路由决策记录存档于 `docs/ab/`。
+
+### Changed
+
+- 探索模式评审 maxTokens 4096 → 16384（推理型路由的 dossier+verdict 与
+  推理共享输出预算，deepseek-v4-pro 实证 8192 会死于 max-tokens）。
+- 默认批评者路由**维持** google/gemini-3.7-flash：A/B 预期符合率持平
+  （5/5 vs 5/5），耗时优 3–12 倍；v4-pro 的严尺度优势属偏好而非正确性
+  差距，可由设置页自行升级。
+
+### Fixed
+
+- 客户端 Remote 描述符漏注册 `triage`（0.12.0 起分诊调用从未真正到达
+  host，单测只覆盖 host 层漏网）与 `progress`。
+
+### Deferred
+
+- agent-team 邮箱进展通道（teammate 化批评者）：上游 `tryMembership`
+  竞态（挂载 tool-agent-team 即概率性打死所有一次性 spawn，已实证并
+  记录修复方向）+ `spawnTeammate` 不支持按次 pin 模型路由——轮询制
+  进展通道以零实验风险替代，复活条件见计划文档。
+
 ## [0.12.0] - 2026-09-05
 
 批评者体验的换代迭代（计划见

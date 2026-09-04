@@ -1,0 +1,44 @@
+{
+ "at": "2026-09-04T16:39:57.742Z",
+ "base": "http://127.0.0.1:3180/?token=…",
+ "results": [
+  {
+   "id": "S4-multi-file-accurate",
+   "file": "session-a06ccd40-ea13-4a78-b9c1-1e703dd086ec.jsonl",
+   "reviewMs": 188039,
+   "verdict": "pass",
+   "status": "sound",
+   "stats": {
+    "checked": 5,
+    "confirmed": 0,
+    "excluded": 5
+   },
+   "explore": {
+    "budget": 5,
+    "toolCalls": 5
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt请逐一核实后回答（每个文件都用工具确认）：/home/hgk/123/dsh-ciel/plugin/index.js、/home/hgk/123/dsh-ciel/plugin/client.js、/home/hgk/123/dsh-ciel/package.json、/home/hgk/123/dsh-ciel/CHANGELOG.md、/home/hgk/123/dsh-ciel/README.md 这五个文件各自的最新版本号或行数特征是什么？00:3612 tool callsContext injection@deepseek-ai/dsh-system-p",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "评审中 · 排查 5/5…",
+    "✓ 无阻断 (0)"
+   ]
+  }
+ ]
+}

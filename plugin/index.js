@@ -1286,7 +1286,7 @@ class AdvisorReviewService extends TypertRemoteService {
           parent: agent,
           signal: criticAbort.signal,
           prompt: [{ type: 'text', text: promptText }],
-          agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: explore ? 8192 : 4096 },
+          agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: explore ? 16384 : 4096 },
           persona: (explore ? criticExplorePersona(budget) : CRITIC_PERSONA) + RUBRIC_ADDENDUM,
           maxDepth: 1,
           toolFilter: explore ? { allow: ['read', 'grep', 'glob'] } : { allow: [] },

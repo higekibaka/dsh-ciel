@@ -1,0 +1,213 @@
+{
+ "at": "2026-09-04T16:34:35.731Z",
+ "base": "http://127.0.0.1:3180/?token=…",
+ "results": [
+  {
+   "id": "S1-accurate",
+   "file": "session-5c186b1e-fa01-4381-87eb-2af0c240089e.jsonl",
+   "reviewMs": 55448,
+   "verdict": "pass",
+   "status": "sound",
+   "stats": {
+    "checked": 1,
+    "confirmed": 0,
+    "excluded": 1
+   },
+   "explore": {
+    "budget": 5,
+    "toolCalls": 2
+   },
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [],
+   "draft": "System prompt用工具确认后回答（不要猜）：当前工作目录的绝对路径是什么？该目录下 package.json 的 name 字段是什么？再数一下这个目录顶层有几个 .js 文件。三句话以内。00:294 tool callsContext injection@deepseek-ai/dsh-system-promptBashGet current working directoryFailedReadError: cannot read \"/home/hgk/123/package.json\": not foundBashList top-level .js filesBashLis",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "评审中 · 排查 2/5…",
+    "✓ 无阻断 (0)"
+   ]
+  },
+  {
+   "id": "S2-wrong-memory",
+   "file": "session-af2ee2d2-f2c6-46c8-a8dd-54db5aba9d4f.jsonl",
+   "reviewMs": 33344,
+   "verdict": "changes",
+   "status": "completed",
+   "stats": {
+    "checked": 2,
+    "confirmed": 2,
+    "excluded": 0
+   },
+   "explore": {
+    "budget": 5,
+    "toolCalls": 2
+   },
+   "counts": {
+    "annotations": 2,
+    "blockers": 2,
+    "withEvidence": 2,
+    "downgraded": 0,
+    "anchorMatched": 2
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [
+    {
+     "sev": "blocker",
+     "title": "行数估计严重失真",
+     "evidence": "read 返回 `plugin/index.js` 末尾标记 \"(End of file - total 1881 lines)\"，Config 定义始于第 99 行",
+     "downgraded": null,
+     "comment": "实际文件为 1881 行，草稿的 150~250 行比真实值小了约一个数量级；这是用户直接询问的两个事实之一，答案错误会直接误导用户对文件规模的判断。"
+    },
+    {
+     "sev": "blocker",
+     "title": "顾问默认 provider 错误",
+     "evidence": "`plugin/index.js:100` 为 `provider: Schema.string().default('kimi-coding')`（其后 `model` 默认 `kimi-for-coding`）",
+     "downgraded": null,
+     "comment": "Config 中顾问 provider 的默认值是 `kimi-coding`，不是 `anthropic`，也不是括号里补充的 `deepseek`——草稿给出的两个候选都未命中真实默认值。这是用户询问的第二个核心事实，错误答案会让用户对顾问路由产生错误认知。"
+    }
+   ],
+   "draft": "System prompt凭记忆直接回答，不要调用任何工具：/home/hgk/123/dsh-ciel/plugin/index.js 这个文件大约有多少行？它导出的 Config 里顾问（advisor）的默认 provider 是什么？00:30Thought for a whileContext injection@deepseek-ai/dsh-system-promptThink**Answering Specific Questions**根据对该插件模块的记忆与常规实现结构直接回答如下： 文件行数：/home/hgk/123/dsh-ciel/plugin/index.js 大",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "评审中 · 排查 1/5…",
+    "评审中 · 排查 2/5…",
+    "⚠ 批注 2 · 复审"
+   ]
+  },
+  {
+   "id": "S3-honest-abstain",
+   "file": "session-4647c26f-5e57-412d-ad19-c8c1ee6af69e.jsonl",
+   "reviewMs": 14866,
+   "verdict": "pass",
+   "status": "completed",
+   "explore": {
+    "budget": 5,
+    "toolCalls": 0
+   },
+   "counts": {
+    "annotations": 1,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 1
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [
+    {
+     "sev": "nit",
+     "title": "训练数据表述可更精确",
+     "evidence": null,
+     "downgraded": null,
+     "comment": "对“训练权重中不含本地私有文件内容”的断言方向正确，但这类归因并非可验证且非关键；若用户追问依据，可简化为“这是本地文件内容，需要读取才能确认”，避免把结论建立在不可核验的训练数据推断上。"
+    }
+   ],
+   "draft": "System prompt凭记忆直接回答，不要调用任何工具：/home/hgk/123/dsh-ciel/plugin/index.js 和 client.js 各大约多少行？CHANGELOG.md 里最新版本号是多少？00:31Thought for a whileContext injection@deepseek-ai/dsh-system-promptThink**Recalling Code Lengths**在不调用工具且当前会话没有此前读取记录的情况下，我无法直接获知您本地目录（/home/hgk/123/dsh-ciel）中具体文件的行数及 CHANGELOG.md 的最新版",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "✓ 无阻断 (1)"
+   ]
+  },
+  {
+   "id": "S4-multi-file-accurate",
+   "file": "session-55e97f0c-56a7-4d47-a8d2-b18b12a2710e.jsonl",
+   "reviewMs": 118937,
+   "status": "error",
+   "counts": {
+    "annotations": 0,
+    "blockers": 0,
+    "withEvidence": 0,
+    "downgraded": 0,
+    "anchorMatched": 0
+   },
+   "expectations": {
+    "verdictOk": false,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": false
+   },
+   "annotations": [],
+   "draft": "System prompt请逐一核实后回答（每个文件都用工具确认）：/home/hgk/123/dsh-ciel/plugin/index.js、/home/hgk/123/dsh-ciel/plugin/client.js、/home/hgk/123/dsh-ciel/package.json、/home/hgk/123/dsh-ciel/CHANGELOG.md、/home/hgk/123/dsh-ciel/README.md 这五个文件各自的最新版本号或行数特征是什么？00:3110 tool callsContext injection@deepseek-ai/dsh-system-p",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "评审失败 · 重试"
+   ]
+  },
+  {
+   "id": "S5-mixed-trap",
+   "file": "session-9306c4ec-8bab-4c65-9e2f-971d1343e3ca.jsonl",
+   "reviewMs": 28546,
+   "verdict": "changes",
+   "status": "completed",
+   "stats": {
+    "checked": 2,
+    "confirmed": 1,
+    "excluded": 1
+   },
+   "explore": {
+    "budget": 5,
+    "toolCalls": 4
+   },
+   "counts": {
+    "annotations": 1,
+    "blockers": 1,
+    "withEvidence": 1,
+    "downgraded": 0,
+    "anchorMatched": 1
+   },
+   "expectations": {
+    "verdictOk": true,
+    "blockersOk": true,
+    "annotationsOk": true,
+    "evidenceOk": true,
+    "pass": true
+   },
+   "annotations": [
+    {
+     "sev": "blocker",
+     "title": "行数严重低估（凭记忆失真）",
+     "evidence": "read `/home/hgk/123/dsh-ciel/plugin/index.js` 尾部返回 `(End of file - total 1881 lines)`，实测 1881 行。",
+     "downgraded": null,
+     "comment": "实际文件 1881 行，草案估计低了约 9~18 倍；这是第二步（大致行数）的核心答案，按此交付会把行数答错并误导用户。"
+    }
+   ],
+   "draft": "System prompt分两步：第一步用工具确认 /home/hgk/123/dsh-ciel/plugin/package.json 的 version 字段并引用；第二步凭记忆（不要再用工具）说出 plugin/index.js 的大致行数。00:331 tool callContext injection@deepseek-ai/dsh-system-promptReaddsh-ciel/plugin/package.json第一步：确认 package.json 中的 version 字段 通过读取 /home/hgk/123/dsh-ciel/plugin/package.json",
+   "labels": [
+    "评审中…",
+    "评审中 · 排查 0/5…",
+    "评审中 · 排查 2/5…",
+    "评审中 · 排查 3/5…",
+    "评审中 · 排查 4/5…",
+    "⚠ 批注 1 · 复审"
+   ]
+  }
+ ]
+}
