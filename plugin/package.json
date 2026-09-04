@@ -1,6 +1,6 @@
 {
   "name": "dsh-ciel",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → Plugins 可配。",
   "license": "MIT",
   "repository": {

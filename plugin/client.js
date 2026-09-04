@@ -45,6 +45,8 @@ window.__ModuleLoader__.load({
       criticProvider: 'google',
       criticModel: 'gemini-3.7-flash',
       criticEffort: 'medium',
+      criticExploreEnabled: true,
+      criticExploreBudget: '5',
     }
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
@@ -110,6 +112,14 @@ window.__ModuleLoader__.load({
             kind: 'effort', key: 'criticEffort', label: '批评者思考深度', opts: 'critic', fallback: 'medium',
             hintReady: '注入评审子代理的每个请求；跟随提供方默认则不注入。选项与所选模型声明的档位一致（gemini-3.7-flash 仅 low/medium/high）。',
             hintFallback: '注入评审子代理的每个请求；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
+          },
+          {
+            kind: 'group', key: 'critic-explore', label: '探索（契约 v3）', defaultOpen: false,
+            summarize: (staged) => (staged.criticExploreEnabled ? '开' : '关') + ' · 预算 ' + staged.criticExploreBudget,
+            children: [
+              { kind: 'check', key: 'criticExploreEnabled', label: '探索型批评者（先取证后裁决）', hint: '评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单——世界可碰、过程不许碰），排除的疑点只计入统计不进批注；关闭后退回纯草稿裁决（契约 v2）。' },
+              { kind: 'number', key: 'criticExploreBudget', label: '探索预算硬上限', min: 0, max: 10, hint: '单次评审允许的只读工具调用次数，超出即熔断该次评审并明确报错；0 = 等同关闭探索。' },
+            ],
           },
         ],
       },
@@ -393,6 +403,8 @@ window.__ModuleLoader__.load({
         criticProvider: String(value.criticProvider ?? ''),
         criticModel: String(value.criticModel ?? ''),
         criticEffort: String(value.criticEffort ?? 'medium'),
+        criticExploreEnabled: Boolean(value.criticExploreEnabled ?? true),
+        criticExploreBudget: String(value.criticExploreBudget ?? '5'),
       }
       if (drafts === null) setDrafts(staged)
 

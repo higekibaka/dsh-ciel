@@ -4,6 +4,15 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] - 2026-09-05
+
+### Fixed
+
+- 设置卡补登 0.13.0 的两个探索开关：`criticExploreEnabled`（探索型批评者
+  勾选）与 `criticExploreBudget`（预算硬上限 0–10），嵌于批评者路由组
+  下的「探索（契约 v3）」子组——0.13.0 只落了 schema 与引擎，UI 入口
+  漏网（schema 层用户本就可手改 yaml，但卡面完整性是本插件的立身项）。
+
 ## [0.13.0] - 2026-09-05
 
 探索型批评者：从「凭直觉下裁决的判官」升级为「先调查取证、再下裁决的
