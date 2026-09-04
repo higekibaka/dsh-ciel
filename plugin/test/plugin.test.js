@@ -23,6 +23,7 @@ const {
   splitMarkdownBlocks,
   parseCriticReview,
   criticExplorePersona,
+  createBudgetWatchdog,
   appendFeedback,
   readFeedbackTriage,
 } = await import('../index.js')
@@ -360,6 +361,46 @@ test('criticExplorePersona swaps the no-tools clause for a budgeted read-only cl
   assert.equal(persona.includes('HARD BUDGET of 5'), true)
   assert.equal(persona.includes('## dossier'), true)
   assert.equal(persona.includes('read, grep, glob'), true)
+})
+
+// ── 预算看门狗（0.13.0 契约 v3 硬熔断） ─────────────────────────────────
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function fakeChildAgents(evsRef) {
+  return {
+    get: () => ({ session: { snapshotEvents: () => evsRef.evs } }),
+  }
+}
+
+test('createBudgetWatchdog stays silent at budget and breaches above it', async () => {
+  const evsRef = { evs: [{ type: 'tool/call' }] }
+  let breaches = 0
+  const wd = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'child', budget: 1, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  await sleep(30)
+  assert.equal(breaches, 0)
+  assert.equal(wd.breached(), false)
+  // 超限 → 熔断恰好一次（重复采样不重复触发）。
+  evsRef.evs = [{ type: 'tool/call' }, { type: 'tool/call' }]
+  await sleep(30)
+  assert.equal(breaches, 1)
+  assert.equal(wd.breached(), true)
+  await sleep(20)
+  assert.equal(breaches, 1)
+  assert.equal(wd.stop(), 2)
+})
+
+test('createBudgetWatchdog tolerates missing child and non-tool events', async () => {
+  const evsRef = { evs: [{ type: 'assistant/message' }, { type: 'turn/start' }] }
+  let breaches = 0
+  const wd = createBudgetWatchdog({ agents: { get: () => undefined }, runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  await sleep(15)
+  assert.equal(breaches, 0)
+  assert.equal(wd.stop(), 0)
+  const wd2 = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  await sleep(15)
+  assert.equal(breaches, 0)
+  assert.equal(wd2.stop(), 0)
 })
 
 // ── 分诊 WAL（0.12.0 ④） ────────────────────────────────────────────────

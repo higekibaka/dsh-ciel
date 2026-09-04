@@ -613,6 +613,45 @@ function sessionEvents(session) {
   return Array.isArray(events) ? events : undefined
 }
 
+/**
+ * 预算看门狗（0.13.0 契约 v3）：toolFilter 无原生调用计数闸门，硬上限由
+ * 轮询子会话 tool/call 事件实现——定位是防失控断路器，不是精确计数闸门
+ * （轮询有滞后，超限 1-2 次内熔断）。预算的主要传导仍是 prompt 纪律，
+ * 看门狗只兜住模型失约/死循环。
+ * @returns {{ stop(): number, breached(): boolean }} stop 停表并返回末次采样计数。
+ */
+function createBudgetWatchdog(options) {
+  const agents = options.agents
+  const runId = options.runId
+  const budget = options.budget
+  const intervalMs = options.intervalMs || 400
+  const onBreach = options.onBreach
+  let calls = 0
+  let breached = false
+  const sample = () => {
+    try {
+      const child = agents.get(runId)
+      const evs = child && sessionEvents(child.session)
+      if (!Array.isArray(evs)) return
+      let n = 0
+      for (const e of evs) if (e && e.type === 'tool/call') n += 1
+      calls = n
+    } catch { /* 看门狗尽力而为；spawn signal 仍是运行边界 */ }
+  }
+  const timer = setInterval(() => {
+    sample()
+    if (!breached && calls > budget) {
+      breached = true
+      onBreach()
+    }
+  }, intervalMs)
+  if (typeof timer.unref === 'function') timer.unref()
+  return {
+    stop: () => { clearInterval(timer); sample(); return calls },
+    breached: () => breached,
+  }
+}
+
 /** Anchor fidelity check against the raw markdown draft (display hint only — the DOM side matches normalized text). */
 function anchorInDraft(anchor, draft) {
   if (anchor === '') return false
@@ -1224,32 +1263,15 @@ class AdvisorReviewService extends TypertRemoteService {
       }
       this.liveCriticChildren.add(run.id)
       // 预算看门狗：轮询子会话 tool/call 计数（同时供评审条目的实际调用
-      // 数取证——统计不信模型自报，以运行时事件流为准）。轮询有滞后，
-      // 熔断语义是「防失控断路器」，不是精确计数闸门。
-      let toolCalls = 0
+      // 数取证——统计不信模型自报，以运行时事件流为准）。
       let budgetAborted = false
-      const countCalls = () => {
-        try {
-          const child = agents.get(run.id)
-          const evs = child && sessionEvents(child.session)
-          if (!Array.isArray(evs)) return
-          let n = 0
-          for (const e of evs) if (e && e.type === 'tool/call') n += 1
-          toolCalls = n
-        } catch { /* 看门狗尽力而为；spawn signal 仍是运行边界 */ }
-      }
-      let watchdog
-      if (explore) {
-        watchdog = setInterval(() => {
-          countCalls()
-          if (toolCalls > budget && !budgetAborted) {
-            budgetAborted = true
-            criticAbort.abort()
-            clearInterval(watchdog)
-          }
-        }, 400)
-        if (typeof watchdog.unref === 'function') watchdog.unref()
-      }
+      const watchdog = explore
+        ? createBudgetWatchdog({
+          agents, runId: run.id, budget,
+          onBreach: () => { budgetAborted = true; criticAbort.abort() },
+        })
+        : undefined
+      let toolCalls = 0
       let text = ''
       try {
         const result = await run.result
@@ -1266,8 +1288,7 @@ class AdvisorReviewService extends TypertRemoteService {
           return fail('critic returned an empty answer (reasoning only, no visible text)')
         }
       } finally {
-        if (watchdog) clearInterval(watchdog)
-        countCalls()
+        if (watchdog) toolCalls = watchdog.stop()
         this.liveCriticChildren.delete(run.id)
         await run.dispose()
       }
@@ -1414,6 +1435,7 @@ export {
   splitMarkdownBlocks,
   parseCriticReview,
   criticExplorePersona,
+  createBudgetWatchdog,
   appendFeedback,
   readFeedbackTriage,
 }
