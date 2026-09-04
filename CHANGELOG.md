@@ -4,6 +4,17 @@ All notable changes to dsh-ciel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.3] - 2026-09-05
+
+### Added
+
+- **预算感知分诊（契约 v3.3）**：断言密度高的草稿可正当耗尽预算（实证：
+  一条五断言的总结，批评者逐条正当核实、第 11 次调用被熔断——与上轮
+  「契约自我调查」病理不同，这次是认真但超支）。契约新增软着陆规则：
+  可验证断言多于预算时按负载重要性排序核实，**剩余 1 次即停止探索、
+  用手头已核实的部分直接出 verdict**——带诚实统计的部分裁决好过熔断
+  流产。
+
 ## [0.14.2] - 2026-09-05
 
 ### Fixed
