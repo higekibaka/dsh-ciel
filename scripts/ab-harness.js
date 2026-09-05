@@ -18,6 +18,17 @@
  *     被评审的文件随仓库走，任何机器克隆后即可跑。
  *   - 评审条目源：$DSH_HOME（缺省 ~/.dsh）/dsh-advisor/reviews/<sessionId>.jsonl。
  */
+if (process.env.CIEL_ALLOW_PAID_TESTS !== '1') {
+  console.error('Paid A/B testing is disabled. Set CIEL_ALLOW_PAID_TESTS=1 explicitly; prefer keyless verify-runtime.mjs first.')
+  process.exit(2)
+}
+const MODEL = process.env.CIEL_AB_MODEL
+const CRITIC_MODEL = process.env.CIEL_AB_CRITIC_MODEL || MODEL
+const CRITIC_PROVIDER = process.env.CIEL_AB_CRITIC_PROVIDER
+if (!MODEL || !CRITIC_PROVIDER) {
+  console.error('Set CIEL_AB_MODEL and CIEL_AB_CRITIC_PROVIDER explicitly; no implicit Google route.')
+  process.exit(2)
+}
 let chromium
 try {
   chromium = (process.env.CIEL_AB_PLAYWRIGHT
@@ -27,8 +38,9 @@ try {
   console.error('playwright not found: run `npm i playwright`, or set CIEL_AB_PLAYWRIGHT to its module path')
   process.exit(1)
 }
-const { readFileSync, writeFileSync, readdirSync, statSync } = require('fs')
+const { readFileSync, writeFileSync } = require('fs')
 const { join, dirname } = require('path')
+const { reviewFileName, assertReviewIdentity, matchingReview } = require('./ab-safety.cjs')
 
 const BASE = process.argv[2]
 const OUT = process.argv[3] || '/tmp/ab'
@@ -41,21 +53,8 @@ const CHROME = process.env.CIEL_AB_CHROME || undefined
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function newestReviewFile(since) {
-  let best = null
-  for (const name of readdirSync(REVIEWS_DIR)) {
-    if (!name.endsWith('.jsonl')) continue
-    const path = join(REVIEWS_DIR, name)
-    const m = statSync(path).mtimeMs
-    if (m >= since && (best === null || m > best.m)) best = { path, m }
-  }
-  return best && best.path
-}
-
-function lastEntry(path) {
-  const lines = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean)
-  return JSON.parse(lines[lines.length - 1])
-}
+function reviewFile(sessionId) { return join(REVIEWS_DIR, reviewFileName(sessionId)) }
+function lastEntry(path, messageId, since) { return matchingReview(readFileSync(path, 'utf8'), messageId, since) }
 
 async function newSession(page) {
   await page.evaluate(() => {
@@ -82,16 +81,20 @@ async function newSession(page) {
     return null
   })
   await sleep(800)
-  const picked = await page.evaluate(() => {
-    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && /gemini-3\.8-flash|Gemini 3\.8/i.test(e.textContent || ''))
-    for (const e of els) { const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { e.click(); return (e.textContent || '').trim().slice(0, 40) } }
+  const picked = await page.evaluate((model) => {
+    const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+    const els = Array.from(document.querySelectorAll('*')).filter((e) => e.children.length === 0 && normalize(e.textContent || '') === normalize(model))
+    for (const e of els) { const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { e.click(); return (e.textContent || '').trim() } }
     return null
-  })
-  if (picked === null) {
-    const visible = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 300))
-    console.log('  ⚠ model picker: gemini-3.8 not found (row:', expandRow, '); visible:', visible)
-  }
+  }, MODEL)
+  if (picked === null) throw new Error('Requested author model was not selected; no prompt sent (row: ' + expandRow + ')')
   await sleep(600)
+  const confirmed = await page.evaluate((model) => {
+    const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+    const btn = Array.from(document.querySelectorAll('button')).find((b) => /Select model/i.test(b.getAttribute('aria-label') || ''))
+    return !!btn && normalize(btn.textContent || '').includes(normalize(model))
+  }, MODEL)
+  if (!confirmed) throw new Error('Cannot confirm author route after selection; no prompt sent')
 }
 
 async function runScenario(page, scenario) {
@@ -104,35 +107,43 @@ async function runScenario(page, scenario) {
   await page.keyboard.press('Enter')
 
   // 等回复完成（该消息出现评审按钮）
-  const baseCount = await page.evaluate(() => document.querySelectorAll('.dsr-btn').length)
+  const baseCount = await page.evaluate(() => document.querySelectorAll('.dsr-btn[data-ciel-message-id]').length)
   let replyReady = false
   for (let i = 0; i < 300; i += 1) {
     await sleep(1000)
-    const n = await page.evaluate(() => document.querySelectorAll('.dsr-btn').length)
+    const n = await page.evaluate(() => document.querySelectorAll('.dsr-btn[data-ciel-message-id]').length)
     if (n > baseCount) { replyReady = true; break }
   }
   if (!replyReady) return { id: scenario.id, error: 'reply never completed' }
   await sleep(800)
   const draft = await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('.dsr-btn'))
+    const btns = Array.from(document.querySelectorAll('.dsr-btn[data-ciel-message-id]'))
     let el = btns[btns.length - 1]
     // 沿祖先链找第一个「像消息正文容器」的节点（文本足够长且不含子按钮群）。
     while (el && (el.textContent || '').trim().length < 120) el = el.parentElement
     return ((el && el.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 600)
   })
 
-  // 触发评审并计时
-  const r0 = Date.now()
-  await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('.dsr-btn'))
-    btns[btns.length - 1].click()
+  // Correlate the exact session/message and verify the critic route before
+  // spending on review. Older clients without these attrs must fail closed.
+  const identity = await page.evaluate(() => {
+    const btn = Array.from(document.querySelectorAll('.dsr-btn[data-ciel-message-id]')).at(-1)
+    return btn ? { sessionId: btn.dataset.cielSessionId, messageId: btn.dataset.cielMessageId, provider: btn.dataset.cielCriticProvider, model: btn.dataset.cielCriticModel } : null
   })
+  assertReviewIdentity(identity, CRITIC_PROVIDER, CRITIC_MODEL)
+  const file = reviewFile(identity.sessionId)
+  const r0 = Date.now()
+  await page.evaluate((messageId) => {
+    const btn = Array.from(document.querySelectorAll('.dsr-btn[data-ciel-message-id]')).find((b) => b.dataset.cielMessageId === messageId)
+    if (!btn || btn.disabled) throw new Error('Exact review button is unavailable')
+    btn.click()
+  }, identity.messageId)
   let done = false
   const labels = []
   for (let i = 0; i < 600; i += 1) {
     await sleep(400)
     const label = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('.dsr-btn'))
+      const btns = Array.from(document.querySelectorAll('.dsr-btn[data-ciel-message-id]'))
       return btns.length ? btns[btns.length - 1].textContent : ''
     })
     if (label && labels[labels.length - 1] !== label) labels.push(label)
@@ -141,11 +152,9 @@ async function runScenario(page, scenario) {
   const reviewMs = Date.now() - r0
   if (!done) return { id: scenario.id, error: 'review never finished', reviewMs }
 
-  // sidecar 归属：本次运行窗口内最新的评审文件
+  // Never infer ownership from modification time or another session's work.
   await sleep(500)
-  const file = newestReviewFile(t0)
-  if (!file) return { id: scenario.id, error: 'sidecar not found', reviewMs }
-  const entry = lastEntry(file)
+  const entry = lastEntry(file, identity.messageId, r0)
   const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
   const blockers = annotations.filter((a) => a.severity === 'blocker')
   const withEvidence = annotations.filter((a) => typeof a.evidence === 'string' && a.evidence !== '')
@@ -156,7 +165,8 @@ async function runScenario(page, scenario) {
   const annotationsOk = exp.minAnnotations === undefined || annotations.length >= exp.minAnnotations
   const evidenceOk = exp.evidenceRequired !== true
     || (annotations.length > 0 && annotations.every((a) => typeof a.evidence === 'string' && a.evidence !== ''))
-  const pass = verdictOk && blockersOk && annotationsOk && evidenceOk
+  const complete = !['error', 'cancelled', 'incomplete', 'completed-unparsed'].includes(entry.status)
+  const pass = complete && verdictOk && blockersOk && annotationsOk && evidenceOk
   return {
     id: scenario.id,
     file: file.split('/').pop(),

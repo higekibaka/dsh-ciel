@@ -30,6 +30,8 @@ window.__ModuleLoader__.load({
     let getRemote = () => undefined
     /** Client cordis event subscription, bound in apply(). */
     let clientOn = null
+    /** Live internals captured by apply() for node integration tests. */
+    const __runtime = {}
 
     /** Mirror of the host schema defaults — what a reset stages. */
     const DEFAULTS = {
@@ -47,6 +49,11 @@ window.__ModuleLoader__.load({
       criticEffort: 'medium',
       criticExploreEnabled: true,
       criticExploreBudget: '5',
+      enabled: true,
+      criticTimeoutSeconds: 180,
+      criticMaxRequests: 16,
+      criticMaxTokens: 16384,
+      advisorTimeoutSeconds: 180,
     }
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
@@ -104,8 +111,12 @@ window.__ModuleLoader__.load({
       },
       {
         kind: 'group', key: 'critic', label: '批评者（批注评审）路由', defaultOpen: false,
-        summarize: (staged) => `${staged.criticProvider} / ${staged.criticModel} · ${staged.criticEffort}`,
+        summarize: (staged) => `${staged.criticProvider} / ${staged.criticModel} · ${staged.criticEffort}${staged.enabled ? '' : ' · 已停用'}`,
         children: [
+          {
+            kind: 'check', key: 'enabled', label: '启用批评者评审',
+            hint: '控制批评者模型调用与评审/回传/分诊的模型请求。关闭后不再发起新的评审模型调用，但仍可查看既有评审结果（不读取也不屏蔽现有内容）。',
+          },
           { kind: 'route', key: 'criticProvider', label: '批评者提供方', options: 'provider', hint: '评审子代理的 provider 路由；跨家族纠错收益最大。独立于上面的顾问管道。' },
           { kind: 'route', key: 'criticModel', label: '批评者模型', options: 'criticModel', hint: 'gemini-3.8-flash 过载时可临时切走（如 deepseek flash）。' },
           {
@@ -114,13 +125,29 @@ window.__ModuleLoader__.load({
             hintFallback: '注入评审子代理的每个请求；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
           },
           {
-            kind: 'group', key: 'critic-explore', label: '探索（契约 v3）', defaultOpen: false,
-            summarize: (staged) => (staged.criticExploreEnabled ? '开' : '关') + ' · 预算 ' + staged.criticExploreBudget,
+            kind: 'group', key: 'critic-safety', label: '评审安全参数', defaultOpen: false,
+            summarize: (staged) => `${staged.criticTimeoutSeconds}s · ≤${staged.criticMaxRequests} 请求 · ≤${staged.criticMaxTokens}tokens`,
             children: [
-              { kind: 'check', key: 'criticExploreEnabled', label: '探索型批评者（先取证后裁决）', hint: '评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单——世界可碰、过程不许碰），排除的疑点只计入统计不进批注；关闭后退回纯草稿裁决（契约 v2）。' },
-              { kind: 'number', key: 'criticExploreBudget', label: '探索预算硬上限', min: 0, max: 10, hint: '单次评审允许的只读工具调用次数，超出即熔断该次评审并明确报错；0 = 等同关闭探索。' },
+              { kind: 'number', key: 'criticTimeoutSeconds', label: '评审超时（秒）', min: 10, max: 600, hint: '单次评审的硬超时，超时即熔断标记失败。是每次评审的时限，不是计费额度。' },
+              { kind: 'number', key: 'criticMaxRequests', label: '模型请求上限', min: 2, max: 32, hint: '单次评审允许的模型请求次数（阶段1+阶段2+抢救）上限，超限即熔断。按「次」计，不直接等于费用。' },
+              { kind: 'number', key: 'criticMaxTokens', label: '单次请求输出上限（tokens）', min: 256, max: 32768, hint: '评审子代理单次回答的长度上限（输出侧）；技术上限，不是金额配置。' },
             ],
           },
+          {
+            kind: 'group', key: 'critic-explore', label: '探索（两阶段评审）', defaultOpen: false,
+            summarize: (staged) => (staged.criticExploreEnabled ? '开' : '关') + ' · 预算 ' + staged.criticExploreBudget,
+            children: [
+              { kind: 'check', key: 'criticExploreEnabled', label: '探索型批评者（先取证后裁决）', hint: '评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单——世界可碰、过程不许碰），排除的疑点只计入统计不进批注；关闭后仅做阶段1存疑与裁决，不做只读核实。' },
+              { kind: 'number', key: 'criticExploreBudget', label: '探索预算硬上限', min: 0, max: 10, hint: '单次评审允许的只读工具调用次数，超出即熔断该次评审并明确报错；0 = 不启用探索（只做存疑与裁决），模型仍会调用并计费，不等于停用评审。' },
+            ],
+          },
+        ],
+      },
+      {
+        kind: 'group', key: 'advisor-safety', label: '顾问安全参数', defaultOpen: false,
+        summarize: (staged) => `${staged.advisorTimeoutSeconds}s`,
+        children: [
+          { kind: 'number', key: 'advisorTimeoutSeconds', label: '单次咨询总超时（秒）', min: 10, max: 600, hint: '一次 ask_advisor 或 /advise 的整体（总）截止时间，超时即中断返回。按「次」计，不是计费额度。' },
         ],
       },
     ]
@@ -405,6 +432,11 @@ window.__ModuleLoader__.load({
         criticEffort: String(value.criticEffort ?? 'medium'),
         criticExploreEnabled: Boolean(value.criticExploreEnabled ?? true),
         criticExploreBudget: String(value.criticExploreBudget ?? '5'),
+        enabled: Boolean(value.enabled ?? true),
+        criticTimeoutSeconds: String(value.criticTimeoutSeconds ?? ''),
+        criticMaxRequests: String(value.criticMaxRequests ?? ''),
+        criticMaxTokens: String(value.criticMaxTokens ?? ''),
+        advisorTimeoutSeconds: String(value.advisorTimeoutSeconds ?? ''),
       }
       if (drafts === null) setDrafts(staged)
 
@@ -734,7 +766,7 @@ window.__ModuleLoader__.load({
     /** The advisorReview Remote contribution this client $mounts on boot. */
     const ADVISOR_REMOTE = {
       package: 'dsh-advisor',
-      descriptors: ['list', 'start', 'feedback', 'triage', 'progress'].map((method) => ({
+      descriptors: ['list', 'start', 'feedback', 'triage', 'progress', 'cancel'].map((method) => ({
         id: `dsh-advisor#advisorReview/${method}`,
         service: 'advisorReview',
         namespace: 'advisorReview',
@@ -825,6 +857,195 @@ window.__ModuleLoader__.load({
       return blocks
     }
 
+    /** ── Pure view-model helpers (factored for node tests) ────────────────
+     * These derive coverage/soundness/labels/selection from a review entry and
+     * progress object WITHOUT touching DOM or React, so plugin/test/*.test.js
+     * can assert the exact decisions the review panel makes. Keep in sync with
+     * the host contract in index.js (status/coverage/verdict/explore shapes).
+     */
+
+    // Normalize an entry's coverage. Explicit host field wins; otherwise derive
+    // 'partial' from a legacy salvage marker or unchecked>0 count, else treat a
+    // legacy sound/pass entry as 'complete' (backward compatibility).
+    function deriveCoverage(entry) {
+      if (!entry || typeof entry !== 'object') return 'not-verified'
+      const cov = entry.coverage
+      if (cov === 'complete' || cov === 'partial' || cov === 'not-verified') return cov
+      if (entry.explore && entry.explore.salvaged) return 'partial'
+      if (entry.stats && Number(entry.stats.unchecked) > 0) return 'partial'
+      return 'complete'
+    }
+
+    // A fully covered nonblocking verdict may still contain verified nits.
+    // Completion and severity are separate; unknown/incomplete work never
+    // earns green, while legacy sound/pass records remain readable.
+    function isSoundEntry(entry) {
+      if (!entry || typeof entry !== 'object') return false
+      const status = entry.status
+      if (status === 'error' || status === 'cancelled' || status === 'incomplete' || status === 'unverified' || status === 'completed-unparsed') return false
+      if (status !== 'sound' && entry.verdict !== 'pass') return false
+      if (entry.verdict === 'changes' || (Array.isArray(entry.annotations) && entry.annotations.some((a) => a?.severity === 'blocker'))) return false
+      if (deriveCoverage(entry) !== 'complete') return false
+      if (entry.explore && entry.explore.salvaged) return false
+      if (entry.stats && Number(entry.stats.unchecked) > 0) return false
+      return true
+    }
+
+    function verdictBadgeClass(entry) {
+      if (isSoundEntry(entry)) return 'dsr-vbadge-pass'
+      if (entry && entry.verdict === 'changes') return 'dsr-vbadge-changes'
+      return 'dsr-vbadge-neutral'
+    }
+
+    function verdictBadgeText(entry) {
+      if (entry?.status === 'incomplete' || deriveCoverage(entry) === 'partial') return '◇ 部分核实'
+      if (entry?.status === 'unverified' || deriveCoverage(entry) === 'not-verified') return '◇ 未独立核实'
+      if (isSoundEntry(entry)) return '✓ 整体成立'
+      if (entry && entry.verdict === 'changes') return '⚠ 建议修改'
+      if (entry && entry.verdict === 'pass') return '◇ 未独立核实'
+      return '批注评审'
+    }
+
+    // Button label for a settled (not in-flight) review.
+    function statusButtonLabel(entry) {
+      if (entry === undefined || entry === null) return '批注评审'
+      const count = Array.isArray(entry.annotations) ? entry.annotations.length : 0
+      if (isSoundEntry(entry)) return '✓ 无阻断 (' + count + ')'
+      if (entry.status === 'cancelled') return '已取消 · 重新评审'
+      if (entry.status === 'error') return /budget exceeded/i.test(String(entry.error || '')) ? '预算熔断 · 重试' : '评审失败 · 重试'
+      if (entry.status === 'incomplete') return '◇ 部分核实 · ' + count + ' 条'
+      if (entry.status === 'unverified') return '◇ 未核实 · ' + count + ' 条'
+      if (entry.verdict === 'changes') return '⚠ 批注 ' + count + ' · 复审'
+      // A 'sound' status that failed isSoundEntry (partial/not-verified coverage,
+      // salvaged, unchecked>0) is NOT green — report it neutrally.
+      return '批注 ' + count + ' · 复审'
+    }
+
+    // In-flight label. Phase 1=存疑分析, 2=核验, 3=抢救; explore detail shows
+    // toolCalls/budget and suspects SEPARATELY (not toolCalls/suspects).
+    function inFlightLabel(prog) {
+      const p = prog && typeof prog === 'object' ? prog : undefined
+      if (!p) return '评审中…'
+      if (!p.explore) return '评审中…'
+      const phase = p.phase
+      const phaseLabel = phase === 1 ? '存疑分析' : phase === 2 ? '核验' : phase === 3 ? '抢救' : '评审中'
+      const calls = typeof p.toolCalls === 'number' ? p.toolCalls : 0
+      const budget = typeof p.budget === 'number' ? p.budget : 0
+      let d = '排查 ' + calls + (budget ? '/' + budget : '')
+      if (typeof p.suspects === 'number' && p.suspects > 0) d += ' · 疑点 ' + p.suspects
+      const action = p.action
+      if (action) {
+        if (action.kind === 'tool') d += ' · ' + String(action.name || '') + (action.target ? ' ' + action.target : '')
+        else if (action.last) d += ' · 分析 ' + String(action.last.name || '') + (action.last.target ? ' ' + action.last.target : '') + ' 结果'
+        else d += ' · 分析取证结果'
+      }
+      return '评审中 · ' + phaseLabel + ' · ' + d + '…'
+    }
+
+    // Restore selection from a base of all indices minus sent, then apply WAL
+    // accept/dismiss deltas. A filter-only record leaves the selection intact.
+    function restoreSelection(annotationCount, sent, triageStates) {
+      const sel = new Set()
+      for (let i = 0; i < annotationCount; i += 1) if (!sent || !sent.has(i)) sel.add(i)
+      if (triageStates && typeof triageStates === 'object') {
+        for (const [idxText, state] of Object.entries(triageStates)) {
+          const idx = Number(idxText)
+          if (!Number.isInteger(idx) || idx < 0 || idx >= annotationCount) continue
+          if (state === 'accept') sel.add(idx)
+          else if (state === 'dismiss') sel.delete(idx)
+        }
+      }
+      return sel
+    }
+
+    // Build the feedback payload for the given annotation indices.
+    function buildFeedbackItems(annotations, indices) {
+      return indices
+        .filter((i) => annotations[i] !== undefined)
+        .map((i) => {
+          const a = annotations[i]
+          const item = {
+            index: i,
+            severity: a.severity === 'blocker' ? 'blocker' : 'nit',
+            title: String(a.title || ''),
+            anchor: String(a.anchor || ''),
+            comment: String(a.comment || ''),
+          }
+          if (typeof a.block === 'string') item.block = a.block
+          if (typeof a.evidence === 'string' && a.evidence !== '') item.evidence = a.evidence
+          return item
+        })
+    }
+
+    // A list result is "loaded" only when it is a success-shaped envelope with
+    // a reviews array. Malformed / error-shaped returns are NOT loaded — the
+    // caller leaves the session dirty so mount/reconnect retries.
+    function isListResultLoaded(res) {
+      return !!res && res.ok !== false && Array.isArray(res.reviews)
+    }
+
+    // Cancel outcome normalization. A failed request stays retryable and must
+    // NOT clear active state; an accepted request with cancelled:false means
+    // nothing was in flight (already finished/never started) → force refresh.
+    function cancelOutcome(res) {
+      if (res && res.ok === true) {
+        const cancelled = res.cancelled === true
+        return { kind: 'accepted', cancelled, refresh: cancelled !== true }
+      }
+      return { kind: 'failed', error: String((res && res.error) || '取消失败') }
+    }
+
+    // The ordering key used to fence which entry "wins" for a message. Host
+    // entries carry `createdAt`; client-transient entries (start failures) are
+    // stamped with Date.now() too, so they compete by time. Missing/non-finite
+    // timestamps sort as the OLDEST (-Infinity) so a real entry always beats
+    // untimestamped legacy data.
+    function entryTime(entry) {
+      if (entry && typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt)) {
+        return entry.createdAt
+      }
+      return -Infinity
+    }
+
+    // Durability tier: a durable HOST result (has a reviewId) outranks a
+    // client-side transient (transport error, `transient:true`) regardless of
+    // wall clock. An unmarked legacy entry (no reviewId, no transient flag)
+    // sits in between.
+    function entryRank(entry) {
+      if (entry && entry.transient === true) return 0
+      if (entry && typeof entry.reviewId === 'string' && entry.reviewId !== '') return 2
+      return 1
+    }
+
+    // Whether `incoming` should replace `existing` for the same message.
+    // Durability wins first (a committed host result always beats a transient
+    // error, even one stamped later by the client wall clock); within the same
+    // tier newer timestamp wins. This prevents a lost-RPC transient at t=200
+    // from sticking past a durable host result committed at t=100. It also
+    // prevents a transient from ever overwriting an existing durable review.
+    function shouldReplace(existing, incoming) {
+      if (existing === undefined) return true
+      const er = entryRank(existing)
+      const ir = entryRank(incoming)
+      if (ir !== er) return ir > er
+      return entryTime(incoming) >= entryTime(existing)
+    }
+
+    // Project ONLY the leaf critic route strings into data-* attrs. Used for the
+    // AB/harness correlation: a script can refuse to click a review that ran
+    // under a different critic route. Never serializes the snapshot — reads two
+    // leaf strings and omits anything non-string/empty so the script "fails
+    // closed" (no route attrs) when the route is unknown.
+    function criticRouteAttrs(snapshotValue) {
+      const out = {}
+      if (!snapshotValue || typeof snapshotValue !== 'object') return out
+      const p = snapshotValue.criticProvider
+      const m = snapshotValue.criticModel
+      if (typeof p === 'string' && p !== '') out['data-ciel-critic-provider'] = p
+      if (typeof m === 'string' && m !== '') out['data-ciel-critic-model'] = m
+      return out
+    }
+
     /** Review UI stylesheet (dynamic-plugin styles.insert has no bundle twin). */
     const REVIEW_CSS = [
       '.dsr-btn{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;opacity:.65;cursor:pointer}',
@@ -868,11 +1089,13 @@ window.__ModuleLoader__.load({
       '.dsr-tail.dsr-verdict{border-left:3px solid rgba(130,130,130,.4)}',
       '.dsr-tail.dsr-verdict-pass{border-left-color:#3fb950}',
       '.dsr-tail.dsr-verdict-changes{border-left-color:#d29922}',
+      '.dsr-tail.dsr-verdict-neutral{border-left-color:#8b949e}',
       '.dsr-tail.dsr-rise{animation:dsrRise .3s ease}',
       '@keyframes dsrRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
       '.dsr-vbadge{flex:none;font-size:13px;font-weight:700}',
       '.dsr-vbadge-pass{color:#3fb950}',
       '.dsr-vbadge-changes{color:#d29922}',
+      '.dsr-vbadge-neutral{color:#8b949e}',
       '.dsr-vsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:12.5px}',
       '.dsr-vchips{display:inline-flex;gap:6px;flex:none}',
       '.dsr-vchip{font-size:10.5px;font-family:ui-monospace,monospace;font-weight:600;line-height:16px;padding:0 8px;border-radius:999px}',
@@ -881,6 +1104,13 @@ window.__ModuleLoader__.load({
       '.dsr-vchip-ok{color:#3fb950;background:rgba(63,185,80,.13)}',
       // 0.13.0 契约 v3：排查统计 chip（中性蓝灰，区别于批注计数的红黄）
       '.dsr-vchip-s{color:#79a7e8;background:rgba(88,166,255,.12);cursor:default}',
+      // 抢救产出 chip（显式可见，非 tooltip 专属）
+      '.dsr-vchip-warn{color:#d29922;background:rgba(210,153,34,.16);cursor:help}',
+      // 停止控制（评审在途时的取消按钮）
+      '.dsr-cancel{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:#f85149;opacity:.8;cursor:pointer}',
+      '.dsr-cancel:hover{opacity:1}',
+      '.dsr-cancel:disabled{cursor:wait;opacity:.45}',
+      '.dsr-cancel.dsr-cancel-failed{color:#d29922;border-style:dashed}',
       '.dsr-evidence{margin:4px 0 2px;padding:3px 8px;border-left:2px solid rgba(88,166,255,.5);font-size:11.5px;opacity:.85;white-space:pre-wrap;word-break:break-word}',
       '.dsr-downgraded{font-size:10px;font-family:ui-monospace,monospace;color:#79a7e8;border:1px solid rgba(88,166,255,.4);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap;cursor:help}',
       '.dsr-vcaret{flex:none;width:14px;opacity:.55;font-size:11px;transition:transform .18s}',
@@ -1223,9 +1453,17 @@ window.__ModuleLoader__.load({
       const remoteService = ctx.get('remote')
       if (remoteService !== undefined && typeof remoteService.$mount === 'function') {
         ctx.effect(async () => {
-          const dispose = await remoteService.$mount(ADVISOR_REMOTE)
-          reviewApiResolve(ctx.get('remote.advisorReview') ?? null)
-          return async () => { await dispose() }
+          let dispose = null
+          try {
+            dispose = await remoteService.$mount(ADVISOR_REMOTE)
+            reviewApiResolve(ctx.get('remote.advisorReview') ?? null)
+          } catch (error) {
+            // A failed $mount must still settle readiness — otherwise every
+            // reviewCall hangs forever awaiting a promise that never resolves.
+            console.error('dsh-advisor: review remote mount failed', error && error.message)
+            reviewApiResolve(null)
+          }
+          return async () => { if (dispose) await dispose() }
         }, 'dsh-advisor: review remote mount')
       } else {
         reviewApiResolve(null)
@@ -1251,6 +1489,7 @@ window.__ModuleLoader__.load({
       const store = {
         byMessage: new Map(),
         hydrated: new Set(),
+        retrySessions: new Set(), // 加载失败的 session——重连后重试
         popover: null,
         // 回传状态，全部按 reviewId 归键——面板是 imperative DOM，React 重建
         // 后由 buildPanel 从这里重读，勾选/已回传/注记随重绘保留。
@@ -1261,7 +1500,9 @@ window.__ModuleLoader__.load({
           sending: new Set(),  // 有在途回传的 reviewId
           tick: new Map(),     // messageId -> 重绘计数器（回传 settle 后 bump）
           filter: new Map(),   // reviewId -> 'all' | 'blocker'（分诊过滤）
-          triageSeen: new Set(), // 有 WAL 持久分诊的 reviewId——跳过默认全采纳预填
+          meta: new Map(),     // reviewId -> { triageStates, filter }（WAL 规范化元数据）
+          touched: new Set(),  // 本次页面生命周期内被本地编辑过的 reviewId（防旧水合覆盖）
+          triageChain: new Map(), // reviewId -> Promise，串行化分诊写入，避免竞态
         },
       }
       const emit = () => { for (const l of Array.from(listeners)) l() }
@@ -1275,17 +1516,46 @@ window.__ModuleLoader__.load({
       }
       function absorb(entry) {
         if (!entry || typeof entry.messageId !== 'string') return
-        store.byMessage.set(entry.messageId, entry)
+        // Fence by createdAt/review generation: never let an older list entry or
+        // an untimestamped legacy record clobber a newer start result.
+        if (shouldReplace(store.byMessage.get(entry.messageId), entry)) {
+          store.byMessage.set(entry.messageId, entry)
+        }
       }
-      async function hydrate(sessionId) {
-        if (typeof sessionId !== 'string' || store.hydrated.has(sessionId)) return
-        store.hydrated.add(sessionId)
-        try {
-          const res = await reviewCall('list', { sessionId })
-          const reviews = res && Array.isArray(res.reviews) ? res.reviews : []
-          for (const r of reviews) absorb(r)
+      // Hydration is deduplicated (a concurrent non-force call joins the
+      // in-flight one) and retryable: an error-shaped list result does NOT mark
+      // the session loaded, so a mount/reconnect re-runs it. `force` bypasses
+      // the loaded set for inFlight->false refreshes, and — importantly — when a
+      // load is already running a forced call does NOT settle from that stale
+      // query: it chains a FRESH load after it so the terminal result is seen.
+      const hydratePromises = new Map()
+      async function hydrate(sessionId, { force = false } = {}) {
+        if (typeof sessionId !== 'string') return
+        if (!force && store.hydrated.has(sessionId)) return
+        const prev = hydratePromises.get(sessionId)
+        if (prev && !force) return prev
+        const p = (async () => {
+          if (prev) await prev // forced: wait out the stale query, then reload fresh
+          let res
+          try {
+            res = await reviewCall('list', { sessionId })
+          } catch (error) {
+            store.hydrated.delete(sessionId)
+            store.retrySessions.add(sessionId)
+            console.error('review.list threw', error && error.message)
+            return
+          }
+          // Malformed / error-shaped return is NOT success — leave the session
+          // un-loaded so the next mount/reconnect retries.
+          if (!isListResultLoaded(res)) {
+            store.hydrated.delete(sessionId)
+            store.retrySessions.add(sessionId)
+            console.error('review.list error-shaped', res && res.error)
+            return
+          }
+          for (const r of res.reviews) absorb(r)
           // 已回传去重键（reviewId#index）→ 置灰对应条目，刷新后不依赖服务端重放拒绝。
-          const sentKeys = res && Array.isArray(res.sentKeys) ? res.sentKeys : []
+          const sentKeys = res.sentKeys && Array.isArray(res.sentKeys) ? res.sentKeys : []
           for (const key of sentKeys) {
             if (typeof key !== 'string') continue
             const at = key.lastIndexOf('#')
@@ -1296,28 +1566,39 @@ window.__ModuleLoader__.load({
             if (!store.feedback.sent.has(rid)) store.feedback.sent.set(rid, new Set())
             store.feedback.sent.get(rid).add(idx)
           }
-          // 0.12.0 ④分诊水合：WAL 里的采纳/忽略与过滤器恢复进 store；
-          // 有持久状态的评审打上 triageSeen，fb 初始化时跳过默认全采纳预填。
-          const triage = res && res.triage && typeof res.triage === 'object' ? res.triage : {}
+          // 0.12.0 ④分诊水合：WAL 里的采纳/忽略与过滤器恢复进 store（规范化
+          // 为 meta，供 buildPanel 首建选择时应用）；仅对未被本地编辑过的
+          // review 应用，防止旧水合覆盖新分诊。
+          const triage = res.triage && typeof res.triage === 'object' ? res.triage : {}
           for (const [rid, t] of Object.entries(triage)) {
             if (!t || typeof t !== 'object') continue
-            store.feedback.triageSeen.add(rid)
-            if (!store.feedback.sel.has(rid)) store.feedback.sel.set(rid, new Set())
-            const sel = store.feedback.sel.get(rid)
+            if (store.feedback.touched.has(rid)) continue
             const states = t.states && typeof t.states === 'object' ? t.states : {}
-            for (const [idxText, state] of Object.entries(states)) {
-              const idx = Number(idxText)
-              if (!Number.isInteger(idx)) continue
-              if (state === 'accept') sel.add(idx)
-              else if (state === 'dismiss') sel.delete(idx)
-            }
+            store.feedback.meta.set(rid, {
+              triageStates: states,
+              filter: t.filter === 'all' || t.filter === 'blocker' ? t.filter : undefined,
+            })
             if (t.filter === 'all' || t.filter === 'blocker') store.feedback.filter.set(rid, t.filter)
           }
+          store.hydrated.add(sessionId)
+          store.retrySessions.delete(sessionId)
           emit()
-        } catch (error) {
-          store.hydrated.delete(sessionId)
-          console.error('review.list failed', error && error.message)
-        }
+        })().finally(() => { if (hydratePromises.get(sessionId) === p) hydratePromises.delete(sessionId) })
+        hydratePromises.set(sessionId, p)
+        return p
+      }
+      // Reconnect reconcile: retry sessions that failed to load AND force a
+      // fresh load of already-hydrated sessions — a disconnected start can
+      // finish offscreen, so reconnecting must re-fetch to surface the terminal
+      // entry. Touched-guard + createdAt fence make the refresh non-clobbering.
+      if (typeof clientOn === 'function') {
+        ctx.effect(() => {
+          const dispose = clientOn('connection/reset', () => {
+            const sessions = new Set([...store.hydrated, ...store.retrySessions])
+            for (const sessionId of sessions) void hydrate(sessionId, { force: true })
+          })
+          return () => { dispose() }
+        }, 'dsh-advisor: review reconnect retry')
       }
 
       // ── anchor normalization: anchors quote MARKDOWN SOURCE (with **, `, []()
@@ -1690,9 +1971,11 @@ window.__ModuleLoader__.load({
           ? ' · 含顾问验证清单 ' + entry.targetsProvided + ' 条'
           : ''
         // 0.12.0 ①：v2 评审（带 verdict）渲染裁决卡头——verdict 徽标 + 总评 +
-        // 统计 chips + 可折叠；旧 entry 保持纯文本头，逐字节不动。
+        // 统计 chips + 可折叠；旧 entry 保持纯文本头。绿色「整体成立」仅当
+        // isSoundEntry（verdict pass 且核实完整、无抢救/未查）才出现。
+        const panelVerdict = isSoundEntry(entry) ? 'pass' : entry.verdict === 'changes' ? 'changes' : 'neutral'
         const isV2 = typeof entry.verdict === 'string'
-        if (isV2) panel.classList.add('dsr-verdict', 'dsr-verdict-' + entry.verdict, 'dsr-rise')
+        if (isV2) panel.classList.add('dsr-verdict', 'dsr-verdict-' + panelVerdict, 'dsr-rise')
         const head = doc.createElement('div')
         head.className = 'dsr-tail-head'
         if (isV2) {
@@ -1703,8 +1986,8 @@ window.__ModuleLoader__.load({
           caret.textContent = '▾'
           head.appendChild(caret)
           const badge = doc.createElement('span')
-          badge.className = 'dsr-vbadge dsr-vbadge-' + entry.verdict
-          badge.textContent = entry.verdict === 'pass' ? '✓ 整体成立' : '⚠ 建议修改'
+          badge.className = 'dsr-vbadge ' + verdictBadgeClass(entry)
+          badge.textContent = verdictBadgeText(entry)
           head.appendChild(badge)
           const sum = doc.createElement('span')
           sum.className = 'dsr-vsum'
@@ -1732,14 +2015,14 @@ window.__ModuleLoader__.load({
             c.textContent = '0 批注'
             chips.appendChild(c)
           }
-          // 0.13.0 契约 v3：排查/证伪/排除统计（模型自报）与实测只读调用数
-          // （运行时事件流采样）并列展示——自报失真时两者对不上，一眼可见。
+          // Suspect outcomes and tool-call reservations are different units.
+          // New records are host-counted; legacy records retain their origin.
           if (entry.stats && typeof entry.stats.checked === 'number') {
             const c = doc.createElement('span')
             c.className = 'dsr-vchip dsr-vchip-s'
-            c.textContent = '排查 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
+            c.textContent = '疑点 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
               + (typeof entry.stats.unchecked === 'number' && entry.stats.unchecked > 0 ? ' · 未查 ' + entry.stats.unchecked : '')
-            if (entry.explore) c.title = '实测只读调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget + '（事件流采样，非模型自报）' + (entry.explore.salvaged ? '；本卡由熔断抢救书写员产出' : '')
+            if (entry.explore) c.title = '工具调用 ' + entry.explore.toolCalls + '/' + entry.explore.budget + (entry.outcomes ? '（执行前计数，包含已放行但失败的调用）' : '（旧版事件流采样）') + (entry.explore.salvaged ? '；本卡由熔断后的部分记录恢复' : '')
             chips.appendChild(c)
           } else if (entry.explore) {
             const c = doc.createElement('span')
@@ -1756,7 +2039,7 @@ window.__ModuleLoader__.load({
           }
           head.addEventListener('click', () => panel.classList.toggle('dsr-collapsed'))
         } else {
-          head.textContent = (entry.status === 'sound'
+          head.textContent = (isSoundEntry(entry)
             ? '✓ 批评者：草案整体成立'
             : '批评者批注 · ' + annotations.length + ' 条'
               + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
@@ -1764,6 +2047,14 @@ window.__ModuleLoader__.load({
               + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
               + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : ''))
             + targetsNote
+        }
+        // 抢救产出作为显式可见标签（不只 tooltip）：熔断抢救的卡片一眼可辨。
+        if (entry.explore && entry.explore.salvaged) {
+          const sg = doc.createElement('span')
+          sg.className = 'dsr-vchip dsr-vchip-warn'
+          sg.textContent = '抢救产出'
+          sg.title = '本卡由熔断后的抢救书写员产出（阶段 2 中断后单次裁决恢复）'
+          head.appendChild(sg)
         }
         // ── 回传选中：勾选态/已回传态都在 store.feedback（随重绘重读），
         // reviewId 直接取自 entry——原型里的 title 匹配猜测链已删除。
@@ -1787,6 +2078,12 @@ window.__ModuleLoader__.load({
           fb._syncLabel = syncLabel
         }
         panel.appendChild(head)
+        if (typeof entry.coverageNote === 'string' && entry.coverageNote !== '') {
+          const note = doc.createElement('div')
+          note.className = 'dsrf-note'
+          note.textContent = entry.coverageNote
+          panel.appendChild(note)
+        }
         const vbody = doc.createElement('div')
         vbody.className = 'dsr-vbody'
         annotations.forEach((a, i) => {
@@ -1907,28 +2204,77 @@ window.__ModuleLoader__.load({
         // 空转，不产生远端流量。
         const [prog, setProg] = useState(null)
         const progRef = React.useRef(null)
+        const aliveRef = React.useRef(true)
+        const genRef = React.useRef(0)        // 丢弃过期响应（响应乱序）
+        const pollBusyRef = React.useRef(false) // 避免同一消息的并发请求
+        const idleRef = React.useRef(false)    // true 仅当确认无在途（停止轮询）
         useEffect(() => {
           let live = true
+          aliveRef.current = true
+          // 新代际：复位 idleRef，避免「上一代在途请求未回时初始 probe 被跳过」
+          // 且 idleRef 仍为 true 而导致轮询永久停摆。
+          idleRef.current = false
           const probe = () => {
+            if (!live) return
+            if (pollBusyRef.current) return // 不重叠：上一请求未回，不发新的
+            pollBusyRef.current = true
+            const gen = genRef.current
             reviewCall('progress', { sessionId, messageId })
               .then((res) => {
-                if (!live) return
-                const next = res && res.inFlight ? res : null
-                if (progRef.current && !next) {
+                if (!live || gen !== genRef.current) return // 忽略迟到的过期响应
+                // 失败/错误形状/缺 inFlight 字段一律不是「完成」：保留既有
+                // progRef/idleRef、继续轮询，绝不把 {} 之类误判为无在途。
+                if (res === null || res.ok === false || typeof res !== 'object' || typeof res.inFlight !== 'boolean') return
+                const inflight = res.inFlight === true
+                const next = inflight ? res : null
+                if (progRef.current && !inflight) {
                   // 评审在别处（或本页上一生命周期）结束：条目已持久化，
                   // 强制重水合拿到 verdict/失败态。
                   store.hydrated.delete(sessionId)
-                  hydrate(sessionId)
+                  hydrate(sessionId, { force: true })
                 }
+                idleRef.current = !inflight
                 progRef.current = next
                 setProg(next)
               })
-              .catch(() => {})
+              .catch(() => { /* 网络错误：不是完成，保持轮询 */ })
+              .finally(() => { pollBusyRef.current = false })
           }
           probe()
-          const iv = setInterval(() => { if (busy || progRef.current) probe() }, 1000)
-          return () => { live = false; clearInterval(iv) }
+          const iv = setInterval(() => { if (busy || !idleRef.current) probe() }, 1000)
+          return () => { live = false; aliveRef.current = false; genRef.current += 1; clearInterval(iv) }
         }, [busy, messageId, sessionId])
+        // 停止控制：取消本次 session+message 的评审。失败必须保持可见可重试，
+        // 不因请求失败而错误清除在途状态。
+        const [cancelling, setCancelling] = useState(false)
+        const [cancelError, setCancelError] = useState('')
+        const [startError, setStartError] = useState(null)
+        const cancelStop = () => {
+          if (cancelling || !aliveRef.current) return
+          setCancelling(true)
+          setCancelError('')
+          reviewCall('cancel', { sessionId, messageId })
+            .then((res) => {
+              if (!aliveRef.current) return
+              const o = cancelOutcome(res)
+              if (o.kind === 'accepted') {
+                // 取消请求被接受。若服务端报告无在途（cancelled:false），说明
+                // 评审已结束/未开始——强制刷新一次拿最终形态。
+                if (o.refresh) {
+                  store.hydrated.delete(sessionId)
+                  hydrate(sessionId, { force: true })
+                }
+              } else {
+                // 取消请求失败：保留停止按钮并显示可重试的错误，不清除在途。
+                setCancelError(o.error)
+              }
+            })
+            .catch((error) => {
+              if (!aliveRef.current) return
+              setCancelError(String(error && error.message || '取消失败'))
+            })
+            .finally(() => { if (aliveRef.current) setCancelling(false) })
+        }
         const rootRef = React.useRef(null)
         useEffect(() => { void hydrate(sessionId) }, [sessionId])
         const entry = store.byMessage.get(messageId)
@@ -1958,19 +2304,36 @@ window.__ModuleLoader__.load({
           let fb
           if (entry.status !== 'error' && reviewId !== '') {
             if (!store.feedback.sent.has(reviewId)) store.feedback.sent.set(reviewId, new Set())
-            // 0.12.0 ④默认采纳：首次见到该评审时 sel 预填全部（扣除已回传），
-            // 复选框的语义随之是「剔除」而非「挑选」；WAL 里已有分诊状态的
-            // 评审（triageSeen）跳过预填——恢复态优先。
-            if (!store.feedback.sel.has(reviewId) && !store.feedback.triageSeen.has(reviewId)) {
-              const initial = new Set()
+            // 0.12.0 ④默认采纳 + WAL 恢复：从「全部索引减已回传」出发，应用
+            // accept/dismiss 增量；仅 filter 的记录不会清空选择。一旦本地分诊
+            // 过（touched），不再用旧 WAL 重算，避免旧水合覆盖新操作。
+            if (!store.feedback.sel.has(reviewId)) {
               const anns = Array.isArray(entry.annotations) ? entry.annotations : []
+              const meta = store.feedback.meta.get(reviewId)
               const sentSet0 = store.feedback.sent.get(reviewId)
-              anns.forEach((a, i) => { if (!sentSet0.has(i)) initial.add(i) })
-              store.feedback.sel.set(reviewId, initial)
+              store.feedback.sel.set(reviewId, restoreSelection(anns.length, sentSet0, meta && meta.triageStates))
             }
             const sel = store.feedback.sel.get(reviewId) ?? new Set()
             if (!store.feedback.sel.has(reviewId)) store.feedback.sel.set(reviewId, sel)
             const sent = store.feedback.sent.get(reviewId)
+            // 分诊写入：串行化（逐 review 排队），失败注记到头部并保持可重试，
+            // 不再 fire-and-forget 静默吞掉。
+            const sendTriage = (payload) => {
+              store.feedback.touched.add(reviewId)
+              if (!store.feedback.triageChain.has(reviewId)) store.feedback.triageChain.set(reviewId, Promise.resolve())
+              store.feedback.triageChain.set(reviewId, store.feedback.triageChain.get(reviewId)
+                .then(() => reviewCall('triage', { sessionId, reviewId, ...payload }))
+                .then((res) => {
+                  if (!res || res.ok === false) {
+                    store.feedback.note.set(reviewId, '分诊保存失败：' + String((res && res.error) || 'unknown'))
+                    bumpTick()
+                  }
+                })
+                .catch((error) => {
+                  store.feedback.note.set(reviewId, '分诊保存异常：' + String(error && error.message || error))
+                  bumpTick()
+                }))
+            }
             fb = {
               sel,
               sent,
@@ -1979,15 +2342,11 @@ window.__ModuleLoader__.load({
               filter: store.feedback.filter.get(reviewId) || 'all',
               onToggle: (index, checked) => {
                 if (checked) sel.add(index); else sel.delete(index)
-                // ④分诊持久化：变更即写 WAL（fire-and-forget，失败不进 UI）。
-                void reviewCall('triage', {
-                  sessionId, reviewId,
-                  changes: [{ index, state: checked ? 'accept' : 'dismiss' }],
-                })
+                sendTriage({ changes: [{ index, state: checked ? 'accept' : 'dismiss' }] })
               },
               onFilter: (f) => {
                 store.feedback.filter.set(reviewId, f === 'blocker' ? 'blocker' : 'all')
-                void reviewCall('triage', { sessionId, reviewId, filter: f === 'blocker' ? 'blocker' : 'all' })
+                sendTriage({ filter: f === 'blocker' ? 'blocker' : 'all' })
                 bumpTick()
               },
               onBlockers: () => {
@@ -1999,7 +2358,7 @@ window.__ModuleLoader__.load({
                   if (accept) sel.add(i)
                   changes.push({ index: i, state: accept ? 'accept' : 'dismiss' })
                 })
-                void reviewCall('triage', { sessionId, reviewId, changes })
+                sendTriage({ changes })
                 store.feedback.note.set(reviewId, '已选全部 blocker，其余剔除')
                 bumpTick()
               },
@@ -2012,15 +2371,8 @@ window.__ModuleLoader__.load({
                   return
                 }
                 const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
-                const items = indices
-                  .filter((i) => annotations[i] !== undefined && !sent.has(i))
-                  .map((i) => ({
-                    index: i,
-                    severity: annotations[i].severity === 'blocker' ? 'blocker' : 'nit',
-                    title: String(annotations[i].title || ''),
-                    anchor: String(annotations[i].anchor || ''),
-                    comment: String(annotations[i].comment || ''),
-                  }))
+                const items = buildFeedbackItems(annotations, indices)
+                  .filter((item) => !sent.has(item.index))
                 if (items.length === 0) {
                   store.feedback.note.set(reviewId, '所选批注均已回传过')
                   bumpTick()
@@ -2031,9 +2383,9 @@ window.__ModuleLoader__.load({
                 reviewCall('feedback', { sessionId, reviewId, messageId, items })
                   .then((res) => {
                     if (res && res.ok === true) {
-                      const skipped = Array.isArray(res.skippedIndices) ? res.skippedIndices : []
+                      // Delivered AND already-delivered (skipped) both count as
+                      // sent: grey out + deselect so the panel matches server.
                       for (const item of items) {
-                        if (skipped.includes(item.index)) continue
                         sent.add(item.index)
                         sel.delete(item.index)
                       }
@@ -2137,49 +2489,42 @@ window.__ModuleLoader__.load({
             if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
           }
         }, [entry, fbTick])
-        const count = entry && Array.isArray(entry.annotations) ? entry.annotations.length : 0
         // 在途 = 本地点击 busy 或远端 inFlight（跨会话/页面生命周期恢复）。
         const inFlight = busy || (prog !== null && prog.inFlight === true)
-        const label = inFlight
-          ? (prog && prog.explore
-            ? '评审中 · ' + (prog.phase === 1 || prog.toolCalls === 0
-              ? '存疑分析中'
-              : (() => {
-                // 契约 v4：分母优先用阶段 1 清单送审数（真 M），否则退回预算。
-                const goal = typeof prog.suspects === 'number' && prog.suspects > 0 ? prog.suspects : prog.budget
-                if (prog.action && prog.action.kind === 'tool') {
-                  return '排查 ' + prog.toolCalls + '/' + goal + ' · ' + prog.action.name + (prog.action.target ? ' ' + prog.action.target : '')
-                }
-                if (prog.action && prog.action.last) {
-                  return '排查 ' + prog.toolCalls + '/' + goal + ' · 分析 ' + prog.action.last.name + (prog.action.last.target ? ' ' + prog.action.last.target : '') + ' 结果'
-                }
-                return '排查 ' + prog.toolCalls + '/' + goal + ' · 分析取证结果'
-              })())
-            + '…'
-            : '评审中…')
-          : entry === undefined
-            ? '批注评审'
-            : entry.status === 'sound' || entry.verdict === 'pass'
-              ? '✓ 无阻断 (' + count + ')'
-              : entry.status === 'error'
-                ? (/budget exceeded/i.test(String(entry.error || '')) ? '预算熔断 · 重试' : '评审失败 · 重试')
-                : entry.verdict === 'changes'
-                  ? '⚠ 批注 ' + count + ' · 复审'
-                  : '批注 ' + count + ' · 复审'
+        const label = inFlight ? inFlightLabel(prog) : statusButtonLabel(entry)
         const onClick = () => {
           if (inFlight) return
           setBusy(true)
+          setStartError(null)
           reviewCall('start', { sessionId, messageId })
             .then((res) => {
-              if (res && res.review) absorb(res.review)
-              else if (!res || !res.ok) {
-                store.byMessage.set(messageId, { messageId, status: 'error', error: String(res && res.error || 'unknown error'), annotations: [] })
+              if (res && res.review) {
+                absorb(res.review)
+                setStartError(null)
+              } else if (!res || !res.ok) {
+                setStartError({ message: String(res && res.error || 'unknown error'), reviewId: entry?.reviewId })
+                // Server-sided start failure. If the server actually accepted
+                // start (e.g. a disconnect after it began, or an
+                // "already in flight" veto), progress polling will override
+                // this transient entry once inFlight->false force-rehydrates.
+                // Marked `transient:true` so a durable host result (reviewId)
+                // always outranks it regardless of the client wall-clock stamp.
+                absorb({ messageId, status: 'error', error: String(res && res.error || 'unknown error'), annotations: [], createdAt: Date.now(), transient: true })
+                if (res && res.error && /already in flight/i.test(String(res.error))) {
+                  store.hydrated.delete(sessionId)
+                  hydrate(sessionId, { force: true })
+                }
               }
               if (!res || !res.ok) console.error('review.start failed:', res && res.error)
               emit()
             })
             .catch((error) => {
-              store.byMessage.set(messageId, { messageId, status: 'error', error: String(error && error.message || error), annotations: [] })
+              // reviewCall usually converts a thrown call to {ok:false}; a raw
+              // catch here means the process disconnects mid-start. The review
+              // may still be running remotely — leave a transient error and let
+              // polling (force-rehydrate on inFlight->false) surface the truth.
+              setStartError({ message: String(error && error.message || error), reviewId: entry?.reviewId })
+              absorb({ messageId, status: 'error', error: String(error && error.message || error), annotations: [], createdAt: Date.now(), transient: true })
               console.error('review.start call threw:', error && error.message)
               emit()
             })
@@ -2190,13 +2535,44 @@ window.__ModuleLoader__.load({
           ? String(entry.error || 'unknown error')
           : '让批评者模型对这条回复做锚定批注评审'
             + (stats ? '（标记 ' + stats.marked + '/' + stats.total + (stats.failures.length > 0 ? '，失败：' + stats.failures.join('；') : '') + '）' : '')
-        return h('button', {
-          className: 'dsr-btn',
-          onClick,
-          disabled: inFlight,
-          title: tip,
-          ref: rootRef,
-        }, label)
+        const stopButton = inFlight
+          ? h('button', {
+              className: 'dsr-cancel' + (cancelError ? ' dsr-cancel-failed' : ''),
+              title: cancelError ? '取消失败：' + cancelError + '（点此重试）' : '停止本次评审',
+              disabled: cancelling,
+              onClick: cancelStop,
+            }, cancelling ? '停止中…' : (cancelError ? '取消·重试' : '停止'))
+          : null
+        // AB/评审脚本关联：把本消息的 session/message 与（就绪时的）批评者路由
+        // 投影成 data-* 属性。路由只在快照就绪时投影；快照/scope 不可用时省略，
+        // 让脚本「fail closed」（不点/拒绝点击不匹配的评审）。
+        let routeAttrs = {}
+        try {
+          if (typeof scope !== 'object' || typeof scope.getSnapshot !== 'function') {
+            routeAttrs = {}
+          } else {
+            const snap = scope.getSnapshot()
+            routeAttrs = criticRouteAttrs(snap && snap.status === 'ready' ? snap.value : undefined)
+          }
+        } catch {
+          routeAttrs = {}
+        }
+        return h('span', { style: { display: 'inline-flex', gap: '4px', alignItems: 'center' } },
+          h('button', {
+            className: 'dsr-btn',
+            'data-ciel-session-id': sessionId,
+            'data-ciel-message-id': messageId,
+            ...routeAttrs,
+            onClick,
+            disabled: inFlight,
+            title: tip,
+            ref: rootRef,
+          }, label),
+          stopButton,
+          startError && (!entry || entry.transient || entry.reviewId === startError.reviewId)
+            ? h('span', { className: 'dsr-start-error', title: startError.message, style: { fontSize: '11px', color: '#d29922' } }, '本次请求失败 · 可重试')
+            : null,
+        )
       }
 
       // ── frame overlay: the annotation popover, positioned at the clicked mark.
@@ -2244,12 +2620,48 @@ window.__ModuleLoader__.load({
           () => h(PopoverLayer),
         ),
       )
+      // Test hook: expose live runtime internals so node integration tests can
+      // drive the actual apply/hydrate/ReviewButton wiring (not helper logic).
+      Object.assign(__runtime, { store, hydrate, reviewCall, emit, absorb, ReviewButton, buildPanel })
+      // Clear the test-runtime capture on teardown so a stopped runtime is not
+      // retained (avoids stale store/slots after plugin stop).
+      ctx.effect(() => () => {
+        for (const k of Object.keys(__runtime)) delete __runtime[k]
+      }, 'dsh-advisor: review runtime cleanup')
     }
 
     exports.apply = apply
     // Test hook: the node test harness loads this factory with a stubbed
-    // ModuleLoader and asserts the two splitMarkdownBlocks copies agree.
-    exports.__test = { splitMarkdownBlocks }
+    // ModuleLoader and asserts splitter parity plus the reviewed-UI pure
+    // helpers (coverage/soundness/labels/selection/feedback shaping).
+    exports.__test = {
+      splitMarkdownBlocks,
+      deriveCoverage,
+      isSoundEntry,
+      verdictBadgeClass,
+      verdictBadgeText,
+      statusButtonLabel,
+      inFlightLabel,
+      restoreSelection,
+      buildFeedbackItems,
+      isListResultLoaded,
+      cancelOutcome,
+      entryTime,
+      shouldReplace,
+      entryRank,
+      criticRouteAttrs,
+      // live internals captured by apply() (undefined until apply runs)
+      runtime: __runtime,
+      // descriptor / settings completeness (refresh-free snapshots for tests)
+      remoteMethodNames: ADVISOR_REMOTE.descriptors.map((d) => d.method),
+      defaults: { ...DEFAULTS },
+      fieldDefinition: (key) => {
+        const def = FIELD_DEF_BY_KEY[key]
+        return def ? { kind: def.kind, min: def.min, max: def.max, label: def.label } : undefined
+      },
+      fieldKeys: FIELD_KEYS.slice(),
+      hasGroup: (key) => Object.prototype.hasOwnProperty.call(INITIAL_CLOSED_GROUPS, key) && INITIAL_CLOSED_GROUPS[key] === true,
+    }
     exports.inject = ['settingsScope', 'slots']
     // The module system materializes the factory's RETURN VALUE as the plugin
     // exports — assigning without returning leaves the kernel `undefined`.
