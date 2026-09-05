@@ -97,13 +97,23 @@ const GUIDANCE_TEXT =
   'note that the advisor was unavailable.'
 
 export const Config = Schema.object({
+  enabled: Schema.boolean().default(true)
+    .description('允许 Ciel 发起模型调用（顾问、/advise、评审及回传）；关闭会取消本插件在途调用，不改变模型配置'),
+  advisorTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
+    .description('一次顾问咨询（含 /advise）的总时限，秒；取消或超时不会自动重试'),
+  criticTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
+    .description('一次完整评审的总时限（秒，含存疑、核实和抢救）；超时停止，不自动重试'),
+  criticMaxRequests: Schema.number().step(1).min(2).max(32).default(16)
+    .description('一次评审全部阶段的模型步骤请求上限；提供方内部重试由 DSH 管理，不是金额上限，达到后不再抢救'),
+  criticMaxTokens: Schema.number().step(1).min(256).max(32768).default(16384)
+    .description('批评者每次模型请求的输出上限；存疑最多 4096、抢救最多 8192；不是整轮 token 总额'),
   provider: Schema.string().default('kimi-coding')
     .description('顾问模型的提供方路由（须是设置 → 模型 中已注册的 provider）'),
   model: Schema.string().default('kimi-for-coding')
     .description('顾问模型 id；跨家族模型多样性收益更大'),
   maxTokens: Schema.number().min(256).max(32768).default(4096)
     .description('顾问单次回答的输出上限'),
-  maxCallsPerTurn: Schema.number().min(1).max(20).default(3)
+  maxCallsPerTurn: Schema.number().step(1).min(1).max(20).default(3)
     .description('每个 turn（≈一个规划阶段）的顾问调用硬上限：1 次发散 + 追问预算；超出即拒绝'),
   requireExploration: Schema.boolean().default(true)
     .description('首次咨询前要求本会话已有至少一次非顾问工具调用（先探查后咨询）'),
@@ -125,8 +135,8 @@ export const Config = Schema.object({
     .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.8-flash 仅支持 low/medium/high）'),
   criticExploreEnabled: Schema.boolean().default(true)
     .description('探索型批评者（0.13.0）：评审时对可证伪疑点做只读定点核实（read/grep/glob 白名单，世界可碰、过程不许碰）；关闭后退回纯草稿裁决'),
-  criticExploreBudget: Schema.number().min(0).max(10).default(5)
-    .description('探索预算硬上限：单次评审允许的只读工具调用次数，超出即熔断该次评审（0 = 有工具但不许调用，等同关闭探索）'),
+  criticExploreBudget: Schema.number().step(1).min(0).max(10).default(5)
+    .description('单次评审允许执行的只读工具次数；执行前拦截超额调用。0 关闭探索但仍调用模型；不是金额上限'),
 })
 
 /**
@@ -272,9 +282,9 @@ function childErrorDetail(run) {
 }
 
 /**
- * Consultation-gate facts, read STATELESSLY from the caller's own session log
- * (no plugin-side ledger to leak or reset): how many advisor calls already
- * settled this turn, whether any non-advisor tool ever ran in the session,
+ * Consultation inputs reconstructed from the caller's session log, augmented
+ * by createConsultationGate's in-memory reservations: calls already settled
+ * this turn, whether any non-advisor tool ever ran in the session,
  * and whether independent work happened after the last settled consultation.
  * A call counts once its tool/result lands, so the in-flight call never gates
  * itself. Only REAL consultations count: a call rejected by one of these
@@ -282,10 +292,10 @@ function childErrorDetail(run) {
  * follow-up gap — observed live, where an empty-context rejection poisoned
  * the model's immediate, correctly-filled retry. A call that passed the gates
  * and then failed at the provider still counts (no retry storms). Telemetry
- * surprises degrade to `undefined` — gates fail OPEN to the
- * prompt-layer protocol, never to a phantom rejection.
+ * surprises return `undefined`; new consultations fail closed rather than
+ * spending against an unknown budget.
  */
-const GATE_REJECTION_HEAD = /^(?:Error: )?(?:context is required:|explore first:|follow-ups must be driven by NEW facts:|advisor budget for this planning phase is exhausted)/
+const GATE_REJECTION_HEAD = /^(?:Error: )?(?:context is required:|explore first:|follow-ups must be driven by NEW facts:|advisor budget for this planning phase is exhausted|advisor consultation already in flight|advisor telemetry unavailable|Ciel disabled|Ciel requires tools\.guard)/
 
 function gateFacts(parent) {
   try {
@@ -331,6 +341,7 @@ function gateFacts(parent) {
       lastSettledAdvisor = index
     })
     return {
+      turnKey: turnStart < 0 ? 'no-turn' : (events[turnStart].seq ?? events[turnStart].data?.turn ?? turnStart),
       settledThisTurn,
       explorationDone: events.some(isWorkCall),
       workSinceLast: lastSettledAdvisor < 0 || thisTurn.slice(lastSettledAdvisor + 1).some(isWorkCall),
@@ -361,7 +372,7 @@ const PLAN_REMINDER_TEXT =
  */
 function reminderTextFor(agent, current) {
   try {
-    if (!current().planReminderEnabled) return ''
+    if (current().enabled === false || !current().planReminderEnabled) return ''
     const events = sessionEvents(agent.session)
     if (!Array.isArray(events)) return ''
     let turnStart = -1
@@ -463,8 +474,8 @@ const CRITIC_PERSONA =
   'plugins can add inline marks (underlines, badges) to rendered text; ' +
   'session history persists across restarts; static host-bundle plugins ' +
   'take effect only after a DSH restart while dynamic Cordis packages ' +
-  'hot-swap without one. If the draft is sound, output one line starting ' +
-  'with "SOUND:" followed by a single sentence in the draft\'s language, ' +
+  'hot-swap without one. If the draft is sound, use the pass verdict ' +
+  'header and a one-sentence summary in the draft\'s language, ' +
   'plus at most 3 [nit] annotations for residual risks.'
 
 /**
@@ -509,17 +520,17 @@ const CRITIC_PROMPT_SUFFIX =
 const CRITIC_SUSPECT_PERSONA =
   'You are phase 1 (SUSPECT) of a two-phase convergent review. You receive ' +
   'a DRAFT (a reply a model is about to show the user), the REQUEST it ' +
-  'answers, the VERDICT-LEVEL tool activity of the turn that produced it, ' +
-  'and a block map of the draft. List every suspicion worth falsifying ' +
+  'answers, and a block map of the draft. Author tool evidence and advisor ' +
+  'opinions are intentionally withheld until phase 2. List every suspicion worth falsifying ' +
   'about the draft: concrete factual assertions about the world (counts, ' +
   'sizes, versions, paths, quotes, behavior) — EVEN when hedged as ' +
   'estimates or from-memory guesses; claims of having run, tested, or ' +
-  'verified something the provided evidence cannot confirm; load-bearing ' +
+  'verified something that phase 2 should cross-check against evidence; load-bearing ' +
   'omissions a reader would act on. You have NO tools: never plan or ' +
   'attempt tool calls. NO verdicts, NO fixes, NO commentary — suspicions ' +
   'only; a suspicion is not a defect, phase 2 will settle each. You ' +
-  'NOMINATE, you do not judge: a claim fully backed by the provided ' +
-  'evidence is STILL a suspect when it is concrete and load-bearing — ' +
+  'NOMINATE, you do not judge: a claim that appears well supported in the ' +
+  'draft is STILL a suspect when it is concrete and load-bearing — ' +
   'settling (confirm OR falsify) is phase 2\'s job, and a confirmation ' +
   'is a verdict too. When in doubt, list it. At most ' +
   '8 suspects, most drafts need 1-4; zero is a valid answer. Output ONLY ' +
@@ -535,50 +546,43 @@ const CRITIC_SUSPECT_PROMPT_SUFFIX =
   '\n\nList the suspects now in the specified format — nothing else.'
 
 /** 阶段 2 契约：清单驱动核实 + dossier/verdict 两段（v3 全部纪律继承）。 */
-const CRITIC_VERIFY_CONTRACT =
-  '\n\nVERIFY CONTRACT (v4, phase 2 of 2): the pipeline\'s phase 1 already ' +
-  'listed the suspects; they follow this message as an ORDERED list — ' +
-  'verify them in order with your read-only tools, cheapest first. You ' +
-  'may append newly discovered suspects while reading, but the list is ' +
-  'your primary duty. Then reply with exactly two sections, dossier ' +
-  'FIRST, verdict SECOND:\n\n' +
+const VERIFICATION_LEDGER_CONTRACT =
+  '\n\nRESULT CONTRACT (v4.1, authoritative over earlier formatting rules): ' +
+  'Each selected suspect has a HOST-ASSIGNED id such as s1. Return exactly ' +
+  'one result row per SELECTED id. NEVER invent ids, add new suspects, or ' +
+  'return annotations for a withheld, cleared, or unchecked suspect. ' +
+  'The host computes all counts; do NOT output a stats line. Use exactly:\n\n' +
   '## dossier\n' +
-  '- suspect: <one line> → confirmed: <what a tool actually returned, citing file:line or the grep hit>\n' +
-  '- suspect: <one line> → excluded: <what a tool actually returned>\n\n' +
+  '- result: s1 | outcome: cleared | evidence: <finding with file:line, tool quote, or provided evidence>\n' +
+  '- result: s2 | outcome: defect | evidence: <finding that proves the draft WRONG>\n' +
+  '- result: s3 | outcome: unchecked | evidence: none\n\n' +
   '## verdict: pass|changes\n' +
-  'summary: <one sentence>\n' +
-  'stats: 排查 M · 证伪 X · 排除 Y · 未查 Z\n\n' +
+  'summary: <one sentence>\n\n' +
   '### [blocker] title\n' +
+  'suspect: s2\n' +
   'block: b2\n' +
-  'evidence: <the tool finding behind this annotation>\n' +
-  'anchor: <verbatim quote from that block>\n' +
-  'comment: <what is wrong and why it matters>\n\n' +
-  'Rules: the verdict section is the ONLY part the pipeline parses. A ' +
-  'suspicion your tools cleared is DEAD — it must not reappear there in ' +
-  'any form (not as an annotation, a nit, a warning, or a suggestion). ' +
-  'Every [blocker] MUST carry an evidence: line grounded in a tool result ' +
-  'from THIS turn; an ungrounded blocker is downgraded to a nit. ANY ' +
-  'annotation grounded in this turn\'s exploration carries its evidence: ' +
-  'line too — the citation is the finding\'s proof, not a severity badge; ' +
-  'a confirmed defect you verified with a tool must reach the user WITH ' +
-  'its citation, never as a bare "consider double-checking". The stats ' +
-  'line counts honestly: M = suspects given to you PLUS any you appended, ' +
-  'X + Y = settled this turn, Z = skipped (the pipeline adds its own ' +
-  'pre-triaged count to Z when it persists). All other annotation rules ' +
-  'above still apply. Concrete factual assertions about the world ' +
-  '(counts, sizes, versions, paths, quotes, behavior) are suspects EVEN ' +
-  'when the draft hedges them as estimates or from-memory guesses: a ' +
-  'hedge labels provenance, it does not make the claim true. When a ' +
-  'provided verbatim quote of the author\'s non-reproducible tool output ' +
-  'already settles a suspicion, cite THAT as your evidence (name the ' +
-  'call and quote the decisive line) instead of spending budget ' +
-  're-checking the world. NEVER spend calls investigating your own ' +
-  'instructions or this review contract (searching the codebase for the ' +
-  'format rules you were given): the contract is a given, not a draft ' +
-  'claim — your tools exist to falsify the DRAFT, nothing else. BUDGET ' +
-  'TRIAGE: as soon as only ONE call remains, stop exploring and write ' +
-  'the verdict with what you have — a partial verdict with honest stats ' +
-  'beats an aborted review.'
+  'evidence: <the concrete finding for s2>\n' +
+  'anchor: <verbatim quote from that suspect\'s draft block>\n' +
+  'comment: <the defect and why it matters>\n\n' +
+  'Only defect results may have annotations (blocker or nit), and every ' +
+  'defect must have an annotation. A TRUE draft claim is cleared, NOT a ' +
+  'defect. Unchecked means evidence did not settle the suspicion; it ' +
+  'MUST NOT become a conditional risk, warning, suggestion or nit. ' +
+  'Never relabel an unchecked/withheld claim with another suspect id. ' +
+  'Settled outcomes require a nonempty evidence citation. Severity and ' +
+  'evidence are separate: every annotation includes its proof. Output ' +
+  'the two sections even when no issues survive; never a SOUND-only reply.'
+
+const CRITIC_VERIFY_CONTRACT =
+  '\n\nVERIFY CONTRACT: verify ONLY the ordered selected suspects, cheapest ' +
+  'first, within the read-only tool budget. A provided verbatim tool quote ' +
+  'may settle a suspicion without another read; cite its decisive line. ' +
+  'NEVER investigate your own instructions or this review contract. ' +
+  'When no tool calls remain, write the final reply (writing is NOT a tool ' +
+  'call). Do not start an investigation that cannot fit the remaining ' +
+  'budget; leave that suspect unchecked. Earlier allowances for conditional ' +
+  'unverified-claim annotations do NOT apply in this verification mode.' +
+  VERIFICATION_LEDGER_CONTRACT
 
 const CRITIC_VERIFY_PROMPT_SUFFIX =
   '\n\nVerify the suspects in order with your read-only tools within ' +
@@ -592,7 +596,7 @@ function criticExploreToolsClause(budget) {
 }
 
 function criticExplorePersona(budget) {
-  return CRITIC_PERSONA.replace(CRITIC_NO_TOOLS_CLAUSE, criticExploreToolsClause(budget)) + CRITIC_VERIFY_CONTRACT
+  return CRITIC_PERSONA.replace(CRITIC_NO_TOOLS_CLAUSE, criticExploreToolsClause(budget)) + RUBRIC_ADDENDUM + CRITIC_VERIFY_CONTRACT
 }
 
 /**
@@ -607,15 +611,13 @@ const CRITIC_SALVAGE_PERSONA =
   'from, and the critic\'s PARTIAL dossier text (possibly empty, partial, ' +
   'or mid-sentence). You have NO tools. Produce the final two sections, ' +
   'dossier FIRST, verdict SECOND, in the same format: suspects the ' +
-  'partial dossier already settled keep their outcome (confirmed or ' +
-  'excluded, WITH the evidence the partial text cites); every other ' +
+  'partial dossier already settled keep their outcome (defect or ' +
+  'cleared, WITH the evidence the partial text cites); every other ' +
   'suspect is UNCHECKED — it must NOT appear as an annotation in any ' +
   'form (not even as a nit or a suggestion), it only counts toward 未查. ' +
-  'A settled suspect whose partial-text mention carries NO tool evidence ' +
-  'may appear at most as a nit with the partial text quoted. stats: ' +
-  '排查 M · 证伪 X · 排除 Y · 未查 Z, counted honestly (M = the full ' +
-  'suspect count given to you, Z = unchecked). verdict: changes only ' +
-  'when at least one blocker survives.'
+  'A purported finding without cited evidence remains unchecked, never ' +
+  'an annotation. Do not use the author context to investigate new issues. ' +
+  'verdict: changes only when at least one blocker survives.' + VERIFICATION_LEDGER_CONTRACT
 
 const CRITIC_SALVAGE_PROMPT_SUFFIX =
   '\n\nWrite the final dossier and verdict sections now from the partial ' +
@@ -710,11 +712,10 @@ function probeCriticAction(lastToolEvent, lastCallEvent) {
 }
 
 /**
- * 预算看门狗（0.13.0 契约 v3）：toolFilter 无原生调用计数闸门，硬上限由
- * 轮询子会话 tool/call 事件实现——定位是防失控断路器，不是精确计数闸门
- * （轮询有滞后，超限 1-2 次内熔断）。预算的主要传导仍是 prompt 纪律，
- * 看门狗只兜住模型失约/死循环。0.14.0 起同一采样顺带产出叙事进展
- * （action）：当前正在执行的工具与目标，徽标从计数升级为动作流。
+ * Progress sampler and terminal backstop. The authoritative execution cap is
+ * AdvisorReviewService.guard(); polling observes attempted calls, not executed
+ * bodies, and cannot enforce a precise limit. stop() also checks the final
+ * sample so fast completion cannot hide an over-budget attempt.
  * @returns {{ stop(): number, calls(): number, breached(): boolean, action(): object }}
  */
 function createBudgetWatchdog(options) {
@@ -743,16 +744,17 @@ function createBudgetWatchdog(options) {
       action = probeCriticAction(lastTool, lastCall)
     } catch { /* 看门狗尽力而为；spawn signal 仍是运行边界 */ }
   }
-  const timer = setInterval(() => {
+  const check = () => {
     sample()
     if (!breached && calls > budget) {
       breached = true
       onBreach()
     }
-  }, intervalMs)
+  }
+  const timer = setInterval(check, intervalMs)
   if (typeof timer.unref === 'function') timer.unref()
   return {
-    stop: () => { clearInterval(timer); sample(); return calls },
+    stop: () => { clearInterval(timer); check(); return calls },
     calls: () => calls,
     breached: () => breached,
     action: () => action,
@@ -783,6 +785,7 @@ function parseAnnotations(text, draft, blocks, options) {
     const anchorMatch = /(?:^|\n)[ \t]*anchor:[ \t]*(.*)/.exec(body)
     const blockMatch = /(?:^|\n)[ \t]*block:[ \t]*(b\d+)[ \t]*(?:\n|$)/.exec(body)
     const evidenceMatch = /(?:^|\n)[ \t]*evidence:[ \t]*(.*)/.exec(body)
+    const suspectMatch = /(?:^|\n)[ \t]*suspect:[ \t]*(s\d+)[ \t]*(?:\n|$)/i.exec(body)
     const commentMatch = /(?:^|\n)[ \t]*comment:[ \t]*([\s\S]*)/.exec(body)
     let anchor = anchorMatch ? anchorMatch[1].trim() : ''
     anchor = anchor.replace(/^["'`「『“‘]+|["'`」』”’]+$/g, '').trim()
@@ -808,6 +811,7 @@ function parseAnnotations(text, draft, blocks, options) {
       anchor: anchor.slice(0, 400),
       comment: comment.slice(0, 1200),
       matched: anchorInDraft(anchor, draft),
+      ...(suspectMatch ? { suspect: suspectMatch[1].toLowerCase() } : {}),
       ...(block === undefined ? {} : { block }),
       ...(evidence === '' ? {} : { evidence }),
       ...(downgraded === undefined ? {} : { downgraded }),
@@ -837,7 +841,7 @@ function parseSuspectList(text) {
   const re = /^- suspect:[ \t]*(.*)$/gm
   let m
   while ((m = re.exec(text)) !== null) {
-    const parts = m[1].split('|').map((p) => p.trim())
+    const parts = m[1].split(/\s*\|\s*(?=(?:block|bearing|falsify):)/).map((p) => p.trim())
     const suspect = (parts[0] || '').trim()
     if (suspect === '') continue
     let block
@@ -876,17 +880,201 @@ function triageSuspects(suspects, budget) {
  * 解析只消费 verdict 段——dossier 里的 ### 头（含排除项的伪装复发）不落
  * 批注；stats 行解析为 {checked, confirmed, excluded}。
  */
+function parseOutcomeRows(text) {
+  const prefix = String(text).replace(/\r\n/g, '\n').split(/^## verdict:/m)[0]
+  const rows = []
+  const issues = []
+  if (!/^## dossier[ \t]*$/m.test(prefix)) issues.push('缺少逐项调查结果')
+  for (const line of prefix.split('\n')) {
+    if (!/^-\s*result:/i.test(line)) continue
+    const match = /^-\s*result:\s*(s\d+)\s*\|\s*outcome:\s*(defect|cleared|unchecked)\s*\|\s*evidence:\s*(.*)$/i.exec(line)
+    if (!match) { issues.push('无法解析逐项结果'); continue }
+    rows.push({ id: match[1].toLowerCase(), outcome: match[2].toLowerCase(), evidence: match[3].trim().slice(0, 400) })
+  }
+  return { rows, issues }
+}
+
+/** Finite host-owned identity pool: neither self-reported counts nor extra ids expand it. */
+function reconcileReviewLedger(text, annotations, selected, all, blocks, frozenRows) {
+  const allowed = new Map(selected.map((s) => [s.id, s]))
+  const parsedRows = parseOutcomeRows(text)
+  // A recovery writer formats the investigator's findings; it cannot reopen
+  // cleared issues, erase settled findings or invent newly verified outcomes.
+  const rows = Array.isArray(frozenRows) ? frozenRows : parsedRows.rows
+  const issues = Array.isArray(frozenRows) ? [] : parsedRows.issues
+  const byId = new Map()
+  const duplicate = new Set()
+  const hasEvidence = (value) => typeof value === 'string' && value !== '' && !/^(?:none|n\/a|unchecked|未查|未核实|无|[-—])\s*[.。]?$/i.test(value)
+  for (const row of rows) {
+    if (!allowed.has(row.id)) { issues.push('忽略未选中的结果编号 ' + row.id); continue }
+    if (byId.has(row.id)) { duplicate.add(row.id); issues.push('重复结果编号 ' + row.id); continue }
+    byId.set(row.id, row)
+  }
+  for (const s of selected) {
+    const row = byId.get(s.id)
+    if (!row || duplicate.has(s.id) || (row.outcome !== 'unchecked' && !hasEvidence(row.evidence))) {
+      byId.set(s.id, { id: s.id, outcome: 'unchecked', evidence: '' })
+    }
+  }
+  let ignoredAnnotations = 0
+  const kept = []
+  for (const a of annotations) {
+    const row = byId.get(a.suspect)
+    const suspect = allowed.get(a.suspect)
+    const block = suspect?.block && Array.isArray(blocks) ? blocks.find((b) => b.id === suspect.block) : undefined
+    const wrongBlock = suspect?.block && a.block && a.block !== suspect.block
+    const wrongAnchor = block && a.anchor && !anchorInDraft(a.anchor, block.text)
+    if (!suspect || row?.outcome !== 'defect' || wrongBlock || wrongAnchor) {
+      ignoredAnnotations += 1
+      continue
+    }
+    // The ledger citation accompanies the annotation even if its author
+    // forgot to repeat it. This verifies linkage/presence, not semantic truth.
+    const { downgraded, ...rest } = a
+    kept.push({ ...rest, severity: downgraded ? 'blocker' : a.severity, evidence: row.evidence, ...(suspect.block ? { block: suspect.block } : {}) })
+  }
+  if (ignoredAnnotations) issues.push('剔除 ' + ignoredAnnotations + ' 条未核实、已排除或越界批注')
+  for (const [id, row] of byId) {
+    if (row.outcome === 'defect' && !kept.some((a) => a.suspect === id)) {
+      byId.set(id, { id, outcome: 'unchecked', evidence: '' })
+      issues.push('缺陷结果没有对应有效批注 ' + id)
+    }
+  }
+  const outcomes = all.map((s) => byId.get(s.id) || { id: s.id, outcome: 'unchecked', evidence: '' })
+  const stats = {
+    checked: outcomes.length,
+    confirmed: outcomes.filter((r) => r.outcome === 'defect').length,
+    excluded: outcomes.filter((r) => r.outcome === 'cleared').length,
+    unchecked: outcomes.filter((r) => r.outcome === 'unchecked').length,
+  }
+  return { annotations: kept, outcomes, stats, ledgerIssues: [...new Set(issues)], ignoredAnnotations }
+}
+
 function parseCriticReview(text, draft, blocks, options) {
-  const verdictMatch = /^## verdict:[ \t]*(pass|changes)[ \t]*$/m.exec(text)
-  const section = verdictMatch ? text.slice(verdictMatch.index) : text
+  text = String(text).replace(/\r\n/g, '\n')
+  const strict = !!(options && (options.explore || options.strict))
+  const heads = [...text.matchAll(/^## verdict:[ \t]*(pass|changes)[ \t]*$/gm)]
+  const candidates = [...text.matchAll(/^##[ \t]+verdict\b.*$/gim)]
+  const valid = heads.length === 1 && candidates.length === 1
+  const verdictMatch = valid ? heads[0] : undefined
+  // New reviews never parse a dossier as legacy annotations. Legacy loading
+  // remains available to callers that explicitly omit strict/explore mode.
+  const section = verdictMatch ? text.slice(verdictMatch.index) : strict ? '' : text
   const summaryMatch = /(?:^|\n)[ \t]*summary:[ \t]*(.*)/.exec(section)
   const statsMatch = /(?:^|\n)[ \t]*stats:[ \t]*(.*)/.exec(section)
-  const stats = parseStatsLine(statsMatch ? statsMatch[1] : undefined)
+  let stats = parseStatsLine(statsMatch ? statsMatch[1] : undefined)
+  let annotations = parseAnnotations(section, draft, blocks, options)
+  let ledger
+  if (valid && Array.isArray(options?.selected)) {
+    ledger = reconcileReviewLedger(text, annotations, options.selected, options.allSuspects || options.selected, blocks, options.frozenRows)
+    annotations = ledger.annotations
+    stats = ledger.stats
+  }
+  const verdict = verdictMatch ? (annotations.some((a) => a.severity === 'blocker') ? 'changes' : 'pass') : undefined
   return {
-    verdict: verdictMatch ? verdictMatch[1] : undefined,
+    valid,
+    verdict,
+    ...(verdictMatch && verdict !== verdictMatch[1] ? { verdictAdjusted: true } : {}),
     summary: summaryMatch ? summaryMatch[1].trim().slice(0, 300) : '',
     ...(stats === undefined ? {} : { stats }),
-    annotations: parseAnnotations(section, draft, blocks, options),
+    ...(ledger ? { outcomes: ledger.outcomes, ledgerIssues: ledger.ledgerIssues, ignoredAnnotations: ledger.ignoredAnnotations } : {}),
+    annotations,
+  }
+}
+
+/** Only an explicit, well-formed empty list is a valid zero-suspect result. */
+function parseSuspectResponse(text) {
+  const lines = String(text).replace(/\r\n/g, '\n').trim().split('\n').filter((line) => line.trim() !== '')
+  if (lines[0] !== '## suspects') return { ok: false, error: 'missing suspects header' }
+  const body = lines.slice(1)
+  if (body.length > 8 || body.some((line) => !/^- suspect:[ \t]*\S/.test(line))) {
+    return { ok: false, error: 'invalid suspect list (expected at most 8 suspect lines)' }
+  }
+  const suspects = parseSuspectList(body.join('\n'))
+  if (suspects.length !== body.length) return { ok: false, error: 'unparsed suspect lines' }
+  return { ok: true, suspects }
+}
+
+/** Normalize coverage separately from severity; incomplete can never mean sound. */
+function reviewCoverage(parsed, { explore, suspects, salvaged }) {
+  if (!explore || suspects?.total === 0) return { coverage: 'not-verified', stats: parsed.stats }
+  if (Array.isArray(parsed.outcomes)) {
+    const issues = parsed.ledgerIssues || []
+    return {
+      coverage: salvaged || parsed.stats.unchecked > 0 || issues.length > 0 ? 'partial' : 'complete',
+      stats: parsed.stats,
+      ...(issues.length ? { coverageNote: issues.slice(0, 3).join('；') } : {}),
+    }
+  }
+  const chosen = suspects?.triaged || 0
+  const skipped = suspects?.skipped || 0
+  const s = parsed.stats
+  const nums = s ? [s.checked, s.confirmed, s.excluded, s.unchecked ?? 0] : []
+  const valid = nums.length === 4 && nums.every((n) => Number.isSafeInteger(n) && n >= 0 && n <= 100)
+    && s.checked >= chosen && s.checked === s.confirmed + s.excluded + (s.unchecked || 0)
+    && (s.confirmed === 0 || (parsed.annotations?.length || 0) > 0)
+  const stats = valid
+    ? { ...s, checked: s.checked + skipped, unchecked: (s.unchecked || 0) + skipped }
+    : { checked: chosen + skipped, confirmed: 0, excluded: 0, unchecked: chosen + skipped }
+  return {
+    coverage: !valid || salvaged || stats.unchecked > 0 ? 'partial' : 'complete',
+    stats,
+    ...(!valid ? { coverageNote: '统计缺失或不一致，无法确认排查范围' } : {}),
+  }
+}
+
+/** One cancellable lifetime shared by every phase (budget abort stays phase-local). */
+function createReviewOperation({ timeoutMs = 180000, maxRequests = 16, now = Date.now, timers = globalThis } = {}) {
+  const controller = new AbortController()
+  const deadline = now() + timeoutMs
+  let reason = ''
+  let requests = 0
+  let finish
+  const done = new Promise((resolve) => { finish = resolve })
+  const cancel = (why = 'cancelled') => {
+    if (controller.signal.aborted) return
+    reason = why
+    controller.abort(new Error(why))
+  }
+  const check = () => {
+    if (now() >= deadline) cancel('review timeout')
+    if (controller.signal.aborted) throw new Error(reason)
+  }
+  const timer = timers.setTimeout(() => cancel('review timeout'), timeoutMs)
+  if (typeof timer.unref === 'function') timer.unref()
+  return {
+    signal: controller.signal, cancel, check, done,
+    reason: () => reason,
+    requests: () => requests,
+    beforeRequest: () => {
+      check()
+      if (requests >= maxRequests) { cancel('model request limit reached'); check() }
+      requests += 1
+    },
+    dispose: () => { timers.clearTimeout(timer); finish() },
+  }
+}
+
+function reviewKey(sessionId, messageId) { return JSON.stringify([String(sessionId), String(messageId)]) }
+
+/** Synchronous reservation: concurrent starts cannot all see the same settled count. */
+function createConsultationGate() {
+  const entries = new WeakMap()
+  return {
+    reserve(parent, facts, limit) {
+      if (!facts) throw new Error('advisor telemetry unavailable; refusing an unmetered consultation')
+      let entry = entries.get(parent)
+      if (entry?.active) throw new Error('advisor consultation already in flight for this session')
+      if (!entry || entry.turnKey !== facts.turnKey) {
+        entry = { turnKey: facts.turnKey, spent: facts.settledThisTurn, active: false }
+        entries.set(parent, entry)
+      }
+      entry.spent = Math.max(entry.spent, facts.settledThisTurn)
+      if (entry.spent >= limit) throw new Error('advisor budget for this planning phase is exhausted')
+      entry.spent += 1
+      entry.active = true
+      return () => { entry.active = false }
+    },
   }
 }
 
@@ -1157,7 +1345,7 @@ async function readReviews(sessionId) {
   const path = reviewsPath(sessionId)
   if (path === undefined) return []
   let text
-  try { text = await readFile(path, 'utf8') } catch { return [] }
+  try { text = await readFile(path, 'utf8') } catch (error) { if (error.code === 'ENOENT') return []; throw error }
   const reviews = []
   for (const line of text.split('\n')) {
     if (line === '') continue
@@ -1201,7 +1389,7 @@ async function readFeedbackKeys(sessionId) {
   const path = feedbackPath(sessionId)
   if (path === undefined) return keys
   let text
-  try { text = await readFile(path, 'utf8') } catch { return keys }
+  try { text = await readFile(path, 'utf8') } catch (error) { if (error.code === 'ENOENT') return keys; throw error }
   for (const line of text.split('\n')) {
     if (line === '') continue
     try {
@@ -1225,7 +1413,7 @@ async function readFeedbackTriage(sessionId) {
   const path = feedbackPath(sessionId)
   if (path === undefined) return triage
   let text
-  try { text = await readFile(path, 'utf8') } catch { return triage }
+  try { text = await readFile(path, 'utf8') } catch (error) { if (error.code === 'ENOENT') return triage; throw error }
   for (const line of text.split('\n')) {
     if (line === '') continue
     let record
@@ -1268,11 +1456,15 @@ class AdvisorReviewService extends TypertRemoteService {
    *   settings scope resyncs after construction, so capture the thunk, never
    *   a snapshot).
    */
-  constructor(ctx, liveCriticChildren, getConfig) {
+  constructor(ctx, liveCriticChildren, getConfig, activeOperations = new Set()) {
     super(ctx, 'advisorReview')
     this.liveCriticChildren = liveCriticChildren
     this.getConfig = getConfig
-    this.inFlight = new Set()
+    this.activeOperations = activeOperations
+    this.inFlight = new Map()
+    this.activeSessions = new Set()
+    this.children = new Map()
+    this.guardAvailable = false
     // 契约 v3 进展通道（轮询制）：messageId → 在途评审的实时探索计数。
     this.progressByMessage = new Map()
     // Per-session dedup ledgers, each a Promise<Set> so concurrent first
@@ -1286,6 +1478,39 @@ class AdvisorReviewService extends TypertRemoteService {
     remoteMarker(Object.getPrototypeOf(this), 'feedback').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'triage').call(this)
     remoteMarker(Object.getPrototypeOf(this), 'progress').call(this)
+    remoteMarker(Object.getPrototypeOf(this), 'cancel').call(this)
+  }
+
+  /** Runs synchronously before a tracked child's actual tool body. */
+  guard(exec) {
+    const c = this.children.get(exec.agent?.id)
+    if (!c) return undefined
+    try { c.operation.check() } catch (error) { return error.message }
+    if (!c.allowTools || !['read', 'grep', 'glob'].includes(exec.name)) {
+      c.operation.cancel('unexpected tool in review: ' + exec.name)
+      return 'this review phase cannot execute that tool'
+    }
+    if (c.used >= c.budget) {
+      c.breached = true
+      c.abort.abort()
+      return 'review tool budget exceeded'
+    }
+    c.used += 1
+    return undefined
+  }
+
+  beforeRequest(id) {
+    const c = this.children.get(id)
+    if (!c) return
+    if (this.getConfig().enabled === false) c.operation.cancel('Ciel disabled')
+    c.operation.beforeRequest()
+  }
+
+  async cancel(request) {
+    const operation = this.inFlight.get(reviewKey(request?.sessionId, request?.messageId))
+    if (!operation) return { ok: true, cancelled: false }
+    operation.cancel('review cancelled by user')
+    return { ok: true, cancelled: true }
   }
 
   /** The dedup ledger for one session, seeded from the WAL on first touch. */
@@ -1293,7 +1518,7 @@ class AdvisorReviewService extends TypertRemoteService {
     const sid = String(sessionId || '')
     let pending = this.sentBySession.get(sid)
     if (pending === undefined) {
-      pending = readFeedbackKeys(sid)
+      pending = readFeedbackKeys(sid).catch((error) => { if (this.sentBySession.get(sid) === pending) this.sentBySession.delete(sid); throw error })
       this.sentBySession.set(sid, pending)
     }
     return pending
@@ -1304,7 +1529,7 @@ class AdvisorReviewService extends TypertRemoteService {
     const sid = String(sessionId || '')
     let pending = this.triageBySession.get(sid)
     if (pending === undefined) {
-      pending = readFeedbackTriage(sid)
+      pending = readFeedbackTriage(sid).catch((error) => { if (this.triageBySession.get(sid) === pending) this.triageBySession.delete(sid); throw error })
       this.triageBySession.set(sid, pending)
     }
     return pending
@@ -1338,7 +1563,7 @@ class AdvisorReviewService extends TypertRemoteService {
    */
   async progress(request) {
     const messageId = String(request && request.messageId || '')
-    const p = this.progressByMessage.get(messageId)
+    const p = this.progressByMessage.get(reviewKey(request?.sessionId, messageId))
     if (p === undefined) return { inFlight: false }
     return {
       inFlight: true,
@@ -1387,8 +1612,13 @@ class AdvisorReviewService extends TypertRemoteService {
 
   /** Run the critic over one assistant message and persist the review. */
   async start(request) {
+    if (!request || typeof request.sessionId !== 'string' || typeof request.messageId !== 'string') return { ok: false, error: 'sessionId and messageId required' }
+    const cfg = this.getConfig()
+    if (cfg.enabled === false) return { ok: false, error: 'Ciel disabled' }
+    if (!this.guardAvailable) return { ok: false, error: 'Ciel requires tools.guard() for bounded execution; update DSH before reviewing' }
     const sessionId = request.sessionId
     const messageId = request.messageId
+    const key = reviewKey(sessionId, messageId)
     const agents = this.ctx.get('agents')
     const subagents = this.ctx.get('subagents')
     if (agents === undefined || subagents === undefined) {
@@ -1407,12 +1637,17 @@ class AdvisorReviewService extends TypertRemoteService {
     if (target === undefined) return { ok: false, error: 'no assistant message with id ' + messageId }
     const draft = draftText(target)
     if (draft === '') return { ok: false, error: 'that message has no reviewable text' }
-    if (this.inFlight.has(messageId)) return { ok: false, error: 'review already in flight for this message' }
-    this.inFlight.add(messageId)
+    if (this.activeSessions.has(sessionId)) return { ok: false, error: 'review already in flight for this session' }
+    const operation = createReviewOperation({ timeoutMs: (cfg.criticTimeoutSeconds ?? 180) * 1000, maxRequests: cfg.criticMaxRequests ?? 16 })
+    this.inFlight.set(key, operation)
+    this.activeSessions.add(sessionId)
+    this.activeOperations.add(operation)
+    const stageControls = new Map()
     const reviewId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
     const fail = async (error) => {
       this.ctx.logger?.warn('dsh-advisor: review.start failed: %s', String(error))
-      const entry = { reviewId, messageId, anchorSeq: target.seq, status: 'error', error: String(error), annotations: [], createdAt: Date.now() }
+      const cancelled = operation.reason() === 'review cancelled by user' || operation.reason() === 'Ciel disabled' || operation.reason() === 'plugin stopped'
+      const entry = { reviewId, messageId, anchorSeq: target.seq, status: cancelled ? 'cancelled' : 'error', error: String(error), annotations: [], modelRequests: operation.requests(), createdAt: Date.now() }
       try { await persistReview(sessionId, entry) } catch (e) { this.ctx.logger?.warn('dsh-advisor: review persist failed: %s', e && e.message) }
       return { ok: false, error: entry.error, review: entry }
     }
@@ -1424,20 +1659,24 @@ class AdvisorReviewService extends TypertRemoteService {
       // (0.9.0 live bug: "targets is not defined").
       const targets = advisorTargets(events, target)
       const draftBlocks = splitMarkdownBlocks(draft)
-      // 契约 v3（0.13.0）探索模式：只读工具白名单（read/grep/glob——世界
-      // 可碰、过程不许碰）+ 预算硬上限。预算没有原生 toolFilter 支持，
-      // 由下方轮询子会话 tool/call 事件、超限 abort 实现硬熔断。
-      const cfg = this.getConfig()
+      // Read-only visibility plus a separate synchronous execution guard.
+      // The sampler below is diagnostic; it is not the spending authority.
       const explore = cfg.criticExploreEnabled !== false && (cfg.criticExploreBudget === undefined ? 5 : cfg.criticExploreBudget) > 0
       const budget = explore ? cfg.criticExploreBudget || 5 : 0
       // 共享上下文（请求/摘要/引用/顾问清单/块地图/草稿）——v2 单段与 v4
       // 两阶段的每个 spawn 都以此为底。
       let baseContext = ''
+      let suspectContext = ''
       try {
         const evidence = turnEvidence(events, target)
         if (evidence.request !== '') {
           baseContext += 'Request being answered:\n"""\n' + evidence.request + '\n"""\n\n'
         }
+        suspectContext = baseContext
+        let draftContext = 'Draft block map:\n'
+        for (const b of draftBlocks) draftContext += b.id + ': ' + b.type + '\n'
+        draftContext += '\nDraft under review:\n"""\n' + draft + '\n"""'
+        suspectContext += draftContext
         baseContext += 'Tool activity in the same turn (verdict digest, not full output):\n' + evidence.tools + '\n\n'
         if (Array.isArray(evidence.quotes) && evidence.quotes.length > 0) {
           baseContext += 'Full outputs of this turn\'s NON-REPRODUCIBLE tool calls (verbatim quotes — the world cannot re-produce these byte-for-byte, so cross-check draft claims against them directly before spending your own budget):\n'
@@ -1457,35 +1696,61 @@ class AdvisorReviewService extends TypertRemoteService {
         for (const b of draftBlocks) baseContext += b.id + ': ' + b.type + '\n'
         baseContext += '\nDraft under review:\n"""\n' + draft + '\n"""'
       } catch (evidenceError) {
-        return fail('evidence assembly failed: ' + String(evidenceError && evidenceError.message || evidenceError))
+        return await fail('evidence assembly failed: ' + String(evidenceError && evidenceError.message || evidenceError))
       }
-      const spawnOnce = (spec) => subagents.start('spawn', {
-        label: spec.label,
-        parent: agent,
-        // 每个 spawn 独立控制器：预算熔断只杀阶段 2，抢救 spawn 必须用
-        // 全新 signal——共享一个在 breach 时已耗尽的 signal 会让抢救
-        // 必败（0.15.0 设计评审抓出）。
-        signal: (spec.abort || new AbortController()).signal,
-        prompt: [{ type: 'text', text: spec.prompt }],
-        agentOptions: spec.agentOptions,
-        persona: spec.persona,
-        maxDepth: 1,
-        toolFilter: spec.toolFilter,
-      })
+      const releaseRun = async (run) => {
+        const control = stageControls.get(run.id)
+        try { await run.dispose() } finally {
+          if (control) operation.signal.removeEventListener('abort', control.onCancel)
+          this.children.delete(run.id)
+          stageControls.delete(run.id)
+          this.liveCriticChildren.delete(run.id)
+        }
+      }
+      const spawnOnce = async (spec) => {
+        operation.check()
+        if (this.getConfig().enabled === false) { operation.cancel('Ciel disabled'); operation.check() }
+        const abort = spec.abort || new AbortController()
+        const onCancel = () => abort.abort(operation.signal.reason)
+        operation.signal.addEventListener('abort', onCancel, { once: true })
+        let run
+        try {
+          run = await subagents.start('spawn', {
+            label: spec.label, parent: agent, signal: abort.signal,
+            prompt: [{ type: 'text', text: spec.prompt }],
+            agentOptions: { ...spec.agentOptions, maxTokens: Math.min(spec.agentOptions.maxTokens, cfg.criticMaxTokens ?? 16384) },
+            persona: spec.persona, maxDepth: 1, toolFilter: spec.toolFilter,
+          })
+          const control = { run, operation, abort, onCancel, used: 0, budget, allowTools: spec.toolFilter.allow.length > 0, breached: false }
+          stageControls.set(run.id, control)
+          this.children.set(run.id, control)
+          this.liveCriticChildren.add(run.id)
+          // A native local presentation keeps no-tool phases tool-free even
+          // when the parent uses PTC's reserved run_code transport.
+          const tools = run.localAgent?.ctx?.get('tools')
+          if (typeof tools?.presentAs === 'function') tools.presentAs('native')
+          operation.check()
+          return run
+        } catch (error) {
+          operation.signal.removeEventListener('abort', onCancel)
+          if (run) await releaseRun(run)
+          throw error
+        }
+      }
       const awaitRun = async (run) => {
-        this.liveCriticChildren.add(run.id)
         try {
           const result = await run.result
-          return { result, text: outputText(result.output) }
-        } finally {
-          this.liveCriticChildren.delete(run.id)
-          await run.dispose()
-        }
+          operation.check()
+          return { result, text: outputText(result.output), detail: childErrorDetail(run) }
+        } finally { await releaseRun(run) }
       }
 
       let text = ''
       let toolCalls = 0
       let suspectsMeta
+      let allSuspects = []
+      let selectedSuspects = []
+      let salvageRows
       let salvaged = false
       if (!explore) {
         // ── v2 单段路径（探索关闭）──
@@ -1499,45 +1764,47 @@ class AdvisorReviewService extends TypertRemoteService {
             toolFilter: { allow: [] },
           })
         } catch (spawnError) {
-          return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+          return await fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
         }
-        this.progressByMessage.set(messageId, { explore, budget, startedAt: Date.now(), toolCalls: () => 0, action: () => ({ kind: 'thinking' }) })
-        const { result, text: out } = await awaitRun(run)
+        this.progressByMessage.set(key, { explore, budget, startedAt: Date.now(), toolCalls: () => 0, action: () => ({ kind: 'thinking' }) })
+        const { result, text: out, detail } = await awaitRun(run)
         if (result.stopReason !== 'completed') {
-          const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
-          return fail('critic ended with "' + result.stopReason + '"' + (detail === '' ? '' : ': ' + detail))
+          return await fail('critic ended with "' + result.stopReason + '"' + (detail === '' ? '' : ': ' + detail))
         }
-        if (out === '') return fail('critic returned an empty answer (reasoning only, no visible text)')
+        if (out === '') return await fail('critic returned an empty answer (reasoning only, no visible text)')
         text = out
       } else {
         // ── 契约 v4 两阶段 ──
         const progress = { explore, budget, phase: 1, suspects: 0, startedAt: Date.now(), toolCalls: () => 0, action: () => ({ kind: 'thinking' }) }
-        this.progressByMessage.set(messageId, progress)
+        this.progressByMessage.set(key, progress)
         // 阶段 1：存疑（无工具、便宜，产出结构化疑点清单）
         let suspects = []
         try {
           const run1 = await spawnOnce({
             label: 'critic-suspects',
-            prompt: baseContext + CRITIC_SUSPECT_PROMPT_SUFFIX,
+            prompt: suspectContext + CRITIC_SUSPECT_PROMPT_SUFFIX,
             agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 4096 },
             persona: CRITIC_SUSPECT_PERSONA,
             toolFilter: { allow: [] },
           })
           const r1 = await awaitRun(run1)
-          if (r1.result.stopReason !== 'completed') return fail('suspect phase ended with "' + r1.result.stopReason + '"')
-          if (r1.text === '') return fail('suspect phase returned an empty answer')
-          suspects = parseSuspectList(r1.text)
+          if (r1.result.stopReason !== 'completed') return await fail('suspect phase ended with "' + r1.result.stopReason + '": ' + r1.detail)
+          const parsedSuspects = parseSuspectResponse(r1.text)
+          if (!parsedSuspects.ok) return await fail('suspect phase format error: ' + parsedSuspects.error)
+          suspects = parsedSuspects.suspects.map((s, i) => ({ ...s, id: 's' + (i + 1), block: draftBlocks.some((b) => b.id === s.block) ? s.block : undefined }))
+          allSuspects = suspects
         } catch (suspectError) {
-          return fail('suspect phase failed: ' + String(suspectError && suspectError.message || suspectError))
+          return await fail('suspect phase failed: ' + String(suspectError && suspectError.message || suspectError))
         }
         // host 机械分诊：bearing 排序 + 预算截取，清单定型。
         const triage = triageSuspects(suspects, budget)
+        selectedSuspects = triage.chosen
         suspectsMeta = { total: suspects.length, triaged: triage.chosen.length, skipped: triage.skipped.length }
         if (triage.chosen.length > 0) {
-          let listText = 'Suspect list from phase 1 (' + suspects.length + ' total; ' + triage.skipped.length +
-            ' pre-triaged as UNCHECKED by the pipeline to fit your budget — they count toward 未查, do NOT verify or annotate them):\n'
+          let listText = 'Ordered suspect list (' + triage.chosen.length + ' suspects given to you). ' + triage.skipped.length +
+            ' other suspects were withheld: do NOT verify, annotate, or count those in your stats; the pipeline adds them separately.\n'
           triage.chosen.forEach((s, i) => {
-            listText += (i + 1) + '. ' + (s.block ? '[' + s.block + '] ' : '') + s.suspect + ' — falsify: ' + (s.falsify || '（未给出）') + '\n'
+            listText += s.id + '. ' + (s.block ? '[' + s.block + '] ' : '') + s.suspect + ' — falsify: ' + (s.falsify || '（未给出）') + '\n'
           })
           progress.phase = 2
           progress.suspects = triage.chosen.length
@@ -1553,24 +1820,34 @@ class AdvisorReviewService extends TypertRemoteService {
               label: 'critic',
               prompt: baseContext + '\n\n' + listText + CRITIC_VERIFY_PROMPT_SUFFIX,
               agentOptions: { provider: cfg.criticProvider, model: cfg.criticModel, maxTokens: 16384 },
-              persona: criticExplorePersona(budget) + RUBRIC_ADDENDUM,
+              persona: criticExplorePersona(budget),
               toolFilter: { allow: ['read', 'grep', 'glob'] },
               abort: phase2Abort,
             })
           } catch (spawnError) {
-            return fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
+            return await fail('critic spawn failed: ' + String(spawnError && spawnError.message || spawnError))
           }
           const watchdog = createBudgetWatchdog({
             agents, runId: run2.id, budget,
             onBreach: () => { budgetAborted = true; phase2Abort.abort() },
           })
-          progress.toolCalls = () => watchdog.calls()
+          const phaseControl = stageControls.get(run2.id)
+          progress.toolCalls = () => phaseControl?.used ?? watchdog.calls()
           progress.action = () => watchdog.action()
           this.liveCriticChildren.add(run2.id)
           try {
             const result = await run2.result
+            const observedCalls = watchdog.stop()
+            const control = stageControls.get(run2.id)
+            toolCalls = control?.used ?? observedCalls
+            budgetAborted = budgetAborted || !!control?.breached || observedCalls > budget
+            operation.check()
             text = outputText(result.output)
-            if (budgetAborted || result.stopReason !== 'completed' || text === '') {
+            if (!budgetAborted && result.stopReason !== 'completed') {
+              return await fail('critic ended with "' + result.stopReason + '": ' + childErrorDetail(run2))
+            }
+            if (!budgetAborted && text === '') return await fail('critic returned an empty answer')
+            if (budgetAborted) {
               // 抓死前部分卷宗（dispose 前子会话仍可读）。
               try {
                 const child = agents.get(run2.id)
@@ -1585,20 +1862,34 @@ class AdvisorReviewService extends TypertRemoteService {
                 }
               } catch { /* 部分卷宗尽力而为 */ }
               if (partialText === '') partialText = text
-              needSalvage = true
-              salvageReason = budgetAborted ? 'budget exceeded' : 'critic ended with "' + result.stopReason + '"' + (text === '' ? ' and empty output' : '')
+              // Do not pay another model to turn an empty investigation into
+              // a verdict. Require an explicit dossier with a cited finding.
+              const recovered = parseOutcomeRows(partialText).rows
+              salvageRows = selectedSuspects.map((s) => {
+                const candidates = recovered.filter((row) => row.id === s.id)
+                const row = candidates.length === 1 ? candidates[0] : undefined
+                return row && row.outcome !== 'unchecked' && /(?:[\w./-]+:\d+|\b(?:read|grep|glob|bash|web_fetch|web_search)\b)/i.test(row.evidence)
+                  ? row : { id: s.id, outcome: 'unchecked', evidence: '' }
+              })
+              needSalvage = salvageRows.some((row) => row.outcome !== 'unchecked')
+              salvageReason = 'budget exceeded'
+              if (!needSalvage) return await fail('budget exceeded; no recoverable cited dossier, salvage skipped')
             }
           } finally {
-            toolCalls = watchdog.stop()
-            this.liveCriticChildren.delete(run2.id)
-            await run2.dispose()
+            watchdog.stop()
+            await releaseRun(run2)
           }
           if (needSalvage) {
+            operation.check()
+            if (operation.requests() >= (cfg.criticMaxRequests ?? 16)) return await fail('model request limit reached; salvage skipped')
+            progress.phase = 3
+            progress.action = () => ({ kind: 'thinking' })
             // 熔断抢救（仅一次）：无工具书写员拿部分卷宗出最终裁决。
             this.ctx.logger?.warn('dsh-advisor: phase 2 aborted (%s); running one-shot salvage writer', salvageReason)
-            const salvagePrompt = baseContext + '\n\n' + listText +
-              '\n\nPARTIAL dossier text recovered from the aborted critic (possibly empty or mid-sentence):\n"""\n' +
-              (partialText === '' ? '（空）' : partialText.slice(0, 6000)) + '\n"""' + CRITIC_SALVAGE_PROMPT_SUFFIX
+            const salvagePrompt = suspectContext + '\n\n' + listText +
+              '\n\nFROZEN investigator findings (already checked BEFORE the abort; your lack of tools does NOT undo these findings):\n' +
+              salvageRows.map((row) => '- result: ' + row.id + ' | outcome: ' + row.outcome + ' | evidence: ' + (row.evidence || 'none')).join('\n') +
+              '\n\nCopy these outcomes unchanged. Only write annotations for frozen defect ids; do not reassess the world or the author tool activity.' + CRITIC_SALVAGE_PROMPT_SUFFIX
             try {
               const run3 = await spawnOnce({
                 label: 'critic-salvage',
@@ -1609,37 +1900,45 @@ class AdvisorReviewService extends TypertRemoteService {
               })
               const r3 = await awaitRun(run3)
               if (r3.result.stopReason !== 'completed' || r3.text === '') {
-                return fail('phase 2 aborted (' + salvageReason + ') and the salvage writer also failed (stopReason ' + r3.result.stopReason + ')')
+                return await fail('phase 2 aborted (' + salvageReason + ') and the salvage writer also failed (stopReason ' + r3.result.stopReason + ')')
               }
               text = r3.text
               salvaged = true
             } catch (salvageError) {
-              return fail('phase 2 aborted (' + salvageReason + '); salvage spawn failed: ' + String(salvageError && salvageError.message || salvageError))
+              return await fail('phase 2 aborted (' + salvageReason + '); salvage spawn failed: ' + String(salvageError && salvageError.message || salvageError))
             }
           }
         }
       }
-      // 阶段 1 零清单短路：无可证伪疑点即 pass，不烧阶段 2 的 spawn。
-      if (explore && suspectsMeta !== undefined && suspectsMeta.triaged === 0 && text === '') {
-        text = '## verdict: pass\nsummary: 无可证伪疑点（存疑阶段清单为空）。\nstats: 排查 0 · 证伪 0 · 排除 0 · 未查 ' + suspectsMeta.skipped
+      if (explore && suspectsMeta?.triaged === 0 && text === '') {
+        text = '## verdict: pass\nsummary: 存疑阶段未提出疑点；未进行独立核实。\nstats: 排查 0 · 证伪 0 · 排除 0 · 未查 0'
       }
-      const parsed = parseCriticReview(text, draft, draftBlocks, { explore })
-      // 机械分诊的未查数并入 stats（模型自报 Z + host 预截取 Z）。
-      if (parsed.stats !== undefined && suspectsMeta !== undefined && suspectsMeta.skipped > 0) {
-        parsed.stats = { ...parsed.stats, unchecked: (parsed.stats.unchecked || 0) + suspectsMeta.skipped }
-      }
+      operation.check()
+      const parsed = parseCriticReview(text, draft, draftBlocks, { explore, strict: true, ...(explore ? { selected: selectedSuspects, allSuspects, frozenRows: salvaged ? salvageRows : undefined } : {}) })
+      if (!parsed.valid) return await fail('critic format error: exactly one valid verdict section is required')
+      const coverage = reviewCoverage(parsed, { explore, suspects: suspectsMeta, salvaged })
+      parsed.stats = coverage.stats
       const annotations = parsed.annotations
-      const sound = /^SOUND:/m.test(text)
-        || (parsed.verdict === 'pass' && annotations.length === 0)
+      const sound = coverage.coverage === 'complete' && parsed.verdict === 'pass' && annotations.length === 0
+      // A free-form summary cannot certify withheld claims around the ledger.
+      const summary = parsed.outcomes
+        ? (parsed.stats.checked === 0 ? '未提出可证伪疑点；未进行独立核实。'
+          : '复核记录：' + parsed.stats.checked + ' 项疑点，' + parsed.stats.confirmed + ' 项确认问题，' + parsed.stats.excluded + ' 项排除，' + parsed.stats.unchecked + ' 项未查。')
+        : parsed.summary
       const entry = {
         reviewId, messageId, anchorSeq: target.seq,
-        status: annotations.length > 0 ? 'completed' : sound ? 'sound' : 'completed-unparsed',
+        status: coverage.coverage === 'partial' ? 'incomplete' : sound ? 'sound' : annotations.length ? 'completed' : 'unverified',
+        coverage: coverage.coverage,
+        ...(coverage.coverageNote ? { coverageNote: coverage.coverageNote } : {}),
+        ...(parsed.verdictAdjusted ? { verdictAdjusted: true } : {}),
+        ...(parsed.outcomes ? { outcomes: parsed.outcomes, ignoredAnnotations: parsed.ignoredAnnotations } : {}),
+        modelRequests: operation.requests(),
         sound,
         ...(parsed.verdict === undefined ? {} : { verdict: parsed.verdict }),
-        ...(parsed.summary === '' ? {} : { summary: parsed.summary }),
-        // 契约 v3：模型自报的排查/证伪/排除统计 + 运行时实采的探索元数据
-        // （预算与实际 tool/call 计数——自报与实测并列，交叉校验失真一眼
-        // 可见；A/B 评估回路的地面真值）。
+        ...(summary === '' ? {} : { summary }),
+        // New exploratory stats are counted from the host-owned identity
+        // ledger. Tool counts are a distinct resource metric, never progress
+        // through the suspect pool or a monetary budget.
         ...(parsed.stats === undefined ? {} : { stats: parsed.stats }),
         ...(explore ? { explore: { budget, toolCalls, ...(salvaged ? { salvaged: true } : {}) } } : {}),
         // 契约 v4：阶段 1 清单元数据（总数/送审/预截取未查）——统计诚实的
@@ -1660,14 +1959,25 @@ class AdvisorReviewService extends TypertRemoteService {
       try {
         await persistReview(sessionId, entry)
       } catch (persistError) {
-        return fail('review persistence failed: ' + String(persistError && persistError.message || persistError))
+        return await fail('review persistence failed: ' + String(persistError && persistError.message || persistError))
       }
       return { ok: true, review: entry }
     } catch (error) {
-      return fail('unexpected: ' + String(error && error.message || error))
+      return await fail('unexpected: ' + String(error && error.message || error))
     } finally {
-      this.inFlight.delete(messageId)
-      this.progressByMessage.delete(messageId)
+      // All stage handles are awaited before the operation leaves the registry.
+      for (const [id, c] of stageControls) {
+        c.abort.abort()
+        try { await c.run.dispose() } catch (error) { this.ctx.logger?.warn('Ciel child cleanup failed: %s', error.message) }
+        operation.signal.removeEventListener('abort', c.onCancel)
+        this.children.delete(id)
+        this.liveCriticChildren.delete(id)
+      }
+      operation.dispose()
+      this.activeOperations.delete(operation)
+      this.inFlight.delete(key)
+      this.activeSessions.delete(sessionId)
+      this.progressByMessage.delete(key)
     }
   }
 
@@ -1682,14 +1992,20 @@ class AdvisorReviewService extends TypertRemoteService {
    */
   async feedback(request) {
     try {
+      if (this.getConfig().enabled === false) return { ok: false, error: 'Ciel disabled; feedback would start a model turn' }
       const sessionId = request && request.sessionId
       const agents = this.ctx.get('agents')
       if (agents === undefined) return { ok: false, error: 'agents service unavailable' }
       const agent = agents.get(sessionId)
       if (agent === undefined) return { ok: false, error: 'session is not live: ' + sessionId }
-      const items = Array.isArray(request.items) ? request.items : []
-      if (items.length === 0) return { ok: false, error: 'no annotations selected' }
       const reviewId = typeof request.reviewId === 'string' ? request.reviewId : ''
+      const stored = (await readReviews(sessionId)).find((entry) => entry.reviewId === reviewId)
+      if (!stored || !Array.isArray(stored.annotations)) return { ok: false, error: 'stored review not found' }
+      if (request.messageId && request.messageId !== stored.messageId) return { ok: false, error: 'review/message mismatch' }
+      const indices = new Set((Array.isArray(request.items) ? request.items : []).map((item) => item?.index))
+      const items = [...indices].filter((i) => Number.isInteger(i) && i >= 0 && i < stored.annotations.length)
+        .map((index) => ({ ...stored.annotations[index], index }))
+      if (items.length === 0) return { ok: false, error: 'no annotations selected' }
       const keyOf = (item) => (reviewId !== '' ? reviewId : 't:' + String(item.title)) + '#' + String(item.index)
       const sent = await this.sentSet(sessionId)
       const fresh = items.filter((item) => !sent.has(keyOf(item)))
@@ -1697,11 +2013,15 @@ class AdvisorReviewService extends TypertRemoteService {
       if (fresh.length === 0) return { ok: true, delivered: 0, skipped: items.length, skippedIndices }
       const lines = [
         '[advisor:review-feedback] 用户逐条确认了批评者对你此前回复的以下批注，请按 author-owns-the-remedy 自行修复对应问题（不必逐条回复，修复后在产物中体现）：',
+        '原消息: ' + stored.messageId + ' · 评审: ' + reviewId,
+        '证据是批评者引用的发现，仍需核对与当前工作是否相符；不要因批注存在就盲目修改。',
       ]
       for (const item of fresh) {
         lines.push('')
         lines.push('### [' + (item.severity === 'blocker' ? 'blocker' : 'nit') + '] ' + String(item.title || '（无标题）'))
+        if (item.block) lines.push('block: ' + String(item.block))
         if (item.anchor) lines.push('anchor: ' + String(item.anchor))
+        if (item.evidence) lines.push('evidence: ' + String(item.evidence))
         if (item.comment) lines.push('comment: ' + String(item.comment))
       }
       agent.followup({
@@ -1777,12 +2097,26 @@ export {
   createBudgetWatchdog,
   turnEvidence,
   parseSuspectList,
+  parseSuspectResponse,
+  parseOutcomeRows,
+  reconcileReviewLedger,
+  reviewCoverage,
+  createReviewOperation,
+  createConsultationGate,
+  AdvisorReviewService,
   triageSuspects,
   appendFeedback,
   readFeedbackTriage,
 }
 
 export function apply(ctx, config) {
+  const activeOperations = new Set()
+  const consultationGate = createConsultationGate()
+  ctx.effect(() => async () => {
+    const pending = [...activeOperations]
+    for (const operation of pending) operation.cancel('plugin stopped')
+    await Promise.all(pending.map((operation) => operation.done))
+  }, 'Ciel: cancel and drain owned model calls')
   // ── settings seam: the resolved `ciel` section (schema defaults over the
   // composition entry over the user document) feeds every later consultation.
   // (0.11.0 renamed the namespace `advisor` → `ciel` to clear the collision
@@ -1790,6 +2124,18 @@ export function apply(ctx, config) {
   // Wired through ctx.inject so the plugin still activates when the settings
   // service is absent (the composition config then stands alone).
   let current = () => config
+  const beginAdvisorCall = (signal) => {
+    const operation = createReviewOperation({ timeoutMs: (current().advisorTimeoutSeconds ?? 180) * 1000, maxRequests: 1 })
+    const onAbort = () => operation.cancel('advisor cancelled')
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+    activeOperations.add(operation)
+    return { operation, finish: () => {
+      signal?.removeEventListener('abort', onAbort)
+      operation.dispose()
+      activeOperations.delete(operation)
+    } }
+  }
   let resyncGuidance = () => {}
   ctx.inject(['settings'], (sctx) => {
     const scope = sctx.settings.register('ciel', Config, { base: config })
@@ -1800,7 +2146,10 @@ export function apply(ctx, config) {
       },
       'dsh-ciel: settings fallback',
     )
-    scope.watch(() => resyncGuidance())
+    scope.watch(() => {
+      resyncGuidance()
+      if (current().enabled === false) for (const operation of activeOperations) operation.cancel('Ciel disabled')
+    })
 
     // ── legacy migration: the temporary `advisor` registration is owned by
     // this throwaway fiber, so disposing it after the copy attempt frees the
@@ -1843,7 +2192,7 @@ export function apply(ctx, config) {
         dispose()
         dispose = null
       }
-      if (current().guidanceEnabled) {
+      if (current().enabled !== false && current().guidanceEnabled) {
         dispose = spctx.systemPrompt.section({
           name: 'advisor:guidance',
           order: 40,
@@ -1920,10 +2269,13 @@ export function apply(ctx, config) {
   // agent, so one listener can pin the configured effort onto exactly the
   // live advisor children tracked below. `provider` (or an empty value)
   // leaves the request untouched.
-  const liveAdvisorChildren = new Set()
+  const liveAdvisorChildren = new Map()
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
     if (agent === undefined || !liveAdvisorChildren.has(agent.id)) return next()
+    const operation = liveAdvisorChildren.get(agent.id)
+    if (current().enabled === false) operation.cancel('Ciel disabled')
+    operation.beforeRequest()
     const effort = current().reasoningEffort
     if (effort === undefined || effort === '' || effort === 'provider') return next()
     const resolved = await next()
@@ -1940,6 +2292,7 @@ export function apply(ctx, config) {
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
     if (agent === undefined || !liveCriticChildren.has(agent.id)) return next()
+    reviewService.beforeRequest(agent.id)
     const effort = current().criticEffort
     if (effort === undefined || effort === '' || effort === 'provider') return next()
     const resolved = await next()
@@ -1955,12 +2308,25 @@ export function apply(ctx, config) {
         face: 'host',
         schemas: [],
         model: { services: [], events: [], objects: [] },
-        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback'), reviewInvocation('triage'), reviewInvocation('progress')],
+        invocations: [reviewInvocation('list'), reviewInvocation('start'), reviewInvocation('feedback'), reviewInvocation('triage'), reviewInvocation('progress'), reviewInvocation('cancel')],
       }),
       'dsh-advisor: review remote descriptors',
     )
   })
-  new AdvisorReviewService(ctx, liveCriticChildren, () => current())
+  const reviewService = new AdvisorReviewService(ctx, liveCriticChildren, () => current(), activeOperations)
+  ctx.inject(['tools'], (tctx) => {
+    if (typeof tctx.tools.guard !== 'function') return
+    tctx.tools.guard((exec) => {
+      const advisor = liveAdvisorChildren.get(exec.agent?.id)
+      if (advisor) { advisor.cancel('unexpected tool in advisor'); return 'advisor has no tools' }
+      return reviewService.guard(exec)
+    })
+    reviewService.guardAvailable = true
+    tctx.effect(() => () => {
+      reviewService.guardAvailable = false
+      for (const operation of reviewService.inFlight.values()) operation.cancel('tool guard unavailable')
+    }, 'Ciel: review guard readiness')
+  })
 
   // ── the ask_advisor tool. Each call is a fresh one-shot child on the spawn
   // provider: the stateless follow-up channel the consultation protocol
@@ -2007,6 +2373,8 @@ export function apply(ctx, config) {
           throw new Error('ask_advisor requires a calling agent (exec.agent was undefined)')
         }
         const cfg = current()
+        if (cfg.enabled === false) throw new Error('Ciel disabled')
+        if (!reviewService.guardAvailable) throw new Error('Ciel requires tools.guard() before model calls')
         // ── Mechanized negative gates (prompt text advises; these decide).
         // Gate order is cheapest-first; each error teaches the remedy.
         if (typeof args.context !== 'string' || args.context.trim() === '') {
@@ -2017,9 +2385,7 @@ export function apply(ctx, config) {
         }
         const facts = gateFacts(parent)
         if (facts === undefined) {
-          if (ctx.logger && typeof ctx.logger.warn === 'function') {
-            ctx.logger.warn('dsh-advisor: session telemetry unreadable; consultation gates fail open')
-          }
+          throw new Error('advisor telemetry unavailable; refusing an unmetered consultation')
         } else {
           if (cfg.requireExploration && !facts.explorationDone) {
             throw new Error(
@@ -2043,10 +2409,15 @@ export function apply(ctx, config) {
           }
         }
         const consultation = `Established facts and constraints:\n${args.context.trim()}\n\nQuestion:\n${args.question}`
-        const run = await tctx.subagents.start('spawn', {
+        const release = consultationGate.reserve(parent, facts, cfg.maxCallsPerTurn)
+        const owned = beginAdvisorCall(exec.signal)
+        let run
+        try {
+          owned.operation.check()
+          run = await tctx.subagents.start('spawn', {
           label: 'advisor',
           parent,
-          signal: exec.signal,
+          signal: owned.operation.signal,
           prompt: [{ type: 'text', text: consultation }],
           agentOptions: {
             provider: cfg.provider,
@@ -2066,11 +2437,12 @@ export function apply(ctx, config) {
           // to the same web consensus the caller would find.
           toolFilter: { allow: [] },
         })
-        // Track before the first child request can race: publication resolves
-        // start() before the prompt followup reaches the child's loop.
-        liveAdvisorChildren.add(run.id)
-        try {
+        // The published handle is tracked before its first request.
+        liveAdvisorChildren.set(run.id, owned.operation)
+        const childTools = run.localAgent?.ctx?.get('tools')
+        if (typeof childTools?.presentAs === 'function') childTools.presentAs('native')
           const result = await run.result
+          owned.operation.check()
           const text = outputText(result.output)
           if (result.stopReason !== 'completed') {
             const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
@@ -2084,8 +2456,9 @@ export function apply(ctx, config) {
           const parsed = parseAdvisorItems(answer)
           return { text: answer, items: parsed.items, issues: parsed.issues }
         } finally {
-          liveAdvisorChildren.delete(run.id)
-          await run.dispose()
+          try {
+            if (run) { liveAdvisorChildren.delete(run.id); await run.dispose() }
+          } finally { owned.finish(); release() }
         }
       },
     })
@@ -2109,18 +2482,22 @@ export function apply(ctx, config) {
           return { kind: 'error', text: '用法：/advise 你的问题 —— 上下文会从本会话最近对话自动装配' }
         }
         const cfg = current()
+        if (cfg.enabled === false) return { kind: 'error', text: 'Ciel disabled' }
+        if (!reviewService.guardAvailable) return { kind: 'error', text: 'Ciel requires tools.guard() before model calls' }
         const assembled = assembleAdviseContext(invocation.agent)
         const consultation =
           'Established facts and constraints:\n' +
           '（以下上下文由 /advise 命令从本会话最近对话自动装配，可能不完整；如需补充请以对话说明为准）\n' +
           (assembled === '' ? '（本会话暂无可装配的对话内容）' : assembled) +
           '\n\nQuestion:\n' + question
+        const owned = beginAdvisorCall(invocation.signal)
         let run
         try {
+          owned.operation.check()
           run = await cctx.subagents.start('spawn', {
             label: 'advise',
             parent: invocation.agent,
-            signal: invocation.signal,
+            signal: owned.operation.signal,
             prompt: [{ type: 'text', text: consultation }],
             agentOptions: {
               provider: cfg.provider,
@@ -2132,15 +2509,18 @@ export function apply(ctx, config) {
             toolFilter: { allow: [] },
           })
         } catch (spawnError) {
+          owned.finish()
           return {
             kind: 'error',
             text: 'advisor spawn failed: ' + String((spawnError && spawnError.message) || spawnError),
           }
         }
-        // 与 ask_advisor 同：start() 先于子代理首个请求解析，立刻进跟踪集。
-        liveAdvisorChildren.add(run.id)
+        liveAdvisorChildren.set(run.id, owned.operation)
         try {
+          const childTools = run.localAgent?.ctx?.get('tools')
+          if (typeof childTools?.presentAs === 'function') childTools.presentAs('native')
           const result = await run.result
+          owned.operation.check()
           const text = outputText(result.output)
           if (result.stopReason !== 'completed') {
             return {
@@ -2175,7 +2555,7 @@ export function apply(ctx, config) {
           }
         } finally {
           liveAdvisorChildren.delete(run.id)
-          try { await run.dispose() } catch { /* 忽略清理失败 */ }
+          try { await run.dispose() } finally { owned.finish() }
         }
       },
     })
