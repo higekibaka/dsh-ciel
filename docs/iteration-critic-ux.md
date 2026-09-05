@@ -1,6 +1,8 @@
 # 批评者体验迭代计划（0.12.0 → 0.13.0）
 
 > 状态：已立项（2026-09-01，会话内与作者对齐）。本文档是实施层计划；
+> 本文为历史设计记录；提及的 `prototypes/` 和逐批原始 A/B 报告仅本地留存，不随仓库提交。
+>
 > 哲学论证见 [design.md](design.md)，本计划的每一项都标注了对设计原则的
 > 影响审计。体验原型：`prototypes/verdict-card-demo.html`（0.12.0 裁决卡）、
 > `prototypes/exploratory-critic-demo.html`（0.13.0 探索型批评者：进展流 +
