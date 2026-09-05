@@ -3,5 +3,56 @@ node_modules/
 .DS_Store
 pnpm-lock.yaml
 
-# 实拍临时截图（证据留存本地，不进仓库）
-docs/images/_*.png
+# Local credentials / authentication state (never force-add these).
+.env
+.env.*
+!.env.example
+!.env.sample
+.npmrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+cookies.txt
+*cookies*.txt
+*storage-state*.json
+*storageState*.json
+.auth/
+playwright/.auth/
+.dsh/
+*.jsonl
+*.jsonl.zstd
+*.har
+*.tgz
+*.bak
+*.original-backup
+/test-results/
+/playwright-report/
+/.local/
+/.cache/
+/.npm-cache/
+/archive/
+
+# Local history, drafts and raw test evidence are not public deliverables.
+/prototypes/
+/docs/stability-plan.md
+/docs/upstream-agent-team-race-discussion*.md
+/docs/ab/*
+!/docs/ab/ab-comparison-0.13.0.md
+!/docs/ab/stability-verification.md
+
+# Only the six images currently used by the public READMEs are publishable.
+/docs/images/*
+!/docs/images/advise-card.png
+!/docs/images/ciel-card-demo.gif
+!/docs/images/ciel-card-groups-dark.png
+!/docs/images/ciel-card-groups-light.png
+!/docs/images/ciel-card-critic-dark.png
+!/docs/images/ciel-card-critic-light.png

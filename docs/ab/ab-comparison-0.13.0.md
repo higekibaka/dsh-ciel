@@ -2,7 +2,7 @@
 
 > 评估台：`scripts/ab-harness.js` + `ab-corpus.json`（五场景，逐场景对账
 > verdict / 自报 stats / 事件流实测 toolCalls / evidence 覆盖 / 耗时 /
-> 预期符合度）。原始批次：`ab-flash-v3.{json,md}`（契约 v3.2 同代）。
+> 预期符合度）。原始批次：`ab-flash-v3.{json,md}`（契约 v3.2 同代，仅本地留存，不随仓库公开）。
 > 契约版本：v3.2（两批评测使用同一 persona，无 prompt 变量污染）。
 
 ## 批次对照
