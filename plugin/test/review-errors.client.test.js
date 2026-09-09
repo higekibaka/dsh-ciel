@@ -12,11 +12,12 @@ test('a failed new request is visible without replacing an older durable review'
   await flush()
   tree = rt.runner.render(rt.ReviewButton, { sessionId: 's', messageId: 'm' })
   assert.equal(rt.runtime.store.byMessage.get('m').reviewId, 'r1')
-  assert.equal(tree.__element[4].__element[1].className, 'dsr-start-error')
-  assert.match(tree.__element[4].__element[1].title, /connection lost/)
+  const errorNode = value => value.__element.slice(2).find(node => node?.__element?.[1]?.className === 'dsr-start-error')
+  assert.ok(errorNode(tree))
+  assert.match(errorNode(tree).__element[1].title, /connection lost/)
   // A newly reconciled host result clears the warning by review identity,
   // without comparing the host clock to the client's failure timestamp.
   rt.runtime.absorb({ ...previous, reviewId: 'r2', createdAt: 100 })
   tree = rt.runner.render(rt.ReviewButton, { sessionId: 's', messageId: 'm' })
-  assert.equal(tree.__element[4], null)
+  assert.equal(errorNode(tree), undefined)
 })

@@ -6,13 +6,29 @@
 
 import { readFileSync } from 'node:fs'
 
-export function loadClientFactory() {
+// Interface-only fixtures, not native styling proof. The native UI acceptance
+// script supplies the real shared components and ReactDOM instead.
+export function fixtureClientRequire(React, modules = {}) {
+  const primitives = {
+    Switch: ({ checked, onChange, label, disabled, title, className }) => React.createElement('button', { type: 'button', role: 'switch', 'aria-checked': checked, 'aria-label': label, disabled, title, className, onClick: () => onChange(!checked), 'data-fixture-native': 'Switch' }),
+    Tag: ({ tone = 'outline', className, children }) => React.createElement('span', { 'data-tone': tone, className, 'data-fixture-native': 'Tag' }, children),
+  }
+  return name => {
+    if (Object.hasOwn(modules, name)) return modules[name]
+    if (name === 'react') return React
+    if (name === 'react-dom') return { createPortal: (children, container, key) => ({ __portal: { children, container, key } }) }
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+    return {}
+  }
+}
+
+export function loadClientFactory(documentOverride) {
   let captured = null
   const src = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   const windowStub = { __ModuleLoader__: { load: (m) => { captured = m } } }
   // Minimal DOM so apply()'s <style> append works; ReviewButton effects that
   // touch the DOM walk away (rootRef is null in the harness).
-  const doc = {
+  const doc = documentOverride || {
     createElement: () => ({
       tagName: '', textContent: '', className: '', style: {},
       appendChild() {}, remove() {}, setAttribute() {}, addEventListener() {},
@@ -22,7 +38,7 @@ export function loadClientFactory() {
   }
   const fn = new Function('window', 'document', src)
   fn.call({}, windowStub, doc)
-  return { captured, factory: (reactStub) => captured.factory((name) => (name === 'react' ? reactStub : {})), doc }
+  return { captured, factory: (reactStub, modules) => captured.factory(fixtureClientRequire(reactStub, modules)), doc }
 }
 
 export function makeHookRunner() {
@@ -66,7 +82,7 @@ export function makeHookRunner() {
  * @returns {Promise<object>} live internals + stubs needed to drive the wiring.
  */
 export async function createRuntime(rpc = {}, opts = {}) {
-  const { captured, factory, doc } = loadClientFactory()
+  const { captured, factory, doc } = loadClientFactory(opts.document)
   const runner = makeHookRunner()
   const reactStub = {
     createElement: (...a) => ({ __element: a }),

@@ -28,13 +28,17 @@ jobs:
           registry-url: https://registry.npmjs.org/
       - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
         run: npm install -g npm@latest
+      - name: Install root development dependencies
+        run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies (dev only; never shipped)
-        run: pnpm install --frozen-lockfile=false
-        working-directory: plugin
+        run: pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+      - name: Verify bundled client matches plugin/src
+        run: node scripts/build-client.mjs --check
       - name: Syntax check
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
+          node --check plugin/ptc-runtime.js
       - name: Unit tests
         run: node --test
         working-directory: plugin

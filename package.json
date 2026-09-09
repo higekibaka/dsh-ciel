@@ -1,0 +1,14 @@
+{
+  "name": "dsh-ciel-development",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "check:client": "node scripts/build-client.mjs --check",
+    "test": "node --test plugin/test/*.test.js"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-util-workspace-path": "0.1.5-alpha.2",
+    "esbuild": "0.28.1"
+  }
+}

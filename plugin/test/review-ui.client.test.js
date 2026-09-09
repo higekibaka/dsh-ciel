@@ -7,6 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fixtureClientRequire } from './review-ui.harness.js'
 
 function loadClientModule() {
   let captured = null
@@ -25,7 +26,7 @@ function loadClientModule() {
   })
   const fn = new Function('window', 'document', src)
   fn.call({}, windowStub, {})
-  const module = captured.factory((name) => (name === 'react' ? reactStub : {}))
+  const module = captured.factory(fixtureClientRequire(reactStub))
   return module.exports ?? module
 }
 
@@ -37,7 +38,10 @@ const ann = (o) => ({ severity: 'nit', title: '', anchor: '', comment: '', ...o 
 // ── Remote descriptor completeness ────────────────────────────────────────
 test('advisorReview Remote exposes the cancel descriptor', () => {
   assert.ok(t.remoteMethodNames.includes('cancel'))
-  assert.equal(t.remoteMethodNames.length, 6)
+  assert.ok(t.remoteMethodNames.includes('callModelUsage'))
+  assert.ok(t.remoteMethodNames.includes('prepareFeedback'))
+  for (const method of ['readReview', 'readEvidence', 'readAdvice']) assert.ok(t.remoteMethodNames.includes(method))
+  assert.equal(t.remoteMethodNames.length, 11)
 })
 
 test('list/start/feedback/triage/progress remain present', () => {
@@ -50,7 +54,7 @@ test('list/start/feedback/triage/progress remain present', () => {
 test('Config defaults add enabled + all safety timers', () => {
   assert.equal(t.defaults.enabled, true)
   assert.equal(t.defaults.criticTimeoutSeconds, 180)
-  assert.equal(t.defaults.criticMaxRequests, 16)
+  assert.equal(t.defaults.criticMaxRequests, undefined)
   assert.equal(t.defaults.criticMaxTokens, 16384)
   assert.equal(t.defaults.advisorTimeoutSeconds, 180)
   // Model defaults are preserved (do not change user routes).
@@ -61,17 +65,14 @@ test('Config defaults add enabled + all safety timers', () => {
 test('settings field definitions declare enabled + safety params with ranges', () => {
   const enabled = t.fieldDefinition('enabled')
   assert.equal(enabled.kind, 'check')
-  assert.match(enabled.label, /启用批评者评审/)
+  assert.equal(enabled.label, '启用 Ciel')
 
   const timeout = t.fieldDefinition('criticTimeoutSeconds')
   assert.equal(timeout.kind, 'number')
   assert.equal(timeout.min, 10)
   assert.equal(timeout.max, 600)
 
-  const maxReq = t.fieldDefinition('criticMaxRequests')
-  assert.equal(maxReq.kind, 'number')
-  assert.equal(maxReq.min, 2)
-  assert.equal(maxReq.max, 32)
+  assert.equal(t.fieldDefinition('criticMaxRequests'), undefined)
 
   const maxTok = t.fieldDefinition('criticMaxTokens')
   assert.equal(maxTok.kind, 'number')
@@ -85,15 +86,18 @@ test('settings field definitions declare enabled + safety params with ranges', (
 })
 
 test('settings field keys include every new safety key', () => {
-  for (const k of ['enabled', 'criticTimeoutSeconds', 'criticMaxRequests', 'criticMaxTokens', 'advisorTimeoutSeconds']) {
+  for (const k of ['enabled', 'criticTimeoutSeconds', 'criticMaxTokens', 'advisorTimeoutSeconds']) {
     assert.ok(t.fieldKeys.includes(k), `missing field key ${k}`)
   }
 })
 
-test('critic explore keeps its existing lower bound (0 does not disable models)', () => {
-  const explore = t.fieldDefinition('criticExploreBudget')
-  assert.equal(explore.min, 0)
-  assert.equal(explore.max, 10)
+test('deprecated count controls are absent and the file-reading switch remains', () => {
+  for (const key of ['criticExploreBudget', 'criticMaxRequests']) {
+    assert.equal(t.fieldDefinition(key), undefined)
+    assert.equal(t.defaults[key], undefined)
+    assert.equal(t.fieldKeys.includes(key), false)
+  }
+  assert.equal(t.fieldDefinition('criticExploreEnabled').kind, 'check')
 })
 
 // ── Coverage derivation & green gating ────────────────────────────────────
@@ -136,11 +140,27 @@ test('statusButtonLabel never emits 无阻断/整体成立 for non-sound entries
   assert.equal(t.statusButtonLabel({ status: 'incomplete', verdict: 'pass', coverage: 'partial', annotations: [ann({})] }), '◇ 部分核实 · 1 条')
   assert.equal(t.statusButtonLabel({ status: 'unverified', coverage: 'not-verified', annotations: [] }), '◇ 未核实 · 0 条')
   assert.equal(t.statusButtonLabel({ status: 'cancelled' }), '已取消 · 重新评审')
-  assert.equal(t.statusButtonLabel({ status: 'error', error: 'budget exceeded' }), '预算熔断 · 重试')
+  assert.equal(t.statusButtonLabel({ status: 'error', error: 'budget exceeded' }), '读取上限 · 重试')
   // a 'sound' status that is NOT really sound (partial coverage) is not green
   assert.equal(t.statusButtonLabel({ status: 'sound', coverage: 'partial', annotations: [ann({})] }), '批注 1 · 复审')
   // sound still green
   assert.equal(t.statusButtonLabel({ status: 'sound', coverage: 'complete', annotations: [ann({}), ann({})] }), '✓ 无阻断 (2)')
+})
+
+test('budget error explains limits from this call, including legacy records', () => {
+  const error = 'budget exceeded; no recoverable cited dossier, salvage skipped'
+  const label = t.reviewErrorText({ error, modelRequests: 12, diagnostics: { toolCalls: 10, budget: 10 } })
+  assert.match(label, /读取\/检索次数已达上限（10\/10）/)
+  assert.match(label, /没有可恢复的带引用核实结论/)
+  assert.match(label, /未追加模型整理/)
+  assert.match(label, /这不表示原回答有错/)
+  assert.match(label, /模型请求：12 次/)
+  assert.doesNotMatch(label, /budget exceeded/)
+  assert.doesNotMatch(t.reviewErrorText({ error }), /10\/10|模型请求：/)
+  assert.equal(t.reviewErrorText({ error: 'authentication failed' }), 'authentication failed')
+  const providerError = { status: 'error', error: 'critic ended with "error": provider budget exceeded' }
+  assert.equal(t.reviewErrorText(providerError), providerError.error)
+  assert.equal(t.statusButtonLabel(providerError), '评审失败 · 重试')
 })
 
 test('fully verified nits are nonblocking, not falsely labelled unverified', () => {
@@ -150,11 +170,13 @@ test('fully verified nits are nonblocking, not falsely labelled unverified', () 
   assert.equal(t.isSoundEntry({ ...entry, annotations: [ann({ severity: 'blocker' })] }), false)
 })
 
-test('verdict badge is neutral (not green) for a pass verdict that is not sound', () => {
+test('native status tags keep coverage separate from the verdict', () => {
+  assert.equal(t.verdictTagTone({ status: 'unverified', verdict: 'changes', coverage: 'not-verified' }), 'neutral')
+  assert.equal(t.verdictTagTone({ status: 'completed', verdict: 'changes', coverage: 'complete' }), 'danger')
   assert.equal(t.verdictBadgeText({ status: 'incomplete', verdict: 'pass', coverage: 'partial' }), '◇ 部分核实')
-  assert.equal(t.verdictBadgeClass({ status: 'incomplete', verdict: 'pass', coverage: 'partial' }), 'dsr-vbadge-neutral')
+  assert.equal(t.verdictTagTone({ status: 'incomplete', verdict: 'pass', coverage: 'partial' }), 'warning')
   assert.equal(t.verdictBadgeText({ status: 'sound', verdict: 'pass', coverage: 'complete' }), '✓ 整体成立')
-  assert.equal(t.verdictBadgeClass({ status: 'sound', verdict: 'pass', coverage: 'complete' }), 'dsr-vbadge-pass')
+  assert.equal(t.verdictTagTone({ status: 'sound', verdict: 'pass', coverage: 'complete' }), 'success')
 })
 
 // ── Progress units & phase labels ─────────────────────────────────────────
@@ -180,6 +202,21 @@ test('inFlightLabel phase1 says nomination and non-explore stays simple', () => 
   assert.ok(t.inFlightLabel({ phase: 1, explore: true }).includes('存疑分析'))
   assert.equal(t.inFlightLabel({ phase: 1, explore: false }), '评审中…')
   assert.equal(t.inFlightLabel(null), '评审中…')
+})
+
+test('time-only progress shows seconds remaining and query telemetry without a quota fraction', () => {
+  const label = t.inFlightLabel({ phase: 2, explore: true, limitMode: 'time', toolCalls: 121, remainingMs: 1501, suspects: 8 })
+  assert.match(label, /剩余 2 秒/)
+  assert.match(label, /已查询 121 次/)
+  assert.doesNotMatch(label, /121\//)
+  assert.match(t.inFlightLabel({ explore: false, limitMode: 'time', remainingMs: 500 }), /剩余 1 秒/)
+})
+
+test('deadline failures explain the time limit instead of a query quota', () => {
+  const entry = { status: 'error', error: 'suspect phase failed: review timeout', limits: { mode: 'time', timeoutSeconds: 180 } }
+  assert.match(t.reviewErrorText(entry), /总时限（180 秒）/)
+  assert.doesNotMatch(t.reviewErrorText(entry), /次数已达上限/)
+  assert.equal(t.statusButtonLabel(entry), '已到时限 · 重试')
 })
 
 // ── Selection restoration (delta + filter-only reload) ───────────────────

@@ -16,16 +16,59 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install root development dependencies
+        run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies
-        run: pnpm install --frozen-lockfile=false
-        working-directory: plugin
+        run: pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+      - name: Verify bundled client matches plugin/src
+        run: node scripts/build-client.mjs --check
       - name: Syntax check
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
+          node --check plugin/ptc-runtime.js
       - name: Unit tests
         run: node --test
         working-directory: plugin
       - name: Pack dry-run
-        run: npm pack --dry-run
+        run: npm pack --dry-run --ignore-scripts
         working-directory: plugin
+
+  # Offline integration against the pinned DSH target. No --live, no paid
+  # model calls. This job is a template added this round; it has not been
+  # executed on GitHub Actions yet.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install root and plugin dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+      - name: Checkout pinned DSH target
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: b2e3b2a0125854567a4a5fcba75782e42fe84901
+          path: .dsh-target
+      - name: Install DSH target dependencies
+        working-directory: .dsh-target
+        run: pnpm install --ignore-scripts --frozen-lockfile=false
+      - name: Build DSH target libraries
+        working-directory: .dsh-target
+        run: pnpm build:lib
+      - name: Offline DSH execution-chain replay
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-runtime.mjs
+      - name: Offline native sidebar verification
+        working-directory: .dsh-target
+        run: |
+          DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target \
+          TSX_TSCONFIG_PATH=$GITHUB_WORKSPACE/.dsh-target/tsconfig.base.client.json \
+          node --import tsx/esm $GITHUB_WORKSPACE/scripts/verify-sidebar-native.mjs

@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { BLOCK_FIXTURES } from './blocks.fixtures.js'
+import { fixtureClientRequire } from './review-ui.harness.js'
 
 const { splitMarkdownBlocks } = await import('../index.js')
 
@@ -40,7 +41,7 @@ function loadClientModule() {
   })
   const fn = new Function('window', 'document', src)
   fn.call({}, windowStub, {})
-  const module = captured.factory((name) => (name === 'react' ? reactStub : {}))
+  const module = captured.factory(fixtureClientRequire(reactStub))
   return module.exports ?? module
 }
 

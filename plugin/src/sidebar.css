@@ -1,0 +1,490 @@
+/*
+ * Ciel sidebar surfaces: the review, evidence, and advice tab bodies.
+ *
+ * Injected as one stylesheet by the plugin's client half (the module itself
+ * imports nothing). Every selector is scoped to this module's own
+ * `data-ciel-*` attributes, so nothing here can leak into the shell, another
+ * tab type. Button fill/hover/disabled states stay with the platform primitive;
+ * only Ciel action sizing and keyboard focus are enhanced here. Colors use
+ * the same fallbacks the shipped text preview uses.
+ *
+ * Layout contract: the root fills the pane's body as a column scroller owner
+ * (head fixed, inner region scrolls, actions fixed), and no surface may push
+ * the pane wider than it is — code lines wrap and every flex child that holds
+ * text carries `min-width: 0`.
+ */
+
+/* Actions are not status chips: native filled variants, larger hit areas,
+ * explicit labels, and a visible keyboard focus ring. Never fade the whole row. */
+[data-ciel-action] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-action]:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 3px;
+}
+
+[data-ciel-summary-head] {
+  opacity: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: default;
+}
+
+[data-ciel-summary-copy] {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-summary-action] {
+  display: inline-flex;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* ── the three surfaces ─────────────────────────────────────────────────── */
+
+[data-ciel-review],
+[data-ciel-evidence],
+[data-ciel-advice] {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: 1.6;
+}
+
+/* The loading / failed / unavailable / malformed panel: centered copy. */
+[data-ciel-state] {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 10px;
+  overflow: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: 1.6;
+}
+
+[data-ciel-state] > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-state='failed'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* ── headers ────────────────────────────────────────────────────────────── */
+
+[data-ciel-review-head] {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+[data-ciel-review-head] > [data-ciel-review-status] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+[data-ciel-review-status] > span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-evidence-head],
+[data-ciel-advice-head] {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  min-width: 0;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+[data-ciel-review-summary] {
+  margin: 0;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size, 14px);
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-review-meta],
+[data-ciel-review-coverage],
+[data-ciel-review-stats],
+[data-ciel-review-usage],
+[data-ciel-review-explore],
+[data-ciel-evidence-kind],
+[data-ciel-evidence-path],
+[data-ciel-evidence-range],
+[data-ciel-evidence-tool],
+[data-ciel-evidence-origin],
+[data-ciel-evidence-time],
+[data-ciel-evidence-sha],
+[data-ciel-advice-id],
+[data-ciel-advice-time],
+[data-ciel-advice-usage] {
+  margin: 0;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-evidence-path] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ── provenance and failure warnings ────────────────────────────────────── */
+
+[data-ciel-review-hint],
+[data-ciel-evidence-hint],
+[data-ciel-current-line-hint] {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-review-privacy],
+[data-ciel-evidence-limited],
+[data-ciel-evidence-unknown],
+[data-ciel-evidence-reported] {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  background: var(--dsw-alias-state-warn-tertiary);
+  border: 0.5px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 6px;
+}
+
+/* Withheld content is a boundary, not a warning about the file: neutral. */
+[data-ciel-evidence-withheld] {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  background: var(--dsw-alias-interactive-bg-hover);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+}
+
+/* ── review annotations ─────────────────────────────────────────────────── */
+
+[data-ciel-review-annotations] {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding-right: 2px;
+  overflow: auto;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+[data-ciel-annotation] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+}
+
+[data-ciel-annotation][data-ciel-focus],
+[data-ciel-advice-item][data-ciel-focus] {
+  background: var(--dsw-alias-state-business-tertiary);
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+[data-ciel-pick] {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  cursor: pointer;
+}
+
+[data-ciel-annotation-title] {
+  min-width: 0;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-annotation-anchor] {
+  margin: 0;
+  padding: 2px 0 2px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  border-left: 2px solid var(--dsw-alias-border-l3);
+}
+
+[data-ciel-annotation-comment] {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-annotation-evidence-text],
+[data-ciel-annotation-refs],
+[data-ciel-review-empty] {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-annotation-refs] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── fixed action rows ──────────────────────────────────────────────────── */
+
+[data-ciel-review-actions],
+[data-ciel-evidence-current] {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+[data-ciel-selected-count],
+[data-ciel-triage-hint],
+[data-ciel-current-none] {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+[data-ciel-note],
+[data-ciel-triage-note] {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-note='error'],
+[data-ciel-triage-note='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+[data-ciel-note='sent'] {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+/* ── evidence snippet ───────────────────────────────────────────────────── */
+
+[data-ciel-evidence-body] {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 0;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--dsw-alias-markdown-code-block);
+  border-radius: 6px;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+[data-ciel-line] {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+[data-ciel-line-number] {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  color: var(--dsw-alias-label-tertiary);
+  text-align: right;
+  user-select: none;
+}
+
+[data-ciel-line-text] {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-ciel-line-target] {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+/* ── advice ─────────────────────────────────────────────────────────────── */
+
+[data-ciel-advice] {
+  overflow: auto;
+}
+
+[data-ciel-advice-disclaimer] {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  background: var(--dsw-alias-bg-module-platform);
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+}
+
+[data-ciel-advice-text] {
+  margin: 0;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-ciel-advice-items] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-ciel-advice-item] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+}
+
+[data-ciel-advice-item-head] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+[data-ciel-advice-item-title] {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-advice-item-framing],
+[data-ciel-advice-item-pitfalls],
+[data-ciel-advice-item-verify] {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-advice-issues] {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+[data-ciel-advice-issues] > li {
+  overflow-wrap: anywhere;
+}
+
+[data-ciel-advice-raw] {
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+[data-ciel-advice-raw] > summary {
+  cursor: pointer;
+}
+
+/* ── narrow panes: less chrome, same wrapping, no sideways scroll ───────── */
+
+@media (max-width: 520px) {
+  [data-ciel-review],
+  [data-ciel-evidence],
+  [data-ciel-advice],
+  [data-ciel-state] {
+    gap: 6px;
+    padding: 8px 6px;
+  }
+
+  [data-ciel-review-actions],
+  [data-ciel-evidence-current],
+  [data-ciel-evidence-head],
+  [data-ciel-advice-head] {
+    gap: 6px;
+  }
+
+  [data-ciel-annotation] {
+    padding: 6px;
+  }
+}

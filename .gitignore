@@ -2,6 +2,12 @@ node_modules/
 *.log
 .DS_Store
 pnpm-lock.yaml
+!/pnpm-lock.yaml
+!/plugin/pnpm-lock.yaml
+
+# Local-only operational upgrade scripts: kept on disk, never published.
+/scripts/restart-ciel-web.mjs
+/scripts/finalize-ciel-upgrade.mjs
 
 # Local credentials / authentication state (never force-add these).
 .env
