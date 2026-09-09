@@ -1,0 +1,10 @@
+packages:
+  - '.'
+# Anchored allowlist: esbuild's postinstall builds its binary. pnpm 11 exits
+# non-zero on any ignored build script, so frozen CI installs need this.
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-util-workspace-path@0.1.5-alpha.2'

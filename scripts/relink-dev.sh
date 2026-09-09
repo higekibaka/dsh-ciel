@@ -11,4 +11,17 @@ TARGET="$(cd "$(dirname "$0")/../plugin" && pwd)/node_modules/@deepseek-ai"
 mkdir -p "$TARGET"
 ln -sfn "$SHARED/cordis" "$TARGET/cordis"
 ln -sfn "$SHARED/dsh-typert-protocol" "$TARGET/dsh-typert-protocol"
-echo "relinked: cordis, dsh-typert-protocol -> $SHARED"
+# New review-only peers are optional for history viewing, but a protected
+# review refuses to start unless the app supplies their current APIs.
+for package in dsh-subagent dsh-llm dsh-tools; do
+  if [ -r "$SHARED/$package/package.json" ]; then
+    if [ -e "$TARGET/$package" ] && [ ! -L "$TARGET/$package" ]; then
+      echo "refusing to overwrite installed directory: $TARGET/$package" >&2
+      exit 1
+    fi
+    ln -sfn "$SHARED/$package" "$TARGET/$package"
+  else
+    echo "optional review peer unavailable: $package (reviews will fail closed)" >&2
+  fi
+done
+echo "relinked shared development dependencies and available review peers -> $SHARED"

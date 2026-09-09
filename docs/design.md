@@ -1,6 +1,8 @@
 # dsh-ciel 设计文档
 
 > 0.11.0 起由 dsh-advisor 更名 dsh-ciel（大贤者夏尔）；本文保留写作时的历史名引用。
+>
+> 本文包含历史推演。“批评者不给工具”、早期 fail-open 等描述不代表当前实现。现行规则见 [评审契约](review-contract.md) 与 [读取隔离和模型标识](read-isolation.md)。
 
 ## 1. 问题与动机
 

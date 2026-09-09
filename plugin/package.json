@@ -1,7 +1,7 @@
 {
   "name": "dsh-ciel",
-  "version": "0.15.0",
-  "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → Plugins 可配。",
+  "version": "0.18.0",
+  "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → 夏尔 Ciel 独立页面可配。",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,6 +14,7 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./ptc-runtime": "./ptc-runtime.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -22,10 +23,16 @@
     "README.md",
     "index.js",
     "client.js",
+    "review-corpus.js",
+    "review-runner.js",
+    "review-evidence.js",
+    "record-store.js",
+    "ptc-runtime.js",
+    "ptc-runtime-worker.mjs",
     "cordis.patch.yml"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "keywords": [
     "deepseek-harness",
@@ -37,18 +44,30 @@
     "plugin"
   ],
   "dependencies": {
-    "@deepseek-ai/schemastery": ">=3.18.0"
+    "@deepseek-ai/schemastery": ">=3.18.0",
+    "quickjs-emscripten": "0.32.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-subagent": ">=0.1.5-alpha.2",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-alpha.2",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-alpha.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-subagent": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.2-alpha.2"
+    "@deepseek-ai/dsh-typert-protocol": "0.1.5-alpha.1"
   },
   "dsh": {
     "client": {
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-runtime"
+        "@deepseek-ai/dsh-client-resources",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     },
     "bundle": {

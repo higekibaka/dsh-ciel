@@ -23,7 +23,7 @@ const {
   splitMarkdownBlocks,
   parseCriticReview,
   criticExplorePersona,
-  createBudgetWatchdog,
+  createReviewObserver,
   turnEvidence,
   parseSuspectList,
   triageSuspects,
@@ -220,23 +220,34 @@ test('userText joins visible text blocks only', () => {
 
 // ── sidecar review store ─────────────────────────────────────────────────
 
-test('reviewsPath refuses unusable session ids', () => {
+test('reviewsPath refuses unusable session ids and uses the ciel/v1 root', () => {
   assert.equal(reviewsPath('../escape'), undefined)
   assert.equal(reviewsPath(''), undefined)
   assert.equal(reviewsPath(42), undefined)
-  assert.ok(reviewsPath('sess-1.ok').endsWith(join('dsh-advisor', 'reviews', 'sess-1.ok.jsonl')))
+  assert.equal(reviewsPath('x'.repeat(129)), undefined)
+  assert.equal(reviewsPath('.hidden'), undefined)
+  const path = reviewsPath('sess-1.ok')
+  assert.ok(path.endsWith(join('ciel', 'v1', 'reviews', 'sess-1.ok')))
+  assert.ok(!path.includes('dsh-advisor'))
 })
 
-test('persistReview + readReviews round-trip, skipping torn lines', async () => {
+test('persistReview + readReviews round-trip atomic records and fail explicitly on corruption', async () => {
   await persistReview('sess-test', { reviewId: 'r1', verdict: 'ok' })
   await persistReview('sess-test', { reviewId: 'r2', verdict: 'issues' })
-  // tear the tail
-  const path = reviewsPath('sess-test')
-  const { appendFileSync } = await import('node:fs')
-  appendFileSync(path, '{"reviewId": "r3"')
+  // Same-key writes atomically replace: the committed record is the latest one.
+  await persistReview('sess-test', { reviewId: 'r2', verdict: 'fixed' })
   const reviews = await readReviews('sess-test')
   assert.deepEqual(reviews.map((r) => r.reviewId), ['r1', 'r2'])
+  assert.equal(reviews[0].schemaVersion, 1)
+  assert.equal(reviews[0].sessionId, 'sess-test')
+  assert.equal(reviews[1].verdict, 'fixed')
   assert.deepEqual(await readReviews('sess-missing'), [])
+  // A corrupt record is an explicit read failure, never a silently skipped line.
+  const { writeFileSync } = await import('node:fs')
+  const { createHash } = await import('node:crypto')
+  const name = createHash('sha256').update('r3', 'utf8').digest('base64url') + '.json'
+  writeFileSync(join(reviewsPath('sess-test'), name), '{"reviewId": "r3"')
+  await assert.rejects(readReviews('sess-test'), (error) => error.code === 'CIEL_RECORD_CORRUPT')
 })
 
 // ── legacy settings migration ────────────────────────────────────────────
@@ -413,12 +424,19 @@ test('parseCriticReview stats line tolerates separator variants and omission', (
   assert.equal(parseCriticReview(none, CRITIC_DRAFT, CRITIC_BLOCKS).stats, undefined)
 })
 
-test('criticExplorePersona swaps the no-tools clause for a budgeted read-only clause', () => {
+test('criticExplorePersona swaps the no-tools clause for PTC run_code snapshot access', () => {
   const persona = criticExplorePersona(5)
   assert.equal(persona.includes('You have NO tools'), false)
-  assert.equal(persona.includes('HARD BUDGET of 5'), true)
+  assert.equal(persona.includes('5-second deadline'), true)
+  assert.equal(persona.includes('NO tool-call or model-request count quota'), true)
+  assert.equal(persona.includes('review_time'), true)
   assert.equal(persona.includes('## dossier'), true)
-  assert.equal(persona.includes('read, grep, glob'), true)
+  // PTC-only: the model calls run_code and parses nested JSON-string results.
+  assert.equal(persona.includes('run_code'), true)
+  assert.equal(persona.includes('JSON.parse'), true)
+  assert.equal(persona.includes('evidence_refs'), true)
+  assert.equal(persona.includes('truncated'), true)
+  assert.equal(persona.includes('You have READ-ONLY exploration tools'), false, 'no native tool wording')
 })
 
 // ── 契约 v4 两阶段：parseSuspectList / triageSuspects / stats 未查 ──────
@@ -449,17 +467,16 @@ test('parseSuspectList caps at 8 and drops empty suspects', () => {
   assert.equal(parseSuspectList('## suspects\n- suspect:    \n- suspect: ok').length, 1)
 })
 
-test('triageSuspects orders high-bearing first (stable) and caps to budget', () => {
+test('triageSuspects orders high-bearing first without dropping any suspect', () => {
   const list = parseSuspectList(SUSPECT_REPLY)
   const { chosen, skipped } = triageSuspects(list, 2)
-  assert.equal(chosen.length, 2)
-  assert.equal(skipped.length, 2)
+  assert.equal(chosen.length, 4)
+  assert.equal(skipped.length, 0)
   // high 在前且保持原顺序（b2 先于 b3）。
   assert.equal(chosen[0].suspect, 'index.js 行数声称 150 行')
   assert.equal(chosen[1].suspect, '版本号声称 0.14.0')
-  assert.equal(skipped[0].suspect, '顾问默认值声称是 openai')
-  // budget 0/负数也至少保留 1 条。
-  assert.equal(triageSuspects(list, 0).chosen.length, 1)
+  assert.equal(chosen[2].suspect, '顾问默认值声称是 openai')
+  assert.equal(triageSuspects(list, 0).chosen.length, 4, 'obsolete caller budgets cannot withhold suspects')
 })
 
 test('parseCriticReview stats line reads the optional 未查 component', () => {
@@ -482,39 +499,39 @@ function fakeChildAgents(evsRef) {
   }
 }
 
-test('createBudgetWatchdog stays silent at budget and breaches above it', async () => {
+test('createReviewObserver counts beyond obsolete budgets without stopping work', async () => {
   const evsRef = { evs: [{ type: 'tool/call' }] }
   let breaches = 0
-  const wd = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'child', budget: 1, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  const wd = createReviewObserver({ agents: fakeChildAgents(evsRef), runId: 'child', budget: 1, intervalMs: 5, onBreach: () => { breaches += 1 } })
   await sleep(30)
   assert.equal(breaches, 0)
-  assert.equal(wd.breached(), false)
-  // 超限 → 熔断恰好一次（重复采样不重复触发）。
+  assert.equal(typeof wd.breached, 'undefined')
+  // Counts are telemetry, not a breaker.
   evsRef.evs = [{ type: 'tool/call' }, { type: 'tool/call' }]
   await sleep(30)
-  assert.equal(breaches, 1)
-  assert.equal(wd.breached(), true)
+  assert.equal(breaches, 0)
+  assert.equal(wd.calls(), 2)
   await sleep(20)
-  assert.equal(breaches, 1)
+  assert.equal(breaches, 0)
   assert.equal(wd.stop(), 2)
 })
 
-test('createBudgetWatchdog tolerates missing child and non-tool events', async () => {
+test('createReviewObserver tolerates missing child and non-tool events', async () => {
   const evsRef = { evs: [{ type: 'assistant/message' }, { type: 'turn/start' }] }
   let breaches = 0
-  const wd = createBudgetWatchdog({ agents: { get: () => undefined }, runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  const wd = createReviewObserver({ agents: { get: () => undefined }, runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
   await sleep(15)
   assert.equal(breaches, 0)
   assert.equal(wd.stop(), 0)
-  const wd2 = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
+  const wd2 = createReviewObserver({ agents: fakeChildAgents(evsRef), runId: 'x', budget: 0, intervalMs: 5, onBreach: () => { breaches += 1 } })
   await sleep(15)
   assert.equal(breaches, 0)
   assert.equal(wd2.stop(), 0)
 })
 
-test('createBudgetWatchdog narrates the running tool and thinking phases', async () => {
+test('createReviewObserver narrates the running tool and thinking phases', async () => {
   const evsRef = { evs: [] }
-  const wd = createBudgetWatchdog({ agents: fakeChildAgents(evsRef), runId: 'c', budget: 5, intervalMs: 5, onBreach: () => {} })
+  const wd = createReviewObserver({ agents: fakeChildAgents(evsRef), runId: 'c', budget: 5, intervalMs: 5, onBreach: () => {} })
   await sleep(15)
   assert.deepEqual(wd.action(), { kind: 'thinking' })
   evsRef.evs = [{ type: 'tool/call', data: { name: 'read', arguments: '{"file_path":"/some/fairly/long/path/to/plugin/index.js"}' } }]
