@@ -154,7 +154,7 @@ dsh plugin --profile web add dsh-ciel
 
 ```sh
 pnpm install
-pnpm --dir plugin install --ignore-workspace --frozen-lockfile=false
+pnpm --dir plugin install --frozen-lockfile=false
 node scripts/build-client.mjs --check   # 校验 client.js 与源码一致；重建用 pnpm build:client
 ```
 

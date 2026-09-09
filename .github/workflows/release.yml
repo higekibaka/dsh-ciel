@@ -31,7 +31,7 @@ jobs:
       - name: Install root development dependencies
         run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies (dev only; never shipped)
-        run: pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+        run: pnpm --dir plugin install --frozen-lockfile
       - name: Verify bundled client matches plugin/src
         run: node scripts/build-client.mjs --check
       - name: Syntax check

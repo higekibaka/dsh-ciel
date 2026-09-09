@@ -235,7 +235,7 @@ Browser sources are `plugin/src/client.js` and `plugin/src/sidebar.js`
 
 ```sh
 pnpm install
-pnpm --dir plugin install --ignore-workspace --frozen-lockfile=false
+pnpm --dir plugin install --frozen-lockfile=false
 node scripts/build-client.mjs --check   # verify client.js is current; rebuild with pnpm build:client
 ```
 

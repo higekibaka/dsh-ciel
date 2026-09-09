@@ -19,7 +19,7 @@ jobs:
       - name: Install root development dependencies
         run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies
-        run: pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+        run: pnpm --dir plugin install --frozen-lockfile
       - name: Verify bundled client matches plugin/src
         run: node scripts/build-client.mjs --check
       - name: Syntax check
@@ -51,7 +51,7 @@ jobs:
       - name: Install root and plugin dependencies
         run: |
           pnpm install --frozen-lockfile
-          pnpm --dir plugin install --ignore-workspace --frozen-lockfile
+          pnpm --dir plugin install --frozen-lockfile
       - name: Checkout pinned DSH target
         uses: actions/checkout@v4
         with:
