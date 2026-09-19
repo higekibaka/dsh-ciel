@@ -8,7 +8,7 @@ The following stay local and are excluded by `.gitignore`:
 
 - Raw A/B reports, transcripts, logs, session exports and browser authentication state.
 - Historical prototypes, internal planning notes and upstream discussion drafts.
-- Unused screenshots; only the six images referenced by the public READMEs are allowed by default.
+- Browser screenshots and recordings, including cropped images with workspace/session backgrounds. Public illustrations must use synthetic data and receive a separate privacy review.
 - Environment files, common credential/private-key files, caches and generated package archives.
 
 Local-only files that were previously tracked must also be removed from Git's index with `git rm --cached`; ignoring a tracked file alone does not exclude it. Removing a file in a new commit does **not** erase it from earlier commits, tags, forks or cached copies.
@@ -77,7 +77,16 @@ weakness of the heuristic sensitive-content check.
 
 ## Pre-push review
 
-Before pushing, review both staged content and the complete outgoing history. If Gitleaks is available locally:
+Before pushing, review both staged content and the complete outgoing history. Run the repository and package checks (also enforced in CI and before future releases):
+
+```sh
+node scripts/check-publication.mjs
+node scripts/check-publication.mjs --package
+```
+
+These checks reject private artifact paths, unreviewed media, personal home paths and common credential shapes. They inspect tracked files and the actual npm pack file list; they do not prove the absence of arbitrary secrets or inspect Git history. The only credential-shaped exceptions are exact, deliberately fake values in named security tests. Do not exempt entire test directories.
+
+For a complete outgoing-history review, if Gitleaks is available locally:
 
 ```sh
 gitleaks git --log-opts="--all" --redact=100 .
@@ -87,7 +96,9 @@ git ls-files -ci --exclude-standard
 (cd plugin && npm pack --dry-run --ignore-scripts)
 ```
 
-The ignored-but-tracked listing should be empty. Inspect the package file list: the npm package intentionally contains only `LICENSE`, `README.md`, `index.js`, `client.js`, `review-corpus.js`, `review-runner.js`, `review-evidence.js`, `record-store.js`, `ptc-runtime.js`, `ptc-runtime-worker.mjs`, `cordis.patch.yml` and `package.json` (12 files). `plugin/client.js` is generated from `plugin/src/client.js` + `plugin/src/sidebar.js` by `scripts/build-client.mjs`; the `plugin/src/` sources and test fixtures are not shipped. The isolation, evidence and record-store modules are runtime code, not test artifacts.
+The ignored-but-tracked listing should be empty. Inspect the package file list against `plugin/package.json`'s explicit `files` allowlist and npm's automatically included metadata. The 0.19.0 package has 24 files. Runtime modules, the bundled client, default patch, README and license are intentional; source fixtures, local records and browser captures are not shipped. `plugin/client.js` is generated from `plugin/src/client.js` + `plugin/src/sidebar.js` by `scripts/build-client.mjs`.
+
+History sanitization changes commit and tag object ids. Existing npm artifacts and their original provenance remain unchanged; do not overwrite or republish an existing package version to make its provenance refer to rewritten history. Keep the old-to-new commit mapping private. Fresh clones must pass a complete history scan before the cleanup is considered verified. Old development clones must not push the removed history back to the server.
 
 Ignore rules are not a secret detector and can be bypassed with force-add. Pattern scanning also cannot prove that every possible credential is absent, and does not comprehensively inspect image pixels or every animation frame. Review screenshots separately. Never post unredacted scanner reports in public issues.
 

@@ -59,11 +59,5 @@ playwright/.auth/
 !/docs/ab/ab-comparison-0.13.0.md
 !/docs/ab/stability-verification.md
 
-# Only the six images currently used by the public READMEs are publishable.
-/docs/images/*
-!/docs/images/advise-card.png
-!/docs/images/ciel-card-demo.gif
-!/docs/images/ciel-card-groups-dark.png
-!/docs/images/ciel-card-groups-light.png
-!/docs/images/ciel-card-critic-dark.png
-!/docs/images/ciel-card-critic-light.png
+# Browser captures remain local. Public illustrations need a separate privacy review.
+/docs/images/
