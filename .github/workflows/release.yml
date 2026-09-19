@@ -12,7 +12,7 @@ on:
 
 permissions:
   id-token: write # OIDC for npm Trusted Publishing
-  contents: read
+  contents: write # publish the matching GitHub Release after npm succeeds
 
 jobs:
   publish:
@@ -53,3 +53,13 @@ jobs:
       - name: Publish to npm with provenance
         run: npm publish --provenance --access public
         working-directory: plugin
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-notes.mjs > "$RUNNER_TEMP/ciel-release-notes.md"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "Ciel ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Ciel ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
+          fi
