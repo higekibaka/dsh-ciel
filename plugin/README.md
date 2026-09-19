@@ -25,7 +25,11 @@ plus a forced separation of the exploring and executing cognitive roles. By
 constraining the advisor to ideas only, understanding and landing the work
 stays with the main model. Full argument: [docs/design.md](https://github.com/higekibaka/dsh-ciel/blob/main/docs/design.md).
 
+The `/advise` command has been removed. Advisor consultations use `ask_advisor`; existing command and advice records are retained.
+
 ## How it flows
+
+The local DSH 0.1.6-alpha.1 integration uses `ptcRuntime` and resolves PTC requests before execution. Ciel's private review runtime retains the shared review deadline and rejects per-call timeout or filesystem-policy overrides. DSH 0.1.5 installations continue to use `codeRuntime`.
 
 ```mermaid
 flowchart TD
@@ -33,7 +37,7 @@ flowchart TD
     E --> P{planning without consulting?}
     P -->|yes| R[one reminder injected]
     R --> A
-    P -->|no| A[ask_advisor · /advise]
+    P -->|no| A[ask_advisor]
     A --> G{{gates: explore-first · follow-up budget}}
     G --> M[advisor model<br>second model · ideas only]
     M --> I[ideas · prior art · pitfalls · verification targets]
@@ -50,7 +54,7 @@ The two pipelines are deliberately **role-separated**:
   divergent (pre-plan)                  convergent (post-draft)
   ────────────────────                  ───────────────────────
   advisor pipeline                      critic pipeline
-  ask_advisor · /advise                 annotation review
+  ask_advisor                 annotation review
   ideas · prior art · pitfalls          red-lines · severity tiers
   widens the solution space             narrows the risk surface
   directions, never steps               falsifies output, never
@@ -74,9 +78,6 @@ The two pipelines are deliberately **role-separated**:
   annotations, citations and advice items. A provider reads once and ends
   its stream: no background watch, no polling, no model call, and a failed
   resource never shows the last successful value.
-- **`/advise` command** — human-triggered consultation with auto-assembled
-  context; the result card is shown inline and the main model is notified
-  automatically.
 - **Dedicated settings page** — Settings → 夏尔 Ciel, after Agent presets in
   the left navigation. Native switches and read-only tags; changes apply only
   after Save, and unsaved drafts survive navigation. No duplicate plugin editor.
@@ -89,9 +90,6 @@ The two pipelines are deliberately **role-separated**:
   <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-demo.gif" width="640" alt="Settings card interaction: grouped folding, nested groups, catalog dropdowns">
 </p>
 <p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="Structured advisor card: tiered items with framing, pitfalls and verification targets">
-</p>
-<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-dark.png">
     <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-groups-light.png" width="47%" alt="Settings card folded into groups, each summarizing its current route">
@@ -101,6 +99,17 @@ The two pipelines are deliberately **role-separated**:
     <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-light.png" width="47%" alt="Critic group expanded: provider/model dropdowns fed by the live model catalog">
   </picture>
 </p>
+
+## Ciel Inbox (0.19.0)
+
+The first inbox version gathers the current session's reviews into one list so you can mark your own intent per annotation. It is an **inbox, not a repair action**: an intent never drives a model, never edits the input draft, and never changes the review itself. The inbox passed isolated Web validation; acceptance in the daily profile remains pending.
+
+- **Entry and scope**: a left-sidebar panel-list entry (same id as the main panel, labelled "夏尔收件箱" (Ciel Inbox), count in the centre). It lists the currently selected session only; opening it, switching sessions or refreshing fetches a single page — no new resident polling or DOM observers, and the page caches only the current page plus a bounded cursor.
+- **Paging and counts**: at most 25 reviews per page (also the default), in the stable persisted hashed-filename order; counts and filters cover the current page only, never a cross-page total.
+- **Intent**: each annotation is `pending` (undecided) / `planned` (will handle) / `rejected` (not adopting for now), defaulting to `pending`. Intents live in their own new record (`kind: inbox`, one small record per review) and **never reuse the legacy accept/dismiss checkboxes and never read or migrate old `feedback` state**.
+- **Write safety**: `inboxSetIntent` must carry the server-issued content fingerprint `reviewFingerprint` and the review's `revision`; a mismatch fails explicitly (`fingerprint_mismatch` / `revision_conflict`) with no implicit reset, and stored state that no longer matches the current review is never masked as `pending`.
+- **Zero model calls**: listing and intent writes never call a model and never touch the draft; returned string summaries and annotation fields are bounded, and raw bodies, evidence text and source are never returned. Reading a review or its evidence still goes through the native right sidebar.
+- **Limits**: concurrent writes for one review are serialized **in-process only** (a module-level queue shared across service instances; across processes only the atomic rename window remains). Historical anchor location and loading are user-triggered and bounded, and automatic location is not guaranteed in this version; after a `reviewFingerprint` mismatch, recovery needs an explicit scheme — no implicit reset in this first version. Returning to a session opens reviews and evidence in the native right sidebar; this version does not offer a layout that keeps the centre panel and the right rail resident at the same time.
 
 ## Install
 
@@ -137,7 +146,7 @@ All fields live in the `ciel` settings namespace (the settings card or the
 | `criticModel` | `gemini-3.8-flash` | Critic model id |
 | `criticEffort` | `medium` | Thinking depth pinned onto critic requests; `provider` also accepted |
 | `enabled` | `true` | Allow Ciel model calls and feedback; turning off cancels its in-flight consultations/reviews |
-| `advisorTimeoutSeconds` | `180` | Total deadline per advisor or `/advise` call, 10–600 seconds |
+| `advisorTimeoutSeconds` | `180` | Total deadline per `ask_advisor` consultation, 10–600 seconds |
 | `criticExploreEnabled` | `true` | Separate nomination and read-only verification phases |
 | `criticTimeoutSeconds` | `180` | Sole review execution budget: one deadline for capture, nomination and verification, 10–600 seconds |
 | `criticMaxTokens` | `16384` | Per-response size protection, 256–32768; nomination capped at 4096, not a request-count limit |
@@ -149,6 +158,8 @@ Review feedback now stages text in the same session's input box; it never sends 
 Since 0.17.0, reviews have only a total-time execution budget (180 seconds by default). Queries and model requests are counted but never stop a review or withhold nominated suspects based on their count. Capture and both phases share one deadline without resetting it. Legacy `criticExploreBudget` / `criticMaxRequests` settings remain loadable but are ignored, including zero; only `criticExploreEnabled` controls file checking. No record in a turn-local digest is not proof that tests never ran; absent evidence and unrelated/older test reports must not be used to accuse fabrication.
 
 Nomination sees only the request and draft; author evidence and advisor targets arrive during verification. A valid empty list means “not independently verified”, not a factual certification. Malformed responses fail explicitly. Unchecked suspects, missing/conflicting outcomes and legacy salvaged records remain visibly incomplete. Host-assigned suspect ids bind accepted annotations to selected defect outcomes; the host computes counts and the card summary, rejecting annotations on cleared or unchecked ids. Citations are model-authored evidence references, not programmatically verified truth; the author should check them before acting on feedback.
+
+Review input is selected from human requests preceding the chosen draft. Correlated native compaction and goal continuations can preserve earlier requirements; forks never read later parent-session tasks. Generated summaries and goal prompts do not become human requirements. Missing links, truncation and image/attachment content omitted from the text review remain explicitly incomplete. See the [input rules](https://github.com/higekibaka/dsh-ciel/blob/main/docs/review-contract.md).
 
 One review may run per session. Its Stop control cancels every phase. Deadline expiry stops the active work and records an incomplete/error outcome without an extra writer, automatic extension or retry. Normal completion, permission refusal and execution errors can still end work before the deadline. Since 0.18.0 the verification phase presents only the native reserved `run_code`: the critic program runs in Ciel's private worker + QuickJS/WASM and reaches the immutable in-memory snapshot only through `JSON.parse(await tools.read/grep/glob(...))`. `grep` is a literal search, the program body is TypeScript erasable syntax only, and missing capabilities fail closed instead of falling back to ordinary file tools. See [restricted PTC review](https://github.com/higekibaka/dsh-ciel/blob/main/docs/ptc-review.md).
 
@@ -166,7 +177,7 @@ File verification uses a bounded immutable source snapshot of the current sessio
 
 New records are written only under the versioned root
 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`, where `kind` is
-`reviews` / `evidence` / `advice` (`calls` / `feedback` reserved). Each
+`reviews` / `evidence` / `advice` / `inbox` (`calls` / `feedback` reserved). Each
 record envelope carries `schemaVersion`, `kind`, `sessionId`, `id` and
 `value`; a random `wx` temp file is atomically renamed over the same-key
 target. Directories are 0700 and files 0600, a single record is capped at
@@ -229,7 +240,7 @@ The repository root is a private development package
 (`dsh-ciel-development`) that provides esbuild and the official
 `@deepseek-ai/dsh-util-workspace-path`; the root `pnpm-workspace.yaml`
 contains only the root package, so plugin dependencies install separately.
-Browser sources are `plugin/src/client.js` and `plugin/src/sidebar.js`
+Browser sources live under `plugin/src/` (UI, state, progress, anchors and transport)
 (plus `sidebar.css`), bundled into the single `plugin/client.js` by
 `scripts/build-client.mjs`:
 
@@ -257,7 +268,9 @@ TSX_TSCONFIG_PATH=$DSH_CHECKOUT/tsconfig.base.client.json \
 node --import tsx/esm /path/to/dsh-ciel/scripts/verify-sidebar-native.mjs
 ```
 
-0.18.0 restricted PTC review: the default PTC execution chain passed **37/37** (0 failed, 0 network; the chain tests used scripted models and ran no additional real-model review or A/B tests), unit tests **428/428** (including the runtime 15 subset), Chromium fixtures **22/22** (0 page/console errors, 0 network), the native SettingsRoot regression (0 network/model) and `client --check` against source. The host change needs a **DSH restart plus a page refresh** (manual restart preferred); the formal instance still awaits manual GUI acceptance for 0.18.0. Test network 0 describes the tests only and does not mean the whole development task had no real-model calls. Candidate package smoke **18/18** (12 files unpacked, production-only install, real QuickJS Promise batch/`.then`/`for-await` from `/tmp`, module-relative worker resolution); with a cold cache `--prefer-offline` may pull dependency packages, so pack/install is not guaranteed network-free; tested only on Node 24.20.0, the Node 22.19 minimum is untested. See [restricted PTC review](https://github.com/higekibaka/dsh-ciel/blob/main/docs/ptc-review.md).
+0.19.0 validation (2026-09-19): **605/605** unit tests and **52/52** actual DSH **0.1.6-alpha.2** restricted-runtime scenarios (scripted models, zero network). An isolated real Web profile also passed review/inbox, fork, refresh, protocol-failure, theme and unload checks on Node **24.21.0**. See the repository architecture and architecture-decisions documents for module ownership, inactive-session cache limits and unsupported multi-process writes. The daily profile has not been restarted for acceptance.
+
+Historical 0.18.0 restricted PTC review: the default PTC execution chain passed **37/37** (0 failed, 0 network; the chain tests used scripted models and ran no additional real-model review or A/B tests), unit tests **428/428** (including the runtime 15 subset), Chromium fixtures **22/22** (0 page/console errors, 0 network), the native SettingsRoot regression (0 network/model) and `client --check` against source. The host change needs a **DSH restart plus a page refresh** (manual restart preferred); the formal instance still awaits manual GUI acceptance for 0.18.0. Test network 0 describes the tests only and does not mean the whole development task had no real-model calls. Candidate package smoke **18/18** (12 files unpacked, production-only install, real QuickJS Promise batch/`.then`/`for-await` from `/tmp`, module-relative worker resolution); with a cold cache `--prefer-offline` may pull dependency packages, so pack/install is not guaranteed network-free; tested only on Node 24.20.0, the Node 22.19 minimum is untested. See [restricted PTC review](https://github.com/higekibaka/dsh-ciel/blob/main/docs/ptc-review.md).
 
 Historical 0.17.0 validation (time-only, still native readers): **390 unit tests**, **22 real DSH offline execution-chain scenarios**, **22 Chromium fixture checks**, and the native settings regression passed. The shared deadline includes source capture and both stages, without an extra model after timeout. That record does not mean 0.18.0 is deployed.
 

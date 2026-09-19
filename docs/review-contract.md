@@ -6,6 +6,26 @@
 
 存疑阶段只看用户请求、草稿及块地图，不能使用工具，也看不到作者的工具结果或顾问建议。合法的 `## suspects` 空清单与无法解析的回答不同；空清单不表示事实已经核实。
 
+用户请求由 `review-input.js` 按来源投影：普通轮次接受目标回复之前、当前 turn 中 `source.kind=user` 的真人输入；同轮追加输入按事件顺序保留，不用文本关键词猜测哪条覆盖哪条。所有选择都基于目标回复之前的日志，不读取会话今天的最新 surface 来决定旧回复的要求。DSH 动态上下文、生成的 goal 提示词、其他代理消息及未知来源不自动成为真人要求。用户自己引用插件标记的正常消息仍保留。作者工具引用的存在性说明也仅放在核实阶段。
+
+### 压缩、目标承接与分叉
+
+| 情形 | 请求选择规则 |
+|---|---|
+| 压缩及嵌套压缩 | 按目标前的 `surfaceOp` 重放请求来源。`compact` 替换必须关联同一 compactionId 的开始记录、紧邻的 summary、相同的 shadowedRange/shadowedSeqs 和完整 sourceEventSeqs，才能保留被覆盖的真人原文身份；摘要正文不进入请求。嵌套压缩保留这些原始身份，不递归读取生成摘要。 |
+| 其他消息替换 | 撤销被替换范围的请求来源。即使替换副本保留 `source.kind=user`，也不能把它当作新的人类输入。影响当前要求时降为部分覆盖；替换关系无效时不猜测恢复。PTC 日志中的嵌套结果不是额外的 surface 节点。 |
+| 原生 goal 续跑 | 仅当当前轮的 `source.kind=goal` 与当时 active 的 `goal/change` 记录匹配 ID、revision 及正整数 round，才承接该目标创建时最近真人轮次的输入、目标 active 期间的真人补充，以及当前轮补充。生成的 goal 提示词和目标 objective 文本本身不升级为真人要求。 |
+| 目标编辑、终结与换目标 | 只改轮数等非 objective 字段时保留来源；objective 改变时，只有同一轮、上次 objective 变化之后的新真人输入能建立新来源。否则显示来源不足，不重用旧目标要求。clear、不同目标、过期版本或非 active 续跑不能借用旧来源；回复之后的目标变化不改写该回复的评审输入。 |
+| 暂停后恢复 | 暂停或阻塞期间的新输入不自动归入旧目标。恢复后可保留原有已知要求，但这类未关联输入会使覆盖范围保持不完整；没有新输入的同目标恢复可保留原来源。 |
+| 普通新轮次与无关联续跑 | 真人发起的新 turn 只使用该轮输入，即使会话中仍有 active goal。普通插件续跑不借用任意旧任务；单独一句“继续”也不会触发语义猜测和全历史拼接。只有原生 goal 关联或下述历史命令关联允许跨轮恢复。 |
+| 分叉与历史回复 | 只消费所选会话的实际继承前缀及自身事件，不追读 parentSession 的后续内容。评审继承的旧回复仍以该回复的事件边界为准；子会话新任务采用自己的输入。 |
+
+goal 关联说明的是原生生命周期归属，不能证明目标创建时的短句已完整表达更早的业务要求。没有显式关联的跨轮语义承接仍由用户补充明确请求；本版不引入自动任务分类模型或把全部历史交给存疑阶段。
+
+已移除的 `/advise` 曾错误地把顾问结果记为 user 来源。读取旧会话时，同时检查旧生成 ID 与完整回注包装；再用当前会话中此前的原生命令记录核对问题。只有能关联的记录才恢复该命令之前最近真人输入轮及命令问题，不传顾问答案；当前轮有新真人输入时优先采用当前要求。关联失败不从任意旧任务补猜。此兼容只读历史，不恢复命令功能、不修改原日志。
+
+请求最多保留最近 8 段、3000 字符，敏感检查在裁剪前执行。`requestContext` 保存来源模式、是否受限及有界原因代码，不保存请求原文。模式为 `current-turn`、`goal-continuation`、`legacy-command` 或 `missing`；受限原因区分来源缺失、目标/命令关联不足、请求替换、历史关系无效、截断与未纳入的非文本内容。图片或附件不会被假装已完成文本评审。`coverageNote` 说明具体原因并提示补充明确请求后重新评审；完整覆盖降为部分覆盖，旧记录不自动改写或重新调用模型。
+
 宿主为清单逐项分配 `s1`、`s2` 等编号，按重要性稳定排序，全部送入核实，不再按查询次数截取。清单仍受结构化回复上限（至多8项）约束。核实阶段收到这些固定编号，以及宿主整理的作者工具证据和顾问清单。不允许新增编号；意外发现的新问题留到后续评审，避免绕过分诊。
 
 ## 受限 PTC 程序契约（0.18.0）
@@ -64,7 +84,7 @@ comment: 草稿的配置断言与文件内容冲突。
 
 评审状态标签使用原生 Tag；未完整核实的零批注不涂成绿色通过。每张卡片只创建空挂载容器，由 `ReviewButton` 的 React portals 拥有其子节点，没有独立 React root 或 `flushSync`。卡片重绘与卸载由同一组件生命周期清理，原来的折叠、定位、筛选和手动回传不变。
 
-原生右侧栏资源由 `plugin/src/sidebar.js` 注册三个 `dsh-resource://` 协议（`ciel-review` / `ciel-evidence` / `ciel-advice`）及对应标签页；浏览器端源码 `plugin/src/client.js` + `plugin/src/sidebar.js` 由 `scripts/build-client.mjs` 打成单一 `plugin/client.js`。资源提供方读取一次即结束：不后台监听、不轮询、不调用模型；失败时不显示上一次成功值，被隐私检查扣留的证据不渲染内容，只有 Host 解析的 `currentPath` 能打开当前文件。
+原生右侧栏资源由 `plugin/src/sidebar.js` 注册三个 `dsh-resource://` 协议（`ciel-review` / `ciel-evidence` / `ciel-advice`）及对应标签页；浏览器端源码 `plugin/src/` 模块 由 `scripts/build-client.mjs` 打成单一 `plugin/client.js`。资源提供方读取一次即结束：不后台监听、不轮询、不调用模型；失败时不显示上一次成功值，被隐私检查扣留的证据不渲染内容，只有 Host 解析的 `currentPath` 能打开当前文件。
 
 当前文件由 alpha.2 的官方 `fileAddressFor` 构造 Session 地址，绝对外部路径仍携带证据归属 Session，不借用当前显示会话。行定位通过 `params.line` 传递，Markdown 渲染视图不提供源码锚点，需切到代码或纯文本；历史行号不保证对应当前文件。原生侧栏空间不足时不强制分栏，当前文件作为单栏标签页打开。
 
@@ -89,8 +109,10 @@ comment: 草稿的配置断言与文件内容冲突。
 
 ## 离线回归入口
 
+- 当前 DSH 协议边界：`DSH_CHECKOUT=/path/to/deepseek-harness node scripts/verify-protocol.mjs`。真实 Registry/Gateway 与 Ciel Remote/Transport、临时记录和内存 carrier；覆盖错参数、坏返回、CAS、草稿及旧 Client 拒绝，无模型/网络，不替代 Web 验收。
+
 - `node --test plugin/test/*.test.js`：含草稿回传、切换会话/编辑竞争、旧端点停用和跨轮证据缺失回归。
-- `DSH_CHECKOUT=/path/to/deepseek-harness node scripts/verify-runtime.mjs`：真实代理/工具链，含75次批量读取、70次连续查询/72次模型请求、真实总超时不追加模型、证据保真、伪造引用拒绝、敏感输入拒绝及子代理目录失败清理；默认禁止网络。**0.18.0 的默认 PTC 执行链 37/37 通过（0 失败、0 网络；执行链测试使用脚本模型，未做额外的真实模型评审/A/B 测试）；详见 [受限 PTC 评审](ptc-review.md)。**
+- `DSH_CHECKOUT=/path/to/deepseek-harness CIEL_VERIFY_NATIVE_PEERS=1 node scripts/verify-runtime.mjs`：真实代理/工具链，含75次批量读取、70次连续查询/72次模型请求、真实总超时不追加模型、证据保真、伪造引用拒绝、敏感输入拒绝及子代理目录失败清理；另含原生压缩后端、goal 自动续跑、分叉和同轮 steer 的输入回归。默认禁止网络，使用脚本模型；压缩验证的摘要和 token 计价为合成实现，不证明真实模型质量或自动压缩阈值。当前里程碑见 [架构进度](architecture.md)，PTC 细节见 [受限 PTC 评审](ptc-review.md)。
 - 在 DSH checkout 运行 `DSH_CHECKOUT=$PWD node --import tsx/esm /path/to/dsh-ciel/scripts/verify-feedback-input.mjs`：真实 `SessionInputShell`、Lexical 和 Cordis 事件，在 JSDOM 中核对原稿、引用卡片、附件、重复填入及竞争保护。只替代 CSS 加载，不替代编辑器；不建立会话、启动模型或 Web 服务，不等同于完整浏览器界面验收。
 
 - 原生设置页与标签：在 DSH checkout 运行 `DSH_CHECKOUT=$PWD TSX_TSCONFIG_PATH=$PWD/tsconfig.base.client.json node --import tsx/esm /path/to/dsh-ciel/scripts/verify-native-settings.mjs`。使用真实 SettingsRoot、Switch、Tag、ReactDOM 和从原文件编译的 CSS，配置/RPC 数据为离线夹具；核对左侧顺序、跨页面草稿、原子保存、标签颜色语义、折叠重绘和 portal 清理，不启动模型或 Web 服务。
@@ -105,3 +127,12 @@ comment: 草稿的配置断言与文件内容冲突。
 程序保证选中范围、编号关联、计数与显示不互相矛盾；它不证明模型的证据引用或推理为真。模型仍可能给错严重度、算错比例，或错误地把某个判断归到一个有效编号上。证据必须可见，作者修复前仍需核对，不能把“结构校验通过”当成真理认证。DSH 的只读模式本身不提供读取保密边界；新的 Ciel 核实阶段改为仅查询受限源码副本。文件路径和工具入口限制与输入内容的启发式敏感检查是不同保证，均不能证明允许的源码没有任意隐藏秘密；详见 [读取隔离说明](read-isolation.md)。
 
 记录存储的文件名散列与 `contentSha256` 只用于寻址和一致性检查，不提供防篡改或真理保证；原子写、0600/0700、符号/硬链接拒绝和有界读取防的是普通路径绕过，不对抗同机特权进程。离线验证通过不代表正式实例已加载新 Host 后端。
+
+
+## 协议、缓存与部署边界
+
+评审/收件箱的请求与返回由共用 `review-protocol.js` 定义。当前 DSH 0.1.6-alpha.2 的 Client unary 调用不执行返回值 codec，Ciel Transport 因而显式验证结构及会话/消息归属。协议不匹配显示 `CIEL_PROTOCOL_REQUEST_INVALID` / `CIEL_PROTOCOL_RESPONSE_INVALID`，暂停同步并提示刷新及核对版本；不会当作“没有记录”或“评审已结束”，也不会自动重新调用模型。
+
+页面的历史请求保持分页上限；未使用会话的结果缓存按 LRU 保留最多 8 个会话、16 MiB 正文估算。在显示或请求尚未完成时 pin，释放后再次进入可重新读盘。页面临时勾选/折叠可能释放；已经保存的分诊、意向及宿主草稿不因此删除。加载期间多次强制刷新合并成一个后续新查询，插件卸载后的迟到结果不再回填状态。
+
+正常评审和顾问记录在原子发布前同步检查取消状态。summary 越过提交点后不能声称已经接受取消；磁盘故障可能使错误记录也无法保存。模块责任及验证方法见 [architecture.md](architecture.md)；全局额度、单 writer、指纹恢复和历史保留见 [architecture-decisions.md](architecture-decisions.md)。

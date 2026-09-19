@@ -168,8 +168,12 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
   const roots = [root, ...additionalRoots].map(absolute)
   const protectedPaths = [...new Set([...protectedRoots.map(absolute), path.join(os.homedir(), '.dsh'), path.join(os.homedir(), '.ssh'), path.join(os.homedir(), '.aws'), ...(process.env.DSH_HOME ? [absolute(process.env.DSH_HOME)] : [])])]
   const broad = new Set(['/', '/home', '/root', '/tmp', '/var', '/var/tmp', '/var/lib', '/var/log', '/var/cache', '/var/spool', '/var/backups', '/usr', '/usr/local', '/opt', '/srv', '/etc', '/proc', '/sys', '/dev', '/run', '/boot', '/mnt', '/media', os.homedir()])
+  // Same predicate union as before, split only so the broad/HOME/system-tree
+  // branch carries a stable machine reason. The rejected-input set is unchanged.
+  const systemTrees = ['/etc', '/proc', '/sys', '/dev', '/run', '/boot', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/usr/bin', '/usr/sbin', '/usr/lib', '/usr/lib64', '/var/log', '/var/cache', '/var/spool', '/var/backups']
   for (const r of roots) {
-    if (broad.has(r) || /^\/home\/[^/]+$/.test(r) || ['/etc', '/proc', '/sys', '/dev', '/run', '/boot', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/usr/bin', '/usr/sbin', '/usr/lib', '/usr/lib64', '/var/log', '/var/cache', '/var/spool', '/var/backups'].some(p => within(r, p)) || protectedPaths.some(p => within(r, p)) || r.split('/').some(p => BLOCKED_DIRS.has(p.toLowerCase()) || blockedName(p))) throw limited()
+    if (broad.has(r) || /^\/home\/[^/]+$/.test(r) || systemTrees.some(p => within(r, p))) throw limited('ROOT_TOO_BROAD')
+    if (protectedPaths.some(p => within(r, p)) || r.split('/').some(p => BLOCKED_DIRS.has(p.toLowerCase()) || blockedName(p))) throw limited()
   }
   // Overlapping approvals are ambiguous and may otherwise create alternate aliases.
   if (roots.some((r, i) => roots.some((other, j) => i !== j && (within(r, other) || within(other, r))))) throw limited()

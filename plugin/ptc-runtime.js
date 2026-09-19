@@ -1,6 +1,6 @@
 /**
  * Ciel review code runtime — worker-hosted QuickJS/WASM implementation of the
- * DSH code-execution seam (`ctx.codeRuntime` shape).
+ * DSH PTC execution seam (`ctx.ptcRuntime`, formerly `ctx.codeRuntime`).
  *
  * One fresh worker per run hosts one QuickJS instance. The worker is trusted
  * (Node builtins: type stripping, QuickJS module loading); the guest program
@@ -27,7 +27,7 @@ const WORKER_PATH = fileURLToPath(new URL('./ptc-runtime-worker.mjs', import.met
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 const DUNDER_MEMBER = /^__.+__$/
-/** Seam-shared reserved globals (see @deepseek-ai/dsh-code-runtime). */
+/** Seam-shared reserved globals (see @deepseek-ai/dsh-ptc-runtime). */
 const RESERVED_BINDING_GLOBALS = new Set(['console', '__dsh_main__', '__builtins__', '__name__', '__debug__'])
 /** Seam-shared error-member exclusions. */
 const RESERVED_ERROR_MEMBERS = new Set(['name', 'message', 'stack', 'args', 'with_traceback', 'add_note'])
@@ -198,6 +198,14 @@ export function createReviewCodeRuntime(options = {}) {
   return {
     language: REVIEW_RUNTIME_LANGUAGE,
     isolation: REVIEW_RUNTIME_ISOLATION,
+    /** Resolve the shared review deadline; this guest has no filesystem authority. */
+    resolve(request) {
+      if (request.sandboxPolicy !== undefined) throw new TypeError('review runtime does not support sandboxPolicy')
+      if (request.timeoutMs !== undefined) throw new TypeError('review runtime uses the shared review deadline; timeoutMs is unsupported')
+      const remainingMs = deadlineAt() - Date.now()
+      if (!Number.isFinite(remainingMs)) throw new TypeError('deadlineAt() must return a finite epoch-ms number')
+      return { ...request, cwd: request.cwd ?? process.cwd(), timeoutMs: Math.max(1, remainingMs) }
+    },
     /** Terminate every in-flight run and wait for the workers to exit. */
     async dispose() {
       disposed = true

@@ -40,6 +40,9 @@ test('model labels distinguish missing, used, multi-route, and requested-only fa
 test('advisor tool card uses per-result facts despite current settings changes, including errors', async (t) => {
   const settingsValue = { provider: 'current', model: 'current-model' }
   const rt = await createRuntime({}, { settingsValue }); t.after(() => rt.dispose())
+  assert.equal(rt.ctx.slots.injected['conversation.chat.commandview'], undefined, 'removed command has no custom view')
+  rt.ctx.slots.injected['tool.call.toolview']()
+  assert.equal(typeof rt.ctx.slots.registries.ask_advisor, 'function', 'advisor tool remains registered')
   const { AdvisorToolView } = rt.moduleExports.__test
   let requests = 0
   rt.rpcImpl.callModelUsage = () => { requests++; throw new Error('metadata must win') }
@@ -111,35 +114,6 @@ test('tool errors look up exact tool call identity without parsing model-authore
   assert.match(text(rt.runner.render(View, props)), /本次模型：actual-p \/ actual-m.*request failed/)
 })
 
-test('/advise fetches durable exact command identity for success and error outcomes', async (t) => {
-  for (const kind of ['success', 'error']) {
-    const rt = await createRuntime({}); t.after(() => rt.dispose())
-    const calls = []
-    rt.rpcImpl.callModelUsage = async (req) => { calls.push(req); return { ok: true, value: { modelUsage: recorded } } }
-    const props = { sessionId: 's-command', node: { commandId: 'cmd1', args: 'question', outcome: { kind, text: '本次模型：untrusted / forged' } } }
-    const View = rt.moduleExports.__test.AdviseCommandView
-    rt.runner.render(View, props); rt.runner.getEffects()[0].fn()
-    await flush()
-    assert.deepEqual(calls, [{ sessionId: 's-command', kind: 'command', id: 'cmd1' }])
-    const tree = rt.runner.render(View, props)
-    const label = tree.__element.find((child) => child?.__element?.[1]?.className === 'ciel-model-usage')
-    assert.equal(text(label), '本次模型：actual-p / actual-m')
-  }
-})
-
-test('/advise does not fetch while running and missing identity never borrows current route', async (t) => {
-  const rt = await createRuntime({}, { settingsValue: { provider: 'current-p', model: 'current-m' } }); t.after(() => rt.dispose())
-  let calls = 0
-  rt.rpcImpl.callModelUsage = () => { calls++; return { modelUsage: recorded } }
-  const View = rt.moduleExports.__test.AdviseCommandView
-  rt.runner.render(View, { sessionId: 's', node: { commandId: 'cmd', outcome: null } })
-  rt.runner.getEffects()[0].fn(); await flush()
-  assert.equal(calls, 0)
-  const tree = rt.runner.render(View, { sessionId: 's', node: { outcome: { kind: 'success', text: 'old' } } })
-  assert.match(text(tree), /本次模型：未记录/)
-  assert.doesNotMatch(text(tree), /current-p/)
-})
-
 test('model lookup deduplicates pending identity, isolates sessions, and retries failures/missing records', async () => {
   let resolve
   const requests = []
@@ -161,14 +135,14 @@ test('model lookup deduplicates pending identity, isolates sessions, and retries
   assert.equal(requests.length, 4)
 })
 
-test('late command lookup cannot relabel a different command identity', async (t) => {
+test('late tool lookup cannot relabel a different tool identity', async (t) => {
   const rt = await createRuntime({}); t.after(() => rt.dispose())
   let resolveOld
   rt.rpcImpl.callModelUsage = ({ id }) => id === 'old'
     ? new Promise((resolve) => { resolveOld = resolve })
     : Promise.resolve({ modelUsage: { requested: { provider: 'next', model: 'next-m' }, used: [] } })
-  const View = rt.moduleExports.__test.AdviseCommandView
-  const props = (id) => ({ sessionId: 's', node: { commandId: id, outcome: { kind: 'success', text: '' } } })
+  const View = rt.moduleExports.__test.AdvisorToolView
+  const props = (id) => ({ ...toolProps(undefined), sessionId: 's', callId: id })
   rt.runner.render(View, props('old'))
   const cleanup = rt.runner.getEffects()[0].fn()
   await flush()

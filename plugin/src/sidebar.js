@@ -541,7 +541,9 @@ export function createCielSidebar(dependencies) {
    */
   function actionButton(props, children) {
     const actionProps = { size: 'md', 'data-ciel-action': '', ...props }
-    if (nativeButton) return h(Button, actionProps, children)
+    // data-ciel-native-button marks ONLY the native primitive path (never the
+    // <button> fallback), so the stylesheet can scope native sizing/focus.
+    if (nativeButton) return h(Button, { 'data-ciel-native-button': '', ...actionProps }, children)
     const rest = { ...actionProps }
     delete rest.variant
     delete rest.size

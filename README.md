@@ -25,7 +25,7 @@ flowchart TD
     E --> P{规划时刻仍未咨询？}
     P -->|是| R[注入一次提醒]
     R --> A
-    P -->|否| A[ask_advisor · /advise]
+    P -->|否| A[ask_advisor]
     A --> G{{门：先探查 · 追问预算}}
     G --> M[顾问模型<br>第二模型 · 只给思路]
     M --> I[思路 · 先例 · 陷阱 · 验证清单]
@@ -42,7 +42,7 @@ flowchart TD
   发散（规划前）                    收敛（成稿后）
   ─────────────                    ─────────────
   顾问管道                          批评者管道
-  ask_advisor · /advise            批注评审
+  ask_advisor            批注评审
   思路 · 先例 · 陷阱 · 验证清单      红线批注 · severity 分级
   只给方向，不下场                  证伪输出，不复盘心路
   开阔主模型的解空间                收窄成稿的风险面
@@ -54,16 +54,12 @@ flowchart TD
 - **指导 prompt section**——咨询协议注入系统提示词（可开关）。
 - **批注评审**——每条助手回复操作区的「批注评审」按钮：批评者对草案做收敛型红线评审，批注以 severity 波浪下划线 + 角标长在原文上，另有完整评审面板；评审记录持久化、跨重启水合。
 - **原生右侧栏资源**——评审、历史证据与顾问记录注册为三个 `dsh-resource://` 资源与标签页；聊天保留摘要与角标，侧栏显示完整批注、引用与顾问条目。资源读取一次即结束，不后台监听、不轮询、不调用模型；失败时不显示上一次成功值。
-- **`/advise` 命令**——人类触发咨询：上下文自动装配、结果卡片、自动知会主模型。
 - **独立设置页**——设置左侧 → 夏尔 Ciel，位于 Agent 预设之后；采用 DSH 原生开关与只读状态标签，点击保存后热生效。切换页面保留草稿，不再在插件配置中重复编辑。
 
 > 下方截图是旧版设置卡片与顾问卡片。当前版本使用左侧独立设置入口与原生右侧栏资源；后者尚无已发布截图，本文不代拟界面。
 
 <p align="center">
   <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-demo.gif" width="640" alt="设置卡片交互演示：分组折叠、嵌套展开、目录下拉">
-</p>
-<p align="center">
-  <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/advise-card.png" width="560" alt="结构化顾问卡片：分档条目带思路、陷阱与验证目标">
 </p>
 <p align="center">
   <picture>
@@ -75,6 +71,19 @@ flowchart TD
     <img src="https://github.com/higekibaka/dsh-ciel/raw/main/docs/images/ciel-card-critic-light.png" width="47%" alt="批评者分组展开：由实时模型目录供给的 provider/model 下拉">
   </picture>
 </p>
+
+`/advise` 人工咨询命令已移除；顾问咨询使用 `ask_advisor` 工具。已有命令和顾问记录不删除。
+
+## 夏尔收件箱（0.19.0）
+
+首版收件箱把当前会话的评审收进一个列表，让你为每条批注标注自己的意向。它是**收件箱，不是修复动作**：意向不会驱动模型、不修改输入草稿，也不改变评审本身。收件箱已通过隔离 Web 验证，日常 profile 的验收仍待进行。
+
+- **入口与范围**：左侧边栏面板列表入口（与主面板同一 id，标签「夏尔收件箱」，数量显示在中央）。只列出当前选中的会话；打开、切换会话或手动刷新时拉取单页，不新增常驻轮询或 DOM 观察器，页面只缓存当前页与有界游标。
+- **分页与计数**：默认且最多每页 25 条评审，顺序沿用持久化的哈希文件名；数量与筛选只针对当前页，不跨页汇总。
+- **意向**：每条批注的意向为 `pending`（待判断）/ `planned`（准备处理）/ `rejected`（暂不采纳），默认 `pending`。意向存于独立的新记录（`kind: inbox`，每条评审一条小记录），**不复用旧的 accept/dismiss 勾选，也不读取或迁移旧 `feedback` 状态**。
+- **写入安全**：`inboxSetIntent` 需携带服务端签发的内容指纹 `reviewFingerprint` 与该评审的 `revision`；指纹或版本不匹配时显式失败（`fingerprint_mismatch` / `revision_conflict`），不做隐式重置；与当前评审不匹配的存量状态不会被当作 `pending` 掩盖。
+- **零模型调用**：列表与意向读写都不调用模型、不访问草稿；返回的字符串摘要与批注字段有界，不返回 raw、证据原文或源码。查看评审与证据仍复用原生右侧栏。
+- **限制**：同一条评审的并发写入只在**进程内**串行（模块级队列，跨服务实例生效；跨进程只剩原子重命名窗口）。历史锚点的定位与加载由用户点击触发且有界，本版不保证自动定位成功；`reviewFingerprint` 失配后的恢复需要显式方案，首版不提供隐式 reset；回到会话时评审与证据通过原生右侧栏打开，本版不提供中央面板与右侧栏同时常驻的布局。
 
 ## 安装
 
@@ -103,7 +112,7 @@ dsh plugin --profile web add dsh-ciel
 | `criticModel` | `gemini-3.8-flash` | 批评者模型 id |
 | `criticEffort` | `medium` | 注入评审请求的思考深度；亦接受 `provider` |
 | `enabled` | `true` | 本插件调用总开关；关闭取消在途顾问/评审，并禁止新调用与新回传 |
-| `advisorTimeoutSeconds` | `180` | 单次顾问或 `/advise` 总时限，10–600 秒 |
+| `advisorTimeoutSeconds` | `180` | 单次 `ask_advisor` 顾问咨询总时限，10–600 秒 |
 | `criticExploreEnabled` | `true` | 两阶段评审：先存疑，再只读核实 |
 | `criticTimeoutSeconds` | `180` | 评审唯一的执行预算：准备资料、存疑、核实共用总时限，10–600 秒 |
 | `criticMaxTokens` | `16384` | 单条模型响应的大小保护，256–32768；存疑最多 4096，不限制模型请求次数 |
@@ -115,6 +124,8 @@ dsh plugin --profile web add dsh-ciel
 0.17.0 起评审只限总时间，默认180秒；查询与模型请求次数只统计，不再因为达到某个次数而停止，也不据此截取疑点。资料准备和两个阶段共用同一个截止时间，不重新计时。旧 `criticExploreBudget` / `criticMaxRequests` 设置仍可加载但不生效（包括旧值0）；是否查文件只看 `criticExploreEnabled`。本轮没有工具记录、只找到旧报告或不同套件，均不能直接证明测试未发生；证据不足应为未查，不据此指控造假。
 
 存疑阶段只看用户请求和草稿，核实阶段才收到作者工具证据及顾问清单。合法空清单显示“未核实”，格式失败显示错误；未查完、逐项结果缺失/冲突以及旧版抢救记录显示“不完整”，不作为完整通过。宿主分配疑点编号，按逐项结果自己计数、生成总评；已排除或未查项的提醒批注会被剔除，规则见 [评审契约](docs/review-contract.md)。证据字段是模型引用，不代表程序已经验证引用内容为真；回传后作者仍应核对，而不是盲目修改。
+
+评审按目标回复当时的真人请求取输入：原生压缩和能关联的 goal 续跑可保留原要求，分叉不追读父会话后来的任务，生成摘要及 goal 提示词不冒充用户要求。无法关联、超长或图片/附件未纳入文本评审时，会说明原因并显示覆盖不完整；详见 [输入规则](docs/review-contract.md#压缩目标承接与分叉)。
 
 每个会话同时允许一项评审；评审中可点“停止”。到总时限即中断当前工作并记录未完成/错误，不追加模型整理、不自动延时重试。正常完成或无法继续的错误也可提前结束评审；不是一定要运行到时限。0.18.0 起核实阶段只呈现原生保留的 `run_code`：批评者程序在 Ciel 私有的 worker + QuickJS/WASM 中执行，只能通过 `JSON.parse(await tools.read/grep/glob(...))` 查询评审开始时的不可变内存副本；`grep` 是字面量搜索，程序只接受 TypeScript 可擦除语法，缺少能力时明确失败而不回退普通文件工具。详见 [受限 PTC 评审交接](docs/ptc-review.md)。
 
@@ -130,7 +141,7 @@ dsh plugin --profile web add dsh-ciel
 
 > 以下限制针对 Ciel 额外记录。DSH 本身仍可能保存顾问/评审子会话日志；清理 Ciel 旧记录不删除这些原生会话，也不代表全局无痕。
 
-新版记录只写入版本化数据根 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`：`kind` 为 `reviews` / `evidence` / `advice`（保留 `calls` / `feedback`）。每条记录封装 `schemaVersion`、`kind`、`sessionId`、`id` 与 `value`，以随机临时文件 `wx` 写入后原子重命名替换同键记录；目录 0700、文件 0600，单文件上限 512 KiB，评审列表按游标分页（默认 100 条、每页至多 200 条 / 16 MiB），受限页显式提供下一游标；分诊按每条评审合并保存，不随点击次数增加文件。读取校验会话/记录归属，拒绝符号链接、硬链接与非普通文件，并在读取前后检查大小与文件身份。**旧 `$DSH_HOME/dsh-advisor/` JSONL 历史不迁移、不读取；`ciel` 设置命名空间保留。**
+新版记录只写入版本化数据根 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`：`kind` 为 `reviews` / `evidence` / `advice` / `inbox`（保留 `calls` / `feedback`）。每条记录封装 `schemaVersion`、`kind`、`sessionId`、`id` 与 `value`，以随机临时文件 `wx` 写入后原子重命名替换同键记录；目录 0700、文件 0600，单文件上限 512 KiB，评审列表按游标分页（默认 100 条、每页至多 200 条 / 16 MiB），受限页显式提供下一游标；分诊按每条评审合并保存，不随点击次数增加文件。读取校验会话/记录归属，拒绝符号链接、硬链接与非普通文件，并在读取前后检查大小与文件身份。**旧 `$DSH_HOME/dsh-advisor/` JSONL 历史不迁移、不读取；`ciel` 设置命名空间保留。**
 
 评审证据由宿主在真实 `read` / `grep` / `glob` 结果上分配 `e1`、`e2`… 引用；`groundReview` 只接受本次账本中实际存在且被引用的编号，伪造、越权或未返回的编号整条作废（对应疑点退回未查）。保存片段有界：每条记录默认 16 KiB / 200 行，每轮评审合计 128 KiB / 128 条；模型看到的就是落盘的那段字节，完整内存副本在评审结束后释放。`contentSha256` 只用于一致性检查，**不证明防篡改，也不证明引用内容为真**。
 
@@ -150,7 +161,7 @@ dsh plugin --profile web add dsh-ciel
 
 优先使用下面的 `verify-runtime.mjs`：它自动使用临时 `DSH_HOME` 并在结束时清理，不留下主侧边栏测试会话。Ciel 的后台子会话由 DSH 按 `origin: subagent` 隐藏，不能把用户正常的主会话一起隐藏。
 
-仓库根是私有开发包（`dsh-ciel-development`），提供 esbuild 与官方 `@deepseek-ai/dsh-util-workspace-path`；根 `pnpm-workspace.yaml` 只包含根包，插件依赖独立安装。浏览器端源码是 `plugin/src/client.js` 与 `plugin/src/sidebar.js`（含 `sidebar.css`），由 `scripts/build-client.mjs` 打成单一 `plugin/client.js`：
+仓库根是私有开发包（`dsh-ciel-development`），提供 esbuild 与官方 `@deepseek-ai/dsh-util-workspace-path`；根 `pnpm-workspace.yaml` 只包含根包，插件依赖独立安装。浏览器端源码是 `plugin/src/` 下的 UI、状态、调度、锚点及 Remote 模块，由 `scripts/build-client.mjs` 打成单一 `plugin/client.js`：
 
 ```sh
 pnpm install
@@ -174,7 +185,9 @@ TSX_TSCONFIG_PATH=$DSH_CHECKOUT/tsconfig.base.client.json \
 node --import tsx/esm /path/to/dsh-ciel/scripts/verify-sidebar-native.mjs
 ```
 
-0.18.0 受限 PTC 评审：默认 PTC 执行链 **37/37 通过**（0 失败、0 网络；执行链测试使用脚本模型，未做额外的真实模型评审/A/B 测试），单元测试 **428/428**（含运行时 15 项），Chromium 夹具 **22/22**（页面/控制台错误 0、网络 0），原生 SettingsRoot 回归通过（网络/模型 0），生成客户端 `--check` 与源码一致。宿主变更需**重启 DSH 并刷新页面**后生效（建议人工重启）；正式实例上的人工 GUI 验收仍待进行。测试网络 0 只说明测试本身，不代表整个开发任务没有真实模型调用。候选包冒烟 18/18（解包 12 文件、仅 production 依赖、`/tmp` 真实 QuickJS Promise/`.then`/`for-await`、模块相对 worker 定位）；缓存缺失时 `--prefer-offline` 会拉依赖包，打包/安装不保证全程 0 网络；仅 Node 24.20.0 实测，Node 22.19 尚未测试。详见 [受限 PTC 评审](docs/ptc-review.md)。
+0.19.0 验证（2026-09-19）：单元 **605/605**、DSH **0.1.6-alpha.2** 实际受限运行链 **52/52**（脚本模型、网络 0），真实隔离 Web 的评审、收件箱、分叉、刷新、协议故障、主题及卸载回归通过；Node **24.21.0**。架构、缓存规则与尚未实施的容量/恢复能力见 [architecture.md](docs/architecture.md) 和 [architecture-decisions.md](docs/architecture-decisions.md)。日常 DSH 尚未启动验收。
+
+最初的 0.18.0 受限 PTC 评审：默认 PTC 执行链 **37/37 通过**（0 失败、0 网络；执行链测试使用脚本模型，未做额外的真实模型评审/A/B 测试），单元测试 **428/428**（含运行时 15 项），Chromium 夹具 **22/22**（页面/控制台错误 0、网络 0），原生 SettingsRoot 回归通过（网络/模型 0），生成客户端 `--check` 与源码一致。宿主变更需**重启 DSH 并刷新页面**后生效（建议人工重启）；正式实例上的人工 GUI 验收仍待进行。测试网络 0 只说明测试本身，不代表整个开发任务没有真实模型调用。候选包冒烟 18/18（解包 12 文件、仅 production 依赖、`/tmp` 真实 QuickJS Promise/`.then`/`for-await`、模块相对 worker 定位）；缓存缺失时 `--prefer-offline` 会拉依赖包，打包/安装不保证全程 0 网络；仅 Node 24.20.0 实测，Node 22.19 尚未测试。详见 [受限 PTC 评审](docs/ptc-review.md)。
 
 0.17.0 历史验证（只限时、仍用原生读工具）：390 个单元测试、22 个真实 DSH 离线执行链场景、22 项 Chromium 夹具检查及原生设置页回归通过。总时限包含资料准备和两个阶段；超时不追加模型。该记录不等于 0.18.0 已部署。详见 [只限时评审交接](docs/time-only-review.md)。
 

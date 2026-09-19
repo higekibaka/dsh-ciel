@@ -1,8 +1,12 @@
 # dsh-ciel 设计文档
 
+当前实现的模块边界与后续决策见 [architecture.md](architecture.md)；行为验收以 [review-contract.md](review-contract.md) 为准。以下内容保留设计依据。
+
 > 0.11.0 起由 dsh-advisor 更名 dsh-ciel（大贤者夏尔）；本文保留写作时的历史名引用。
 >
 > 本文包含历史推演。“批评者不给工具”、早期 fail-open 等描述不代表当前实现。现行规则见 [评审契约](review-contract.md) 与 [读取隔离和模型标识](read-isolation.md)。
+> `/advise` 人工命令已在 Unreleased 移除；下文相关路线图仅保留历史背景，当前顾问入口为 `ask_advisor`。
+> 当前规划提醒与额度门共用已结束/在途咨询状态；被准入门拒绝的尝试不算咨询，也不抑制随后的一次提醒。提醒消费依据宿主生成的对应快照，用户引用标记不算已经提醒。
 
 ## 1. 问题与动机
 

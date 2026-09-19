@@ -3,6 +3,8 @@
  * Default is keyless scripted-model replay. --live uses ONLY the explicitly
  * allowed DeepSeek route, with native adapter retries disabled.
  * DSH_CHECKOUT=/path/to/deepseek-harness node scripts/verify-runtime.mjs [--live]
+ * CIEL_VERIFY_NATIVE_PEERS=1 also verifies the plugin's installed peer links,
+ * without the fixture resolver substituting shared Harness modules.
  *
  * The review child runs the delivered PTC engine: the runner presents run_code
  * for every tooled phase and dispatches nested readers through the private
@@ -16,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createRequire, registerHooks } from 'node:module'
+import { runRequestInputCases } from './fixtures/request-input-cases.mjs'
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT must point to a built DSH checkout')
 // One identity for the shared modules: this script and the plugin must use the
@@ -25,6 +28,7 @@ const targetCordis = targetRequire.resolve('@deepseek-ai/cordis')
 const targetTypert = join(checkout, 'packages/typert/protocol/lib/index.js')
 const runnerUrl = new URL('../plugin/review-runner.js', import.meta.url).href
 const resolutionHook = registerHooks({ resolve(specifier, context, nextResolve) {
+  if (process.env.CIEL_VERIFY_NATIVE_PEERS === '1') return nextResolve(specifier, context)
   const paths = { '@deepseek-ai/dsh-subagent': 'packages/subagent/subagent', '@deepseek-ai/dsh-llm': 'packages/llm/llm', '@deepseek-ai/dsh-tools': 'packages/core/tools' }
   if (context.parentURL === runnerUrl && paths[specifier]) return { url: pathToFileURL(join(checkout, paths[specifier], 'lib/index.js')).href, shortCircuit: true }
   if (specifier === '@deepseek-ai/cordis') return { url: pathToFileURL(targetCordis).href, shortCircuit: true }
@@ -106,11 +110,11 @@ let callId = 0
 const SNAPSHOT_TOOLS = new Set(['read', 'grep', 'glob'])
 
 /** One native tool-call block per name, all with the same fixture argument. */
-function nativeToolResponse(names, text = '', target = fixture) {
+function nativeToolResponse(names, text = '', target = fixture, argumentsOverride) {
   const chunks = text ? textResponse(text).slice(0, -1) : []
   names.forEach((name, n) => {
     const index = n + (text ? 1 : 0), id = 'call-' + (++callId)
-    const args = JSON.stringify({ file_path: target })
+    const args = JSON.stringify(argumentsOverride ?? { file_path: target })
     chunks.push(
       { type: 'block-start', index, blockType: 'tool-call' },
       { type: 'tool-call-delta', index, id, name, argumentsDelta: args },
@@ -188,6 +192,7 @@ function createSentinelCodeRuntime(language = 'typescript') {
     language,
     isolation: 'sentinel',
     runs,
+    resolve(request) { return { ...request, cwd: request.cwd ?? process.cwd(), timeoutMs: null } },
     async run(request) {
       runs.push({ program: String(request?.program ?? ''), bindings: request?.bindings?.length ?? 0 })
       throw new Error('review must not execute the root/stock code runtime (sentinel)')
@@ -209,7 +214,8 @@ class ScriptedAdapter extends LlmAdapter {
         collectToolEvidence(part.text, this.refs, timeSamples)
       }
     }
-    this.requests.push({ tools: (options.tools || []).map((tool) => tool.name), timeSamples, lastToolResult: this.lastToolResult, leakedCredential: leaves.some((t) => t.includes('FAKE_CREDENTIAL_MARKER_ONLY')), leakedProcess: leaves.some((t) => t.includes('FAKE_PROCESS_MARKER_ONLY')) })
+    const inputMarkers = Object.fromEntries(['HUMAN_TASK_MARKER', 'RUNTIME_CONTEXT_MARKER', 'OLD_ADVISOR_MARKER', 'COMMAND_QUESTION_MARKER', 'REFINEMENT_MARKER', 'NEW_TASK_MARKER', 'SUMMARY_OPINION_MARKER', 'GOAL_OBJECTIVE_MARKER'].map(marker => [marker, leaves.some(text => text.includes(marker))]))
+    this.requests.push({ tools: (options.tools || []).map((tool) => tool.name), inputMarkers, timeSamples, lastToolResult: this.lastToolResult, leakedCredential: leaves.some((t) => t.includes('FAKE_CREDENTIAL_MARKER_ONLY')), leakedProcess: leaves.some((t) => t.includes('FAKE_PROCESS_MARKER_ONLY')) })
     this.notify(options)
     const item = this.script.shift()
     if (!item) throw new Error('script exhausted (unexpected model call)')
@@ -406,6 +412,9 @@ const ptcCases = [
     rootRuntime: 'none',
     expect: (r, tools, requests, context) => {
       assert.equal(r.ok, false)
+      assert.equal(r.code, 'CIEL_REVIEW_SERVICE_NOT_READY')
+      assert.equal(r.review.code, r.code)
+      assert.equal(r.stage, 'runtime')
       assert.equal(r.review.status, 'error')
       assert.ok(requests.length <= 2, 'fails before the first tooled request')
       assert.equal(requests.every((entry) => !entry.tools.includes('run_code')), true)
@@ -417,6 +426,9 @@ const ptcCases = [
     rootRuntime: 'python',
     expect: (r, tools, requests, context) => {
       assert.equal(r.ok, false)
+      assert.equal(r.code, 'CIEL_REVIEW_RUNTIME_INCOMPATIBLE')
+      assert.equal(r.review.code, r.code)
+      assert.equal(r.stage, 'runtime')
       assert.equal(r.review.status, 'error')
       assert.ok(requests.length <= 2, 'a non-TS root runtime fails before the tooled request')
       assert.equal(requests.every((entry) => !entry.tools.includes('run_code')), true)
@@ -452,7 +464,7 @@ async function runCase(name, script, options = {}) {
   // timer needs a ref'ed handle only in this standalone timeout fixture.
   const loopHold = options.timeoutSeconds ? setInterval(() => {}, 1000) : undefined
   let plugin, parent
-  const adapter = new ScriptedAdapter([textResponse(options.draft || '文件 ' + fixture + ' 共 3 行。'), ...script])
+  const adapter = new ScriptedAdapter([...(options.parentScript || [textResponse(options.draft || '文件 ' + fixture + ' 共 3 行。')]), ...script])
   const executed = []
   const visibleReplies = []
   const childToolEvents = []
@@ -509,7 +521,7 @@ async function runCase(name, script, options = {}) {
     // isolated runtime; reaching this one is a wiring failure, not a fallback.
     const sentinelRuntime = createSentinelCodeRuntime(options.rootRuntime === 'python' ? 'python' : 'typescript')
     if (options.rootRuntime !== 'none') {
-      await ctx.plugin({ name: 'ciel-verify-sentinel-runtime', apply(c) { c.provide('codeRuntime', sentinelRuntime) } }).await()
+      await ctx.plugin({ name: 'ciel-verify-sentinel-runtime', apply(c) { c.provide('ptcRuntime', sentinelRuntime) } }).await()
     }
     ctx.get('llm').registerAdapter(['fixture'], adapter)
     if (live) {
@@ -529,57 +541,88 @@ async function runCase(name, script, options = {}) {
       name: toolName, description: toolName === 'read' ? 'Read the fixture file; includes numbered lines.' : 'Discover the fixture path. Only the test fixture exists.',
       parameters: { type: 'object', properties: { file_path: { type: 'string' }, path: { type: 'string' }, pattern: { type: 'string' } }, additionalProperties: false },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-      async execute() {
+      async execute(_args, exec) {
+        if ((options.planning || options.parentTools) && exec.agent === parent) return 'Synthetic independent work completed.'
         throw new Error('Unrestricted fixture reader must never execute for a review child')
       },
+    })
+    if (options.planning) tools.register({
+      name: 'todo_write', description: 'Record a synthetic plan.', parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'Synthetic plan saved.',
     })
     plugin = ctx.plugin(ciel, {
       ...ciel.Config({}), provider: 'fixture', model: 'fixed', criticProvider: live ? 'deepseek-official' : 'fixture',
       criticModel: live ? model : 'fixed', criticEffort: live ? 'low' : 'provider',
       criticExploreBudget: options.legacyQueries, criticMaxTokens: 4096, criticMaxRequests: options.legacyRequests,
       criticTimeoutSeconds: options.timeoutSeconds ?? 180,
-      guidanceEnabled: false, planReminderEnabled: false,
+      guidanceEnabled: false, planReminderEnabled: Boolean(options.planning),
       ...(options.advisor ? { requireExploration: false, enforceFollowupGap: false } : {}),
     })
     await plugin.await()
     parent = await ctx.get('agentLoop').create('verify-' + (++seq), { provider: 'fixture', model: 'fixed' }, { cwd: home })
-    parent.followup(createUserMessage({ content: [{ type: 'text', text: options.request || '核对文件行数，必要时读取文件。' }], source: { kind: 'user' } }))
+    if (options.setupParent) await options.setupParent({ ctx, parent, adapter, load, createUserMessage, checkout })
+    if (options.parentContext) parent.ctx.get('systemPrompt').context({ name: 'fixture-context', order: 10, text: options.parentContext })
+    if (options.planning || options.parentTools) parent.ctx.get('tools').presentAs('native')
+    parent.followup(createUserMessage({ content: [{ type: 'text', text: options.request || '核对文件行数，必要时读取文件。' }], source: options.requestSource || { kind: 'user' } }))
     await parent.whenIdle()
-    const target = parent.session.snapshotEvents().findLast((e) => e.type === 'assistant/message')
+    if (options.legacyAdvice) {
+      // Reproduce the retired producer's persisted event shapes, never register
+      // or execute the removed command. The real steer crosses a native turn.
+      if (options.legacyAdvice === 'matched') parent.session.append('command/run', { commandId: 'old-command', name: 'advise', args: 'COMMAND_QUESTION_MARKER', source: { kind: 'user' } })
+      parent.steer({ id: 'advise-old123', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text:
+        '[advisor:advise-result] 用户通过 /advise 命令向顾问模型发起咨询，结果如下' +
+        '（用户已在卡片中看到同样的内容；请结合当前工作自行采纳或讨论，不必复述原文）：\n\n' +
+        '问题：COMMAND_QUESTION_MARKER\n\n顾问回答：\nOLD_ADVISOR_MARKER',
+      }] })
+      await parent.whenIdle()
+    }
+    const prepared = options.prepareReview ? await options.prepareReview({ ctx, parent, adapter, load, createUserMessage, checkout }) : undefined
+    if (prepared?.parent) {
+      parent = prepared.parent
+      createdChildIds.clear()
+      childOwnership.length = 0
+    }
+    const target = prepared?.target || parent.session.snapshotEvents().findLast((e) => e.type === 'assistant/message')
     assert.ok(target?.data.message.id, 'fixture parent produced a draft')
     const request = { sessionId: parent.id, messageId: target.data.message.id }
     const service = ctx.get('advisorReview')
-    if (options.privateAdvisor || options.privateCommand) {
-      if (options.privateAdvisor) {
-        const outcome = await tools.execute({ agent: parent, callId: 'private-advisor', name: 'ask_advisor', signal: new AbortController().signal, arguments: { question: 'Check the fixture.', context: 'API_KEY=FAKE_CREDENTIAL_MARKER_ONLY' } })
-        assert.equal(outcome.isError, true)
-        assert.match(outcome.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n'), /疑似凭据/)
-      } else {
-        const outcome = await ctx.get('commands').execute(parent, '/advise API_KEY=FAKE_CREDENTIAL_MARKER_ONLY', [], new AbortController().signal)
-        assert.equal(outcome.result.kind, 'error')
-        assert.match(outcome.result.text, /疑似凭据/)
-      }
+    if (options.planning) {
+      const events = parent.session.snapshotEvents()
+      const reminders = events.filter(event => event.type === 'user/message' && event.data.source?.sections?.some(section => section.name === 'advisor:plan-reminder'))
+      assert.equal(reminders.length, 1, 'exactly one durable reminder after planning')
+      assert.equal(ciel.reminderTextFor(parent, () => ({ enabled: true, planReminderEnabled: true })), '', 'fresh readers see the consumed reminder')
+      assert.equal(ciel.gateFacts(parent).settledThisTurn, 0, 'rejected consultation does not spend quota')
+      if (options.planning === 'rejected') assert.ok(events.some(event => event.type === 'tool/result' && JSON.stringify(event.data).includes('context is required:')))
+      assert.equal(adapter.script.length, 0)
+      assert.equal(ctx.get('agents').list().length, 1)
+      assert.equal(service.coordinator.activeOperations.size, 0)
+      reports.push({ name, passed: true, reminders: reminders.length, settledConsultations: 0, modelRequests: adapter.requests.length })
+      console.log(name, JSON.stringify(reports.at(-1)))
+      return
+    }
+    if (options.privateAdvisor) {
+      const outcome = await tools.execute({ agent: parent, callId: 'private-advisor', name: 'ask_advisor', signal: new AbortController().signal, arguments: { question: 'Check the fixture.', context: 'API_KEY=FAKE_CREDENTIAL_MARKER_ONLY' } })
+      assert.equal(outcome.isError, true)
+      assert.match(outcome.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n'), /疑似凭据/)
       assert.equal(adapter.requests.length, 1, 'only the fake parent draft, no advisor request')
-      assert.equal(service.activeOperations.size, 0)
+      assert.equal(service.coordinator.activeOperations.size, 0)
       reports.push({ name, passed: true, advisorRequests: 0 })
       console.log(name, JSON.stringify(reports.at(-1)))
       return
     }
-    if (options.command) {
-      const delivered = []
-      const steer = parent.steer
-      parent.steer = (message) => { delivered.push(message) }
-      try {
-        const execution = await ctx.get('commands').execute(parent, '/advise Check this offline fixture.', [], new AbortController().signal)
-        assert.equal(execution.result.kind, 'success')
-        const stored = await service.callModelUsage({ sessionId: parent.id, kind: 'command', id: execution.commandId })
-        assert.deepEqual(stored.modelUsage, { requested: { provider: 'fixture', model: 'fixed' }, used: [{ provider: 'fixture', model: 'fixed' }] })
-        assert.equal(delivered.length, 1)
-        assert.equal(ctx.get('agents').list().length, 1)
-        assert.equal(service.activeOperations.size, 0)
-        reports.push({ name, passed: true, storedModelUsage: stored.modelUsage, delivered: delivered.length })
-        console.log(name, JSON.stringify(reports.at(-1)))
-      } finally { parent.steer = steer }
+    if (options.removedCommand) {
+      const commands = ctx.get('commands')
+      assert.equal(commands.find(parent, 'advise'), undefined)
+      assert.equal(commands.list(parent).some(command => command.name === 'advise'), false)
+      const before = parent.session.snapshotEvents().length
+      assert.equal(await commands.execute(parent, '/advise Check this offline fixture.', [], new AbortController().signal), undefined)
+      await parent.whenIdle()
+      assert.equal(parent.session.snapshotEvents().length, before, 'removed command appends no events or feedback')
+      assert.equal(adapter.requests.length, 1, 'only the fixture parent request; removed command starts no model')
+      assert.equal(ctx.get('agents').list().length, 1)
+      assert.equal(service.coordinator.activeOperations.size, 0)
+      reports.push({ name, passed: true, registered: false, advisorRequests: 0 })
+      console.log(name, JSON.stringify(reports.at(-1)))
       return
     }
     if (options.advisor) {
@@ -594,7 +637,7 @@ async function runCase(name, script, options = {}) {
       const deniedUsage = await service.callModelUsage({ sessionId: parent.id, kind: 'tool', id: 'advice-1' })
       assert.deepEqual(deniedUsage.modelUsage.used, [], 'a rejected parallel call does not claim model execution')
       assert.equal(adapter.requests.length, 2, 'fixture draft plus exactly one advisor request')
-      assert.equal(service.activeOperations.size, 0)
+      assert.equal(service.coordinator.activeOperations.size, 0)
       assert.equal(ctx.get('agents').list().length, 1)
       reports.push({ name, passed: true, accepted: 1, rejected: 3, advisorRequests: 1 })
       console.log(name, JSON.stringify(reports.at(-1)))
@@ -612,6 +655,8 @@ async function runCase(name, script, options = {}) {
       if (type === 'subagent/catalog' && ++catalogAttempts === options.failCatalogAt) throw new Error('fixture catalog append failure')
       return append.call(this, type, ...args)
     }
+    const reviewRequestOffset = adapter.requests.length
+    const expectedRoots = ctx.get('agents').roots()
     let result
     try {
       const pending = service.start(request)
@@ -640,17 +685,17 @@ async function runCase(name, script, options = {}) {
       assert.equal(result.review.explore.budget, undefined)
       assert.ok(result.review.explore.toolCalls >= executed.length, 'query telemetry includes allowed attempts that returned an error; executed lists successful reads only')
     }
-    assert.equal(service.inFlight.size, 0)
-    assert.equal(service.children.size, 0)
-    assert.equal(service.pendingReviewControls.size, 0)
+    assert.equal(service.coordinator.inFlight.size, 0)
+    assert.equal(service.coordinator.children.size, 0)
+    assert.equal(service.coordinator.pendingReviewControls.size, 0)
     assert.equal(sentinelRuntime.runs.length, 0, 'the review child must never execute the root/stock runtime')
-    if (!options.refusedBeforeSpawn) assert.ok(createdChildIds.size > 0, 'a published review child was created')
+    if (!options.refusedBeforeSpawn) assert.ok(createdChildIds.size > 0, 'a published review child was created: ' + JSON.stringify({ name, error: result.error }))
     if (!options.failCatalogAt && !options.refusedBeforeSpawn) assert.ok(childOwnership.length > 0, 'a published review child was observed while running')
-    assert.ok(childOwnership.every((entry) => entry.ownedByParent && !entry.isRoot && entry.roots === 1), 'review child must be parent-owned and never a runtime root: ' + JSON.stringify(childOwnership))
+    assert.ok(childOwnership.every((entry) => entry.ownedByParent && !entry.isRoot && entry.roots === expectedRoots.length), 'review child must be parent-owned and never a runtime root: ' + JSON.stringify(childOwnership))
     assert.ok(adapter.requests.every((r) => !r.leakedCredential && !r.leakedProcess), 'no fake credential or author process content reaches child input')
-    if (!live && !options.refusedBeforeSpawn && (!options.failCatalogAt || adapter.requests.length > 1)) assert.deepEqual(adapter.requests[1].tools, [], 'first review request is tool-free before any model dispatch')
-    if (adapter.requests.length > 2) assert.deepEqual(adapter.requests[2].tools, ['run_code'], 'PTC verification phase sees only the transport')
-    assert.equal(service.activeOperations.size, 0, 'catalog errors also release operation ownership')
+    if (!live && !options.refusedBeforeSpawn && (!options.failCatalogAt || adapter.requests.length > reviewRequestOffset)) assert.deepEqual(adapter.requests[reviewRequestOffset].tools, [], 'first review request is tool-free before any model dispatch')
+    if (adapter.requests.length > reviewRequestOffset + 1) assert.deepEqual(adapter.requests[reviewRequestOffset + 1].tools, ['run_code'], 'PTC verification phase sees only the transport')
+    assert.equal(service.coordinator.activeOperations.size, 0, 'catalog errors also release operation ownership')
     if (result.ok) {
       assert.ok(result.review.modelUsage.used.length > 0, 'successful review records actual child response routes')
       assert.equal(result.review.modelUsage.requested.provider, live ? 'deepseek-official' : 'fixture')
@@ -659,11 +704,11 @@ async function runCase(name, script, options = {}) {
       assert.equal(result.review.stats.checked, result.review.suspects.total, 'host ledger cannot expand the nominated pool')
       assert.ok(result.review.annotations.every((a) => result.review.outcomes.some((o) => o.id === a.suspect && o.outcome === 'defect')), 'only defect ids may annotate')
     }
-    assert.equal(ctx.get('agents').list().length, 1, 'only the fixture parent remains; child handles drained')
-    assert.deepEqual(ctx.get('agents').roots(), [parent], 'only the fixture parent is a runtime root after review teardown')
+    assert.equal(ctx.get('agents').list().length, expectedRoots.length, 'only fixture roots remain; review child handles drained')
+    assert.deepEqual(ctx.get('agents').roots(), expectedRoots, 'review teardown preserves the fixture roots')
     assert.equal(await readFile(secondFixture, 'utf8'), 'delta\nepsilon\n')
     assert.equal(await readFile(fixture, 'utf8'), 'alpha\nbeta\ngamma\n', 'fixture remained unchanged')
-    reports.push({ name, ok: result.ok, status: result.review?.status, verdict: result.review?.verdict, coverage: result.review?.coverage, stats: result.review?.stats, requests: result.review?.modelRequests, toolBodies: executed.length, salvaged: !!result.review?.explore?.salvaged, annotations: result.review?.annotations?.map((a) => ({ severity: a.severity, title: a.title, evidence: a.evidence, comment: a.comment })), error: result.error })
+    reports.push({ name, ok: result.ok, status: result.review?.status, verdict: result.review?.verdict, coverage: result.review?.coverage, requestContext: result.review?.requestContext, stats: result.review?.stats, requests: result.review?.modelRequests, toolBodies: executed.length, salvaged: !!result.review?.explore?.salvaged, annotations: result.review?.annotations?.map((a) => ({ severity: a.severity, title: a.title, evidence: a.evidence, comment: a.comment })), error: result.error, code: result.code, stage: result.stage })
     console.log(name, JSON.stringify(reports.at(-1)))
     if (live && result.review?.coverage === 'partial') console.log('incomplete-response-diagnostic', JSON.stringify(visibleReplies))
     try {
@@ -703,6 +748,50 @@ try {
     await runCase('live-honest-abstention', [], { request: '不要调用工具；如果不知道 ' + fixture + ' 的行数，就诚实说明无法确认，不要猜。', draft: '我没有读取文件，因此无法确认它的行数。', expect: (r) => { assert.equal(r.ok, true); assert.equal(r.review.verdict, 'pass'); assert.equal(r.review.annotations.length, 0) } })
     await runCase('live-stream-cancel', [], { cancel: true, expect: (r) => { assert.equal(r.review.status, 'cancelled'); assert.equal(r.review.modelRequests, 1) } })
   } else {
+    await runRequestInputCases({ runCase, textResponse, nativeToolResponse, suspects, toolResponse, pass })
+    for (const planning of ['normal', 'rejected']) {
+      const parentScript = [
+        ...(planning === 'rejected' ? [nativeToolResponse(['ask_advisor'], '', fixture, { question: 'Which boundary?', context: '' })] : []),
+        nativeToolResponse(['todo_write'], '', fixture, {}), nativeToolResponse(['read']), textResponse('Synthetic plan complete.'),
+      ]
+      await runCase('scripted-planning-' + planning, [], { planning, parentScript })
+    }
+    await runCase('scripted-request-source-isolation', [textResponse(suspects), toolResponse(['read']), textResponse(pass)], {
+      request: 'HUMAN_TASK_MARKER Verify the file count.', parentContext: 'RUNTIME_CONTEXT_MARKER',
+      expect: (result, _tools, requests) => {
+        assert.equal(requests[0].inputMarkers.RUNTIME_CONTEXT_MARKER, true, 'actual native context reached the author')
+        for (const request of requests.slice(1)) {
+          assert.equal(request.inputMarkers.HUMAN_TASK_MARKER, true)
+          assert.equal(request.inputMarkers.RUNTIME_CONTEXT_MARKER, false, 'runtime context is not a human requirement')
+        }
+        assert.deepEqual(result.review.requestContext, { mode: 'current-turn', limited: false })
+        assert.equal(result.review.status, 'sound')
+      },
+    })
+    for (const legacyAdvice of ['matched', 'unmatched']) await runCase('scripted-request-legacy-' + legacyAdvice,
+      [textResponse('文件 ' + fixture + ' 共 3 行。'), textResponse(suspects), toolResponse(['read']), textResponse(pass)], {
+        request: 'HUMAN_TASK_MARKER Verify the file count.', legacyAdvice,
+        expect: (result, _tools, requests) => {
+          assert.equal(requests[1].inputMarkers.OLD_ADVISOR_MARKER, true, 'real steer reached the author')
+          for (const request of requests.slice(2)) {
+            assert.equal(request.inputMarkers.OLD_ADVISOR_MARKER, false)
+            assert.equal(request.inputMarkers.HUMAN_TASK_MARKER, legacyAdvice === 'matched')
+            assert.equal(request.inputMarkers.COMMAND_QUESTION_MARKER, legacyAdvice === 'matched')
+          }
+          assert.equal(result.review.requestContext.limited, legacyAdvice !== 'matched')
+          assert.equal(result.review.status, legacyAdvice === 'matched' ? 'sound' : 'incomplete')
+          if (legacyAdvice !== 'matched') assert.match(result.review.coverageNote, /用户请求上下文/)
+        },
+      })
+    await runCase('scripted-request-missing-human', [textResponse(suspects), toolResponse(['read']), textResponse(pass)], {
+      request: 'RUNTIME_CONTEXT_MARKER', requestSource: { kind: 'plugin', plugin: 'fixture-notice' },
+      expect: (result, _tools, requests) => {
+        for (const request of requests.slice(1)) assert.equal(request.inputMarkers.RUNTIME_CONTEXT_MARKER, false)
+        assert.deepEqual(result.review.requestContext, { mode: 'missing', limited: true, reasons: ['missing-input'] })
+        assert.equal(result.review.status, 'incomplete')
+        assert.match(result.review.coverageNote, /请补充明确请求后重新评审/)
+      },
+    })
     for (const phase of [1, 2]) await runCase('scripted-catalog-failure-phase-' + phase, [textResponse(suspects), toolResponse(['read']), textResponse(pass)], {
       failCatalogAt: phase,
       expect: (result) => { assert.equal(result.ok, false); assert.equal(result.review.status, 'error'); assert.equal(result.review.explore?.salvaged ?? false, false) },
@@ -788,9 +877,8 @@ try {
     })
     await runCase('scripted-cancel', ['hang'], { cancel: true, expect: (r) => { assert.equal(r.review.status, 'cancelled'); assert.equal(r.review.modelRequests, 1) } })
     await runCase('scripted-advisor-concurrency', [textResponse('## [high] Boundary\nframing: fixed fixture\npitfalls: concurrency\nverification_target: one request')], { advisor: true })
-    await runCase('scripted-advise-provenance', [textResponse('## [high] Boundary\nframing: fixed fixture\npitfalls: provenance\nverification_target: saved model identity')], { command: true })
+    await runCase('scripted-advise-removed', [], { removedCommand: true })
     await runCase('scripted-sensitive-advisor-input', [], { privateAdvisor: true })
-    await runCase('scripted-sensitive-command-input', [], { privateCommand: true })
     for (const [name, path] of [['dotenv', secretFixture], ['author-record', processFixture], ['symlink', processLink], ['invalid-query', null]]) {
       await runCase('scripted-private-' + name, [textResponse(suspects), toolResponse(['read'], '', path), textResponse(pass)], { expect: (r, tools, requests) => {
         assert.equal(r.ok, true)

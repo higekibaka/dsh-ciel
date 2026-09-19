@@ -37,6 +37,23 @@ test('descriptors and option contract', async () => {
   assert.doesNotThrow(() => assertRuntimeCompatible({ language: 'typescript' }, { language: 'typescript' }))
 })
 
+test('resolved PTC requests execute under the shared review budget and reject authority overrides', async () => {
+  const deadline = Date.now() + 5000
+  const runtime = runtimeWith({ deadlineAt: () => deadline })
+  try {
+    const spec = runtime.resolve({ program: 'return await tools.echo({ value: 42 })', bindings: toolNamespace({ echo: async value => value }) })
+    assert.equal(spec.cwd, process.cwd())
+    assert.ok(spec.timeoutMs > 0 && spec.timeoutMs <= 5000)
+    const result = await runtime.run(spec)
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.value, { value: 42 })
+    assert.throws(() => runtime.resolve({ program: '', bindings: [], timeoutMs: null }), /shared review deadline/)
+    assert.throws(() => runtime.resolve({ program: '', bindings: [], sandboxPolicy: { mode: 'danger-full-access' } }), /sandboxPolicy/)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 test('binding namespaces fail closed without spawning a worker', async () => {
   const runtime = runtimeWith()
   const fn = async () => null

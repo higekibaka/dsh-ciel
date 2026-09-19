@@ -153,7 +153,7 @@ test('advisorTargets answers none without a consultation', () => {
 function evidenceEvents(toolName, outputText) {
   return [
     { seq: 0, type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '请求' }] } },
+    { seq: 1, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '请求' }] } },
     { seq: 2, type: 'tool/call', data: { name: toolName, callId: 'c1', turn: 1 } },
     {
       seq: 3,

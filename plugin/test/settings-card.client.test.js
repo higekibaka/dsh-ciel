@@ -169,7 +169,7 @@ test('global switch is first; common controls open and advanced/model groups sta
   assert.equal(controls[0].props['aria-checked'], true)
   assert.equal(controls[0].props['data-fixture-native'], 'Switch')
   const hint = rt.api.fieldDefinition('enabled').hint
-  for (const part of ['保存后', 'ask_advisor', '/advise', '批注评审', '新的批注回传', '取消正在进行', '既有结果仍可查看']) assert.ok(hint.includes(part), part)
+  for (const part of ['保存后', 'ask_advisor', '批注评审', '新的批注回传', '取消正在进行', '既有结果仍可查看']) assert.ok(hint.includes(part), part)
   const groups = nodes(tree).filter((n) => n.type === 'button' && n.props['aria-expanded'] !== undefined)
   assert.equal(groups.find((n) => text(n).includes('常用设置')).props['aria-expanded'], true)
   for (const name of ['高级设置（通常保持默认）', '顾问管道', '批评者（批注评审）路由']) {

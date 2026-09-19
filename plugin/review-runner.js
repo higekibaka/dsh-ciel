@@ -1,7 +1,7 @@
+import { reviewFailure, classifyReviewFailure } from './review-errors.js'
 import { randomUUID } from 'node:crypto'
 
 const NAME = 'ciel-review-private'
-const UNAVAILABLE = 'Restricted review is unavailable'
 const DENIED = 'Review data unavailable or outside allowed scope'
 const MAX_OUTPUT = 512 * 1024
 const READERS = ['read', 'grep', 'glob']
@@ -16,7 +16,10 @@ function failure(message = DENIED, code = 'CIEL_REVIEW_ACCESS_LIMITED') {
   return error
 }
 function check(control, signal) {
-  if (signal.aborted || control.operation.check() === false) throw failure()
+  const timedOut = () => control.operation.reason?.() === 'review timeout' || signal.reason?.message === 'review timeout'
+  if (signal.aborted) throw reviewFailure(timedOut() ? 'CIEL_REVIEW_TIMEOUT' : 'CIEL_REVIEW_CANCELLED', 'create')
+  try { if (control.operation.check() === false) throw failure() }
+  catch (error) { throw classifyReviewFailure(error, timedOut() || error?.message === 'review timeout' ? 'CIEL_REVIEW_TIMEOUT' : 'CIEL_REVIEW_ACCESS_LIMITED', 'guard') }
 }
 function noteLimited(control, error) {
   if (error?.code === 'CIEL_REVIEW_ACCESS_LIMITED') control.accessLimited = true
@@ -193,6 +196,7 @@ function projectReviewRuntime(runtime, control, signal) {
   return {
     language: runtime.language,
     isolation: runtime.isolation,
+    resolve: (request) => runtime.resolve(request),
     run: (request) => runtime.run(withSanitizedBindings(request, control, signal)),
     dispose: () => runtime.dispose(),
   }
@@ -215,9 +219,9 @@ async function loadTooledModules() {
   let runtime, tools
   try {
     ;[runtime, tools] = await Promise.all([import('./ptc-runtime.js'), import('@deepseek-ai/dsh-tools')])
-  } catch { throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE') }
+  } catch { throw reviewFailure('CIEL_REVIEW_MODULE_MISSING', 'dependencies') }
   if (typeof runtime?.createReviewCodeRuntime !== 'function' || typeof tools?.ToolRuntime !== 'function') {
-    throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE')
+    throw reviewFailure('CIEL_REVIEW_INTERFACE_MISMATCH', 'dependencies')
   }
   return {
     createReviewCodeRuntime: runtime.createReviewCodeRuntime,
@@ -273,26 +277,30 @@ async function disposeTooled(state) {
  */
 function attachTooledRuntime({ childCtx, child, control, signal, enabled, modules, onState }) {
   const { createReviewCodeRuntime, assertRuntimeCompatible, ToolRuntime } = modules
-  const deploymentRuntime = childCtx.get('codeRuntime')
-  if (!usableRuntime(deploymentRuntime)) throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE')
+  const runtimeService = childCtx.get('ptcRuntime') === undefined ? 'codeRuntime' : 'ptcRuntime'
+  const deploymentRuntime = childCtx.get(runtimeService)
+  if (!deploymentRuntime) throw reviewFailure('CIEL_REVIEW_SERVICE_NOT_READY', 'runtime')
+  if (!usableRuntime(deploymentRuntime)) throw reviewFailure('CIEL_REVIEW_RUNTIME_INCOMPATIBLE', 'runtime')
   let privateRuntime
   try {
     privateRuntime = createReviewCodeRuntime({ deadlineAt: () => Date.now() + control.operation.remainingMs() })
-  } catch { throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE') }
+  } catch { throw reviewFailure('CIEL_REVIEW_RUNTIME_INIT_FAILED', 'runtime') }
   // Ownership transfers to the caller BEFORE the first fallible step, so the
   // async rollback path can AWAIT runtime disposal instead of firing it and
   // hoping. This function never disposes asynchronously itself.
   const state = { disposed: false, closed: false, bound: false, hookClosed: false, privateRuntime, privateTools: undefined, hookDispose: undefined, disposers: [] }
   if (typeof onState === 'function') onState(state)
-  if (!usableRuntime(privateRuntime) || typeof privateRuntime.dispose !== 'function') throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE')
-  try { assertRuntimeCompatible?.(privateRuntime, deploymentRuntime) } catch { throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE') }
-  const privateCtx = childCtx.isolate('tools').isolate('codeRuntime').isolate('systemPrompt')
+  if (!usableRuntime(privateRuntime) || typeof privateRuntime.dispose !== 'function') throw reviewFailure('CIEL_REVIEW_RUNTIME_INCOMPATIBLE', 'runtime')
+  try { assertRuntimeCompatible?.(privateRuntime, deploymentRuntime) } catch { throw reviewFailure('CIEL_REVIEW_RUNTIME_INCOMPATIBLE', 'runtime') }
+  const privateCtx = childCtx.isolate('tools').isolate(runtimeService).isolate('systemPrompt')
   state.disposers.push(privateCtx.provide('systemPrompt', privatePromptSink()))
   // Provide the host-projected runtime: the private registry still resolves
   // language/isolation from it, but every allowed reader rejection crossing
   // the guest binding is sanitized first.
-  state.disposers.push(privateCtx.provide('codeRuntime', projectReviewRuntime(privateRuntime, control, signal)))
-  const privateTools = new ToolRuntime(privateCtx, { mode: 'native' })
+  state.disposers.push(privateCtx.provide(runtimeService, projectReviewRuntime(privateRuntime, control, signal)))
+  let privateTools
+  try { privateTools = new ToolRuntime(privateCtx, { mode: 'native' }) }
+  catch { throw reviewFailure('CIEL_REVIEW_REGISTRY_INIT_FAILED', 'registry') }
   state.privateTools = privateTools
   privateTools.presentAs('ptc')
   privateTools.restrict({ allow: [] })
@@ -309,7 +317,7 @@ function attachTooledRuntime({ childCtx, child, control, signal, enabled, module
     try {
       if (state.closed || state.bound !== true || control.allowTools !== true) throw failure()
       check(control, signal)
-      const deployment = childCtx.get('codeRuntime')
+      const deployment = childCtx.get(runtimeService)
       if (deployment === undefined || deployment === null || deployment.language !== state.privateRuntime?.language) throw failure()
       const privateToolsRef = state.privateTools
       const definition = privateToolsRef?.get?.('run_code', child)
@@ -356,15 +364,15 @@ function attachTooledRuntime({ childCtx, child, control, signal, enabled, module
  * is created. A no-tool phase stays native with no readers and no code runtime.
  */
 export async function createRestrictedReviewProvider({ claimControl, bindControl, unbindControl } = {}) {
-  if (![claimControl, bindControl, unbindControl].every(fn => typeof fn === 'function')) throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE')
+  if (![claimControl, bindControl, unbindControl].every(fn => typeof fn === 'function')) throw reviewFailure('CIEL_REVIEW_INTERFACE_MISMATCH', 'dependencies')
   let subagent, llm
   try {
     ;[subagent, llm] = await Promise.all([import('@deepseek-ai/dsh-subagent'), import('@deepseek-ai/dsh-llm')])
     for (const name of ['appendDelegatedPolicyOverrides', 'captureDelegatedPolicyOverrides', 'childSessionMeta', 'resolveChildAgentOptions', 'resolveChildDepth', 'assertSubagentMaxDepth', 'finalAssistantOutput']) {
-      if (typeof subagent[name] !== 'function') throw failure()
+      if (typeof subagent[name] !== 'function') throw reviewFailure('CIEL_REVIEW_INTERFACE_MISMATCH', 'dependencies')
     }
-    if (typeof llm.createUserMessage !== 'function') throw failure()
-  } catch { throw failure(UNAVAILABLE, 'CIEL_REVIEW_BACKEND_UNAVAILABLE') }
+    if (typeof llm.createUserMessage !== 'function') throw reviewFailure('CIEL_REVIEW_INTERFACE_MISMATCH', 'dependencies')
+  } catch (error) { throw classifyReviewFailure(error, 'CIEL_REVIEW_MODULE_MISSING', 'dependencies') }
   return {
     name: NAME,
     inheritsParentContext: false,
@@ -373,7 +381,8 @@ export async function createRestrictedReviewProvider({ claimControl, bindControl
       let control, childId, bindingAttempted = false, handle, tooledState, settled = false
       try {
         // All authority and policy capture precedes the first await in start.
-        if (request.signal.aborted || request.outputSchema !== undefined) throw failure()
+        if (request.signal.aborted) throw reviewFailure(request.signal.reason?.message === 'review timeout' ? 'CIEL_REVIEW_TIMEOUT' : 'CIEL_REVIEW_CANCELLED', 'create')
+        if (request.outputSchema !== undefined) throw failure()
         control = claimControl(request)
         if (!control || typeof control.then === 'function' || typeof control.operation?.check !== 'function' || typeof control.allowTools !== 'boolean') throw failure()
         // A corpus (and its frozen method surface) is required for any tooled
@@ -386,7 +395,7 @@ export async function createRestrictedReviewProvider({ claimControl, bindControl
         if (tooled) {
           // The fail-closed private gate and the shared-deadline clock are
           // required before a tooled phase may start; both are caller-owned.
-          if (typeof control.guard !== 'function') throw failure()
+          if (typeof control.guard !== 'function') throw reviewFailure('CIEL_REVIEW_GUARD_UNAVAILABLE', 'guard')
           if (typeof control.operation.remainingMs !== 'function') throw failure()
         }
         const enabled = tooled ? READERS.filter(name => (!request.toolFilter?.allow || request.toolFilter.allow.includes(name)) && !request.toolFilter?.deny?.includes(name)) : []
@@ -478,9 +487,9 @@ export async function createRestrictedReviewProvider({ claimControl, bindControl
         if (tooledState) await disposeTooled(tooledState)
         // agents.create rejects only after its unpublished rollback is quiet.
         if (bindingAttempted) {
-          try { await unbindControl(control, childId) } catch { throw failure(UNAVAILABLE) }
+          try { await unbindControl(control, childId) } catch { throw reviewFailure('CIEL_REVIEW_CLEANUP_FAILED', 'cleanup') }
         }
-        throw failure(UNAVAILABLE)
+        throw classifyReviewFailure(error, 'CIEL_REVIEW_BACKEND_UNAVAILABLE', error?.stage || 'create')
       }
       const child = handle.agent
       let cancelled = false, disposal
@@ -502,7 +511,7 @@ export async function createRestrictedReviewProvider({ claimControl, bindControl
             output: subagent.finalAssistantOutput(own) ?? [],
             stopReason: cancelled && recorded !== 'completed' ? 'aborted' : recorded,
           }
-        } catch { throw failure(UNAVAILABLE) }
+        } catch (error) { throw classifyReviewFailure(error, 'CIEL_REVIEW_EXECUTION_FAILED', 'run') }
         finally {
           settled = true
           request.signal.removeEventListener('abort', onAbort)
@@ -531,8 +540,8 @@ export async function createRestrictedReviewProvider({ claimControl, bindControl
             // the parent's guard binding while child work may still execute.
             const settledRun = await Promise.allSettled([handle.dispose(), result])
             if (tooledState) await disposeTooled(tooledState)
-            try { await unbindControl(control, childId) } catch { throw failure(UNAVAILABLE) }
-            if (settledRun[0].status === 'rejected') throw failure(UNAVAILABLE)
+            try { await unbindControl(control, childId) } catch { throw reviewFailure('CIEL_REVIEW_CLEANUP_FAILED', 'cleanup') }
+            if (settledRun[0].status === 'rejected') throw reviewFailure('CIEL_REVIEW_CLEANUP_FAILED', 'cleanup')
           })()
           return disposal
         },

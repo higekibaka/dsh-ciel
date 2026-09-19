@@ -3,24 +3,57 @@
  *
  * Injected as one stylesheet by the plugin's client half (the module itself
  * imports nothing). Every selector is scoped to this module's own
- * `data-ciel-*` attributes, so nothing here can leak into the shell, another
- * tab type. Button fill/hover/disabled states stay with the platform primitive;
- * only Ciel action sizing and keyboard focus are enhanced here. Colors use
- * the same fallbacks the shipped text preview uses.
+ * data-ciel-* attributes, so nothing here can leak into the shell or another
+ * tab type. Button fill/hover/disabled states stay with the platform
+ * primitive; only Ciel action sizing, rhythm and keyboard focus are enhanced.
  *
  * Layout contract: the root fills the pane's body as a column scroller owner
  * (head fixed, inner region scrolls, actions fixed), and no surface may push
  * the pane wider than it is — code lines wrap and every flex child that holds
- * text carries `min-width: 0`.
+ * text carries min-width: 0.
+ *
+ * Visual pass: one local scale (--ciel-*) per surface, an unambiguous hierarchy
+ * between the head, the fixed action row and the annotation cards, visible
+ * :focus-visible rings, and container-width adaptation down to 320px. The
+ * evidence/code block, error text and warning boxes stay opaque with
+ * full-opacity text.
+ * Action buttons only get size/layout/type/focus here, so a native Button's
+ * variant fill and text colour are never overwritten.
  */
 
+/* ── local scale, shared by the three surfaces and their state panels ───── */
+
+[data-ciel-review],
+[data-ciel-evidence],
+[data-ciel-advice],
+[data-ciel-state] {
+  --ciel-font: var(--dsh-content-font-size-secondary, 13px);
+  --ciel-font-xs: 12px;
+  --ciel-radius-sm: 6px;
+  --ciel-radius-md: 8px;
+  --ciel-radius-lg: 10px;
+  --ciel-control-h: 36px;
+  --ciel-surface-1: var(--dsw-alias-bg-layer-1, #ffffff);
+  --ciel-surface-2: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06));
+  --ciel-border-soft: var(--dsw-alias-border-l1, rgba(127, 127, 127, .18));
+  --ciel-border: var(--dsw-alias-border-l2, rgba(127, 127, 127, .3));
+  --ciel-text-1: var(--dsw-alias-label-primary, inherit);
+  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary, inherit));
+  --ciel-text-3: var(--dsw-alias-label-tertiary, rgba(127, 127, 127, .85));
+  --ciel-danger: var(--dsw-alias-state-error-primary, #d24949);
+  --ciel-warn: var(--dsw-alias-state-warn-primary, #d29922);
+  --ciel-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .08));
+}
+
 /* Actions are not status chips: native filled variants, larger hit areas,
- * explicit labels, and a visible keyboard focus ring. Never fade the whole row. */
+ * explicit labels, and a visible keyboard focus ring. Never fade the whole row.
+ * Only geometry/type/focus live here — the fill, hover and disabled paints stay
+ * with the platform Button variant. */
 [data-ciel-action] {
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
-  min-height: 36px;
+  min-height: var(--ciel-control-h);
   height: auto;
   padding-top: 6px;
   padding-bottom: 6px;
@@ -29,9 +62,29 @@
   overflow-wrap: anywhere;
 }
 
-[data-ciel-action]:focus-visible {
+/* A disabled Ciel action reads as disabled; only the cursor changes here, so
+   the platform variant keeps its own disabled opacity and fill. */
+[data-ciel-action]:disabled {
+  cursor: default;
+}
+
+[data-ciel-action]:focus-visible,
+[data-ciel-select]:focus-visible,
+[data-ciel-advice-raw] > summary:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 3px;
+}
+
+/* The whole row is the click target of the checkbox; ring the row and keep a
+   28px minimum target. */
+[data-ciel-pick] {
+  min-height: 28px;
+}
+
+[data-ciel-pick]:focus-within {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+  border-radius: var(--ciel-radius-sm);
 }
 
 [data-ciel-summary-head] {
@@ -47,8 +100,8 @@
 [data-ciel-summary-copy] {
   flex: 1 1 220px;
   min-width: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font);
   overflow-wrap: anywhere;
 }
 
@@ -69,16 +122,21 @@
   gap: 8px;
   box-sizing: border-box;
   height: 100%;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   padding: 10px;
   overflow: hidden;
   color: var(--dsw-alias-label-primary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-size: var(--ciel-font);
   line-height: 1.6;
+  /* The opaque reading surface; contrast never depends on what is behind it. */
+  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));
+  container: ciel-surface / inline-size;
 }
 
-/* The loading / failed / unavailable / malformed panel: centered copy. */
+/* The loading / failed / unavailable / malformed panel: centered copy. It is a
+   full-body state, so it stays plain and opaque rather than materialized. */
 [data-ciel-state] {
   display: flex;
   flex: 1 1 auto;
@@ -87,13 +145,16 @@
   justify-content: center;
   box-sizing: border-box;
   height: 100%;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   padding: 12px 10px;
   overflow: auto;
-  color: var(--dsw-alias-label-secondary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font);
   line-height: 1.6;
+  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));
+  container: ciel-surface / inline-size;
 }
 
 [data-ciel-state] > p {
@@ -102,7 +163,12 @@
 }
 
 [data-ciel-state='failed'] {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--ciel-danger);
+}
+
+/* The failure reason is the headline of that panel. */
+[data-ciel-state='failed'] > p:first-child {
+  font-weight: 600;
 }
 
 /* ── headers ────────────────────────────────────────────────────────────── */
@@ -114,7 +180,7 @@
   gap: 4px;
   min-width: 0;
   padding-bottom: 8px;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 [data-ciel-review-head] > [data-ciel-review-status] {
@@ -126,8 +192,8 @@
 }
 
 [data-ciel-review-status] > span {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
@@ -140,13 +206,13 @@
   align-items: center;
   min-width: 0;
   padding-bottom: 8px;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 [data-ciel-review-summary] {
   margin: 0;
   min-width: 0;
-  color: var(--dsw-alias-label-primary);
+  color: var(--ciel-text-1);
   font-size: var(--dsh-content-font-size, 14px);
   overflow-wrap: anywhere;
 }
@@ -168,13 +234,13 @@
 [data-ciel-advice-usage] {
   margin: 0;
   min-width: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
 [data-ciel-evidence-path] {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--ciel-text-2);
 }
 
 /* ── provenance and failure warnings ────────────────────────────────────── */
@@ -183,8 +249,8 @@
 [data-ciel-evidence-hint],
 [data-ciel-current-line-hint] {
   margin: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
@@ -194,24 +260,33 @@
 [data-ciel-evidence-reported] {
   margin: 0;
   padding: 6px 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
   background: var(--dsw-alias-state-warn-tertiary);
-  border: 0.5px solid var(--dsw-alias-state-warn-primary);
-  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: var(--ciel-radius-sm);
 }
 
-/* Withheld content is a boundary, not a warning about the file: neutral. */
+/* Withheld content is a boundary, not a warning about the file: a neutral
+   opaque box, never a translucent wash. */
 [data-ciel-evidence-withheld] {
   margin: 0;
   padding: 6px 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
-  background: var(--dsw-alias-interactive-bg-hover);
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
+  background: var(--ciel-surface-2);
+  border: 1px solid var(--ciel-border);
+  border-radius: var(--ciel-radius-sm);
+}
+
+/* A missing snippet is a content state, keep it readable and opaque. */
+[data-ciel-evidence-missing] {
+  margin: 0;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
+  overflow-wrap: anywhere;
 }
 
 /* ── review annotations ─────────────────────────────────────────────────── */
@@ -235,9 +310,9 @@
   gap: 4px;
   min-width: 0;
   padding: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  border: 0.5px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
+  background: var(--ciel-surface-1);
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
 }
 
 [data-ciel-annotation][data-ciel-focus],
@@ -257,22 +332,22 @@
 [data-ciel-annotation-title] {
   min-width: 0;
   font-weight: 500;
-  color: var(--dsw-alias-label-primary);
+  color: var(--ciel-text-1);
   overflow-wrap: anywhere;
 }
 
 [data-ciel-annotation-anchor] {
   margin: 0;
   padding: 2px 0 2px 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
   border-left: 2px solid var(--dsw-alias-border-l3);
 }
 
 [data-ciel-annotation-comment] {
   margin: 0;
-  color: var(--dsw-alias-label-primary);
+  color: var(--ciel-text-1);
   overflow-wrap: anywhere;
 }
 
@@ -280,8 +355,8 @@
 [data-ciel-annotation-refs],
 [data-ciel-review-empty] {
   margin: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
@@ -303,33 +378,33 @@
   align-items: center;
   min-width: 0;
   padding-top: 8px;
-  border-top: 0.5px solid var(--dsw-alias-border-l1);
+  border-top: 1px solid var(--ciel-border-soft);
 }
 
 [data-ciel-selected-count],
 [data-ciel-triage-hint],
 [data-ciel-current-none] {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
 }
 
 [data-ciel-note],
 [data-ciel-triage-note] {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
 [data-ciel-note='error'],
 [data-ciel-triage-note='error'] {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--ciel-danger);
 }
 
 [data-ciel-note='sent'] {
   color: var(--dsw-alias-state-success-primary);
 }
 
-/* ── evidence snippet ───────────────────────────────────────────────────── */
+/* ── evidence snippet (opaque, full-opacity text) ───────────────────────── */
 
 [data-ciel-evidence-body] {
   display: flex;
@@ -339,12 +414,13 @@
   min-height: 0;
   padding: 6px 0;
   overflow: auto;
-  color: var(--dsw-alias-label-primary);
+  color: var(--ciel-text-1);
   font-family: var(--dsw-font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-size: var(--ciel-font-xs);
   line-height: 1.6;
   background: var(--dsw-alias-markdown-code-block);
-  border-radius: 6px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-sm);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
@@ -359,7 +435,7 @@
 [data-ciel-line-number] {
   flex: 0 0 auto;
   min-width: 3ch;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--ciel-text-3);
   text-align: right;
   user-select: none;
 }
@@ -385,20 +461,20 @@
 [data-ciel-advice-disclaimer] {
   margin: 0;
   padding: 6px 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
   background: var(--dsw-alias-bg-module-platform);
-  border: 0.5px solid var(--dsw-alias-border-l1);
-  border-radius: 6px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-sm);
 }
 
 [data-ciel-advice-text] {
   margin: 0;
   min-width: 0;
-  color: var(--dsw-alias-label-primary);
+  color: var(--ciel-text-1);
   font-family: var(--dsw-font-mono, ui-monospace, monospace);
-  font-size: 12px;
+  font-size: var(--ciel-font-xs);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -417,9 +493,9 @@
   gap: 4px;
   min-width: 0;
   padding: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  border: 0.5px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
+  background: var(--ciel-surface-1);
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
 }
 
 [data-ciel-advice-item-head] {
@@ -440,16 +516,16 @@
 [data-ciel-advice-item-pitfalls],
 [data-ciel-advice-item-verify] {
   margin: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
   overflow-wrap: anywhere;
 }
 
 [data-ciel-advice-issues] {
   margin: 0;
   padding-left: 18px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
 }
 
 [data-ciel-advice-issues] > li {
@@ -458,25 +534,18 @@
 
 [data-ciel-advice-raw] {
   min-width: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
 }
 
 [data-ciel-advice-raw] > summary {
   cursor: pointer;
 }
 
-/* ── narrow panes: less chrome, same wrapping, no sideways scroll ───────── */
+/* ── narrow Ciel container (320px safe, no sideways scroll) ─────────────── */
 
-@media (max-width: 520px) {
-  [data-ciel-review],
-  [data-ciel-evidence],
-  [data-ciel-advice],
-  [data-ciel-state] {
-    gap: 6px;
-    padding: 8px 6px;
-  }
-
+/* Spacing/target changes only: no font is shrunk to fit. */
+@container ciel-surface (max-width: 420px) {
   [data-ciel-review-actions],
   [data-ciel-evidence-current],
   [data-ciel-evidence-head],
@@ -484,7 +553,50 @@
     gap: 6px;
   }
 
-  [data-ciel-annotation] {
-    padding: 6px;
+  [data-ciel-annotation],
+  [data-ciel-advice-item] {
+    padding: 7px;
+  }
+
+  /* The platform md capsule fixes its own 36px height; at this width the
+     action rows want the compact geometry, so the height is set explicitly. */
+  [data-ciel-action] {
+    height: 32px;
+    min-height: 32px;
+  }
+}
+
+@container ciel-surface (max-width: 340px) {
+  [data-ciel-action] {
+    flex: 1 1 100%;
+  }
+}
+
+/* Viewport fallback for engines without container queries: a narrow window
+   always means a narrow rail, and only spacing changes. */
+@media (max-width: 520px) {
+  [data-ciel-review-actions],
+  [data-ciel-evidence-current],
+  [data-ciel-evidence-head],
+  [data-ciel-advice-head] {
+    gap: 6px;
+  }
+
+  [data-ciel-annotation],
+  [data-ciel-advice-item] {
+    padding: 7px;
+  }
+
+  [data-ciel-action] {
+    height: 32px;
+    min-height: 32px;
+  }
+}
+
+/* No added motion; keep it that way under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  [data-ciel-action],
+  [data-ciel-pick] {
+    transition: none;
   }
 }

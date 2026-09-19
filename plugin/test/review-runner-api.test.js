@@ -591,7 +591,7 @@ test('bind failure rolls the unpublished child back without driving it or buildi
   const f = fixture()
   f.state.failBind = true
   const provider = await createRestrictedReviewProvider(f.callbacks)
-  await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable')
+  await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_BACKEND_UNAVAILABLE')
   assert.equal(f.state.unbound.length, 1, 'failed binding is unbound')
   assert.equal(typeof f.state.unbound[0], 'string')
   assert.equal(f.state.calls.some((call) => call.op === 'followup'), false, 'no model request after rollback')
@@ -603,7 +603,7 @@ test('an unavailable runtime or tools module fails before any child is created',
   for (const [label, options] of [['runtime module', { runtimeMode: 'missing' }], ['tools module', { toolsMode: 'missing' }]]) {
     const f = fixture(options)
     const provider = await createRestrictedReviewProvider(f.callbacks)
-    await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable', label)
+    await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_MODULE_MISSING', label)
     assert.equal(f.state.createOptions.length, 0, label + ': no unpublished child is minted')
     assert.equal(f.state.calls.some((call) => call.op === 'followup'), false, label)
     assert.equal(f.state.unbound.length, 0, label)
@@ -613,7 +613,7 @@ test('an unavailable runtime or tools module fails before any child is created',
 test('a missing control.guard fails a tooled phase before any child is created', async () => {
   const f = fixture({ guard: false })
   const provider = await createRestrictedReviewProvider(f.callbacks)
-  await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable')
+  await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_GUARD_UNAVAILABLE')
   assert.equal(f.state.createOptions.length, 0)
   assert.equal(f.state.calls.some((call) => call.op === 'followup'), false)
   assert.equal(f.state.unbound.length, 0)
@@ -623,7 +623,7 @@ test('a missing or mismatched root codeRuntime fails the tooled phase before its
   for (const [label, rootRuntime] of [['missing', null], ['wrong language', { language: 'python', run() {} }], ['no run()', { language: 'typescript' }]]) {
     const f = fixture({ rootRuntime })
     const provider = await createRestrictedReviewProvider(f.callbacks)
-    await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable', label)
+    await assert.rejects(provider.start(f.request), (error) => error.code === (rootRuntime === null ? 'CIEL_REVIEW_SERVICE_NOT_READY' : 'CIEL_REVIEW_RUNTIME_INCOMPATIBLE'), label)
     assert.equal(f.state.createOptions.length, 1, label + ': the unpublished child is rolled back')
     assert.equal(f.state.calls.some((call) => call.op === 'followup'), false, label + ': no model request')
     assert.deepEqual(f.state.unbound, [f.state.createOptions[0].sessionId], label + ': rolled back')
@@ -637,7 +637,7 @@ test('a private runtime shape mismatch or compat failure disposes the runtime an
     const f = fixture(options)
     if (options.compatThrows) f.state.compatThrows = true
     const provider = await createRestrictedReviewProvider(f.callbacks)
-    await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable', label)
+    await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_RUNTIME_INCOMPATIBLE', label)
     assert.equal(f.state.calls.some((call) => call.op === 'followup'), false, label)
     assert.equal(f.state.privateRuntimeDisposed, 1, label + ': the constructed runtime is disposed on rollback')
     assert.equal(f.state.unbound.length, 1, label + ': unbound once')
@@ -647,7 +647,7 @@ test('a private runtime shape mismatch or compat failure disposes the runtime an
 test('private registry construction failure rolls back and awaits runtime disposal', async () => {
   const f = fixture({ toolsMode: 'throws' })
   const provider = await createRestrictedReviewProvider(f.callbacks)
-  await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable')
+  await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_REGISTRY_INIT_FAILED')
   assert.equal(f.state.calls.some((call) => call.op === 'followup'), false)
   // The fake runtime yields one setImmediate before recording disposal, so a
   // settled count at rejection proves the rollback AWAITED dispose().
@@ -659,7 +659,7 @@ test('a guard denial before publication creates no agent and no binding', async 
   const f = fixture()
   f.control.operation.check = () => { throw new Error('guard closed') }
   const provider = await createRestrictedReviewProvider(f.callbacks)
-  await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable')
+  await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_ACCESS_LIMITED')
   assert.equal(f.state.createOptions.length, 0, 'no unpublished child is minted after a guard denial')
   assert.equal(f.state.unbound.length, 0)
   assert.equal(f.state.calls.some((call) => call.op === 'followup'), false)
@@ -669,9 +669,20 @@ test('an already-aborted request fails before claiming control', async () => {
   const f = fixture()
   f.controller.abort()
   const provider = await createRestrictedReviewProvider(f.callbacks)
-  await assert.rejects(provider.start(f.request), (error) => error.message === 'Restricted review is unavailable')
+  await assert.rejects(provider.start(f.request), (error) => error.code === 'CIEL_REVIEW_CANCELLED')
   assert.equal(f.state.calls.some((call) => call.op === 'claim'), false)
   assert.equal(f.state.unbound.length, 0)
+})
+
+test('deadline expiry stays distinct from permission denial and user cancellation during creation', async () => {
+  for (const aborted of [false, true]) {
+    const f = fixture()
+    if (aborted) f.controller.abort(new Error('review timeout'))
+    else f.control.operation.check = () => { throw new Error('review timeout') }
+    const provider = await createRestrictedReviewProvider(f.callbacks)
+    await assert.rejects(provider.start(f.request), error => error.code === 'CIEL_REVIEW_TIMEOUT')
+    assert.equal(f.state.createOptions.length, 0)
+  }
 })
 
 test('toolFilter deny narrows both registries to exactly the permitted readers', async () => {

@@ -1,3 +1,4 @@
+import { completeReviewFixture } from './review-protocol.fixtures.js'
 // Review-UI integration harness: drives the REAL client factory — running
 // apply(), hydrate(), and the ReviewButton component effects — against a fake
 // Remote RPC and a tiny React hook runner. No server, no real DOM, no model.
@@ -97,9 +98,9 @@ export async function createRuntime(rpc = {}, opts = {}) {
   const defer = (m, req) => {
     rpcCalls[m].push(req)
     const implied = rpc[m]
-    if (typeof implied === 'function') return implied(req)
+    if (typeof implied === 'function') return Promise.resolve(implied(req)).then(value => completeReviewFixture(value, req))
     if (implied === undefined) return Promise.resolve(m === 'list' ? { reviews: [], sentKeys: [], triage: {} } : {})
-    return Promise.resolve(implied)
+    return Promise.resolve(completeReviewFixture(implied, req))
   }
   const rpcImpl = {
     list: (req) => defer('list', req),
@@ -116,13 +117,14 @@ export async function createRuntime(rpc = {}, opts = {}) {
   const settingsScopeStub = opts.noGetSnapshot
     ? { set: async () => {}, unset: async () => {} }
     : { getSnapshot: () => ({ status: 'ready', value: settingsValue, user: {}, writable: true }), set: async () => {}, unset: async () => {} }
+  const remoteService = { $mount: () => Promise.resolve(), $on: () => () => {} }
   const ctx = {
     settingsScope: {
       bind: () => settingsScopeStub,
     },
     on: (name, fn) => { (handlers[name] = handlers[name] || []).push(fn); return () => {} },
     get: (key) => {
-      if (key === 'remote') return { $mount: () => Promise.resolve(), $on: () => () => {} }
+      if (key === 'remote') return remoteService
       if (key === 'remote.advisorReview') return rpcImpl
       return undefined
     },

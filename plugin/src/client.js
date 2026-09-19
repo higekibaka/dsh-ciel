@@ -1,5 +1,13 @@
+import { createMarkSupervisor, clearOwned, findChatRoot, markTurn } from './review-marks.js'
+import { createReviewState, isListResultLoaded, shouldReplace, loadReviewPages, entryTime, entryRank } from './review-state.js'
+import { createReviewProgress } from './review-progress.js'
+import { REVIEW_REMOTE as ADVISOR_REMOTE } from '../review-protocol.js'
+import { createReviewTransport } from './review-transport.js'
+import { reviewMessageKey } from '../review-identity.js'
 import { createCielSidebar } from './sidebar.js'
 import SIDEBAR_CSS from './sidebar.css'
+import { INBOX_PANEL_ID, createCielInbox } from './inbox.js'
+import INBOX_CSS from './inbox.css'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 // dsh-ciel browser half: a dedicated Settings → 夏尔 Ciel page editing the
@@ -46,7 +54,7 @@ window.__ModuleLoader__.load({
     let getRemote = () => undefined
     /** Client cordis event subscription, bound in apply(). */
     let clientOn = null
-    /** Exact invocation lookup for command outcomes and legacy tool metadata. */
+    /** Exact invocation lookup for historical model-usage records and tool metadata. */
     let readCallModelUsage = async () => null
     /** Live internals captured by apply() for node integration tests. */
     const __runtime = {}
@@ -103,7 +111,7 @@ window.__ModuleLoader__.load({
     const FIELD_DEFS = [
       {
         kind: 'check', key: 'enabled', label: '启用 Ciel',
-        hint: '关闭并保存后，停止顾问咨询（ask_advisor、/advise）、批注评审和新的批注回传，并取消正在进行的 Ciel 请求；既有结果仍可查看。重新开启也须保存。',
+        hint: '关闭并保存后，停止顾问咨询（ask_advisor）、批注评审和新的批注回传，并取消正在进行的 Ciel 请求；既有结果仍可查看。重新开启也须保存。',
       },
       {
         kind: 'group', key: 'common', label: '常用设置', defaultOpen: true,
@@ -111,7 +119,7 @@ window.__ModuleLoader__.load({
         children: [
           { kind: 'check', key: 'criticExploreEnabled', label: '允许评审时查文件', hint: '需要核对代码或文件依据时开启：批评者可用允许的 read/grep/glob 工具，在允许范围内查阅资料，不修改文件。关闭后仍会调用模型分析，但不做这一步文件核查。' },
           { kind: 'number', key: 'maxCallsPerTurn', label: '每个代理回合最多咨询几次', min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: '限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。' },
-          { kind: 'number', key: 'advisorTimeoutSeconds', label: '顾问最多等多久（秒）', min: 10, max: 600, hint: '一次 ask_advisor 或 /advise 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。' },
+          { kind: 'number', key: 'advisorTimeoutSeconds', label: '顾问最多等多久（秒）', min: 10, max: 600, hint: '一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。' },
           { kind: 'number', key: 'criticTimeoutSeconds', label: '评审最多等多久（秒）', min: 10, max: 600, hint: '只按总时间控制评审：默认180秒，包含准备资料、分析和核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。' },
         ],
       },
@@ -774,30 +782,6 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Pass-through codec: both halves of this Remote are first-party. */
-    const PASS_CODEC = { parse: (value) => value }
-
-    /** The advisorReview Remote contribution this client $mounts on boot. */
-    const ADVISOR_REMOTE = {
-      package: 'dsh-advisor',
-      descriptors: ['list', 'start', 'feedback', 'prepareFeedback', 'triage', 'progress', 'cancel', 'callModelUsage', 'readReview', 'readEvidence', 'readAdvice'].map((method) => ({
-        id: `dsh-advisor#advisorReview/${method}`,
-        service: 'advisorReview',
-        namespace: 'advisorReview',
-        method,
-        invocation: { kind: 'direct' },
-        parameters: [
-          {
-            name: 'request',
-            wire: 'request',
-            source: 'json',
-            codec: { mode: 'strict', typeSymbol: `dsh-advisor/${method}Request`, schema: PASS_CODEC },
-          },
-        ],
-        result: { mode: 'strict', typeSymbol: `dsh-advisor/${method}Result`, schema: PASS_CODEC },
-      })),
-    }
-
     /**
      * 0.12.0 ①块切分——host 半边的同算法副本（两端无共享打包通道）。
      * 任何修改必须与 plugin/index.js 的 splitMarkdownBlocks 逐行一致；
@@ -894,6 +878,18 @@ window.__ModuleLoader__.load({
 
     // Deduplicate simultaneous mounts, not failed/missing results. A remount
     // retries the durable lookup; requested-only records can later be completed.
+    /** Whether the user asked for reduced motion (never throws). */
+    function prefersReducedMotion() {
+      try {
+        const win = typeof window !== 'undefined' ? window : undefined
+        if (win === null || win === undefined || typeof win.matchMedia !== 'function') return false
+        const query = win.matchMedia('(prefers-reduced-motion: reduce)')
+        return query !== null && query !== undefined && query.matches === true
+      } catch {
+        return false
+      }
+    }
+
     function createModelUsageReader(call) {
       const pending = new Map()
       return (request) => {
@@ -1121,10 +1117,6 @@ window.__ModuleLoader__.load({
     // A list result is "loaded" only when it is a success-shaped envelope with
     // a reviews array. Malformed / error-shaped returns are NOT loaded — the
     // caller leaves the session dirty so mount/reconnect retries.
-    function isListResultLoaded(res) {
-      return !!res && res.ok !== false && Array.isArray(res.reviews)
-    }
-
     // Cancel outcome normalization. A failed request stays retryable and must
     // NOT clear active state; an accepted request with cancelled:false means
     // nothing was in flight (already finished/never started) → force refresh.
@@ -1134,42 +1126,6 @@ window.__ModuleLoader__.load({
         return { kind: 'accepted', cancelled, refresh: cancelled !== true }
       }
       return { kind: 'failed', error: String((res && res.error) || '取消失败') }
-    }
-
-    // The ordering key used to fence which entry "wins" for a message. Host
-    // entries carry `createdAt`; client-transient entries (start failures) are
-    // stamped with Date.now() too, so they compete by time. Missing/non-finite
-    // timestamps sort as the OLDEST (-Infinity) so a real entry always beats
-    // untimestamped legacy data.
-    function entryTime(entry) {
-      if (entry && typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt)) {
-        return entry.createdAt
-      }
-      return -Infinity
-    }
-
-    // Durability tier: a durable HOST result (has a reviewId) outranks a
-    // client-side transient (transport error, `transient:true`) regardless of
-    // wall clock. An unmarked legacy entry (no reviewId, no transient flag)
-    // sits in between.
-    function entryRank(entry) {
-      if (entry && entry.transient === true) return 0
-      if (entry && typeof entry.reviewId === 'string' && entry.reviewId !== '') return 2
-      return 1
-    }
-
-    // Whether `incoming` should replace `existing` for the same message.
-    // Durability wins first (a committed host result always beats a transient
-    // error, even one stamped later by the client wall clock); within the same
-    // tier newer timestamp wins. This prevents a lost-RPC transient at t=200
-    // from sticking past a durable host result committed at t=100. It also
-    // prevents a transient from ever overwriting an existing durable review.
-    function shouldReplace(existing, incoming) {
-      if (existing === undefined) return true
-      const er = entryRank(existing)
-      const ir = entryRank(incoming)
-      if (ir !== er) return ir > er
-      return entryTime(incoming) >= entryTime(existing)
     }
 
     // Project ONLY the leaf critic route strings into data-* attrs. Used for the
@@ -1193,55 +1149,55 @@ window.__ModuleLoader__.load({
       '.dsr-btn:hover{opacity:1}',
       '.dsr-btn:disabled{cursor:wait;opacity:.45}',
       '.ciel-model-usage{padding:6px 10px;font-size:12px;opacity:.75;overflow-wrap:anywhere}',
-      '.dsr-tail{margin:8px 0 2px;border:1px solid rgba(130,130,130,.28);border-radius:8px;overflow:hidden;font-size:13px;line-height:1.55}',
-      '.dsr-tail-head{padding:6px 10px;font-size:12px;opacity:.75;border-bottom:1px solid rgba(130,130,130,.2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
-      '.dsr-item{padding:8px 10px;border-top:1px solid rgba(130,130,130,.14)}',
+      '.dsr-tail{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);margin:8px 0 2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;font-size:13px;line-height:1.55}',
+      '.dsr-tail-head{padding:6px 10px;font-size:12px;opacity:.75;border-bottom:1px solid var(--dsw-alias-border-l2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
+      '.dsr-item{padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l2)}',
       '.dsr-item:first-of-type{border-top:none}',
       '.ciel-native-tag-mount{display:inline-flex;align-items:center;vertical-align:middle}',
       '.dsr-item .ciel-native-tag-mount{margin-right:6px}',
       '.dsr-title{font-weight:600}',
       '.dsr-unanchored{font-size:10.5px;opacity:.6;margin-left:6px}',
-      '.dsr-anchor{margin:5px 0 3px;padding:3px 8px;border-left:2px solid rgba(130,130,130,.5);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
+      '.dsr-anchor{margin:5px 0 3px;padding:3px 8px;border-left:2px solid var(--dsw-alias-border-l2);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
       '.dsr-comment{opacity:.92;white-space:pre-wrap;word-break:break-word}',
       '.dsr-raw{padding:8px 10px;white-space:pre-wrap;word-break:break-word;opacity:.85;font-size:12.5px}',
-      '.dsr-error{padding:8px 10px;color:#f85149;font-size:12.5px;white-space:pre-wrap;word-break:break-word}',
+      '.dsr-error{padding:8px 10px;color:var(--dsw-alias-state-error-primary, #d24949);font-size:12.5px;white-space:pre-wrap;word-break:break-word}',
       '.dsr-mark{cursor:pointer;border-radius:2px}',
-      '.dsr-mark-blocker{text-decoration:underline wavy #f85149 1.5px;text-underline-offset:3px;background:rgba(248,81,73,.07)}',
-      '.dsr-mark-nit{text-decoration:underline wavy #d29922 1.5px;text-underline-offset:3px;background:rgba(210,153,34,.07)}',
+      '.dsr-mark-blocker{text-decoration:underline wavy var(--dsw-alias-state-error-primary, #d24949) 1.5px;text-underline-offset:3px;background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 7.000000000000001%, transparent)}',
+      '.dsr-mark-nit{text-decoration:underline wavy var(--dsw-alias-state-warn-primary, #b77700) 1.5px;text-underline-offset:3px;background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7.000000000000001%, transparent)}',
       '.dsr-badge{display:inline-block;font-size:9.5px;font-family:ui-monospace,monospace;line-height:1.4;padding:0 3px;border-radius:3px;margin-left:2px;vertical-align:super;cursor:pointer;user-select:none}',
-      '.dsr-badge-blocker{color:#f85149;border:1px solid #f85149}',
-      '.dsr-badge-nit{color:#d29922;border:1px solid #d29922}',
-      '.dsr-pop{position:fixed;z-index:99999;max-width:420px;border:1px solid rgba(130,130,130,.45);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.55;box-shadow:0 10px 32px rgba(0,0,0,.4);background:#1b2129;color:#e6e9ee}',
+      '.dsr-badge-blocker{color:var(--dsw-alias-state-error-primary, #d24949);border:1px solid var(--dsw-alias-state-error-primary, #d24949)}',
+      '.dsr-badge-nit{color:var(--dsw-alias-state-warn-primary, #b77700);border:1px solid var(--dsw-alias-state-warn-primary, #b77700)}',
+      '.dsr-pop{position:fixed;z-index:99999;max-width:420px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.55;box-shadow:0 10px 32px rgba(0,0,0,.4);background:var(--dsw-alias-bg-layer-1, #fff);color:var(--dsw-alias-label-primary, #24292f)}',
       '.dsr-pop-head{margin-bottom:5px}',
-      '.dsr-pop-anchor{margin:6px 0 4px;padding:3px 8px;border-left:2px solid rgba(130,130,130,.5);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
+      '.dsr-pop-anchor{margin:6px 0 4px;padding:3px 8px;border-left:2px solid var(--dsw-alias-border-l2);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
       '.dsr-pop-comment{white-space:pre-wrap;word-break:break-word}',
       '.dsr-item{cursor:pointer;border-radius:4px}',
-      '.dsr-item:hover{background:rgba(255,255,255,.045)}',
+      '.dsr-item:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.dsr-flash{animation:dsrFlash 1.4s ease}',
-      '@keyframes dsrFlash{0%{outline:2px solid #d29922;outline-offset:1px}100%{outline:2px solid transparent;outline-offset:5px}}',
+      '@keyframes dsrFlash{0%{outline:2px solid var(--dsw-alias-state-warn-primary, #b77700);outline-offset:1px}100%{outline:2px solid transparent;outline-offset:5px}}',
       // ── 回传（annfbk 原型移植）：勾选框、发送按钮、状态注记、已回传置灰
-      '.dsrf-box{margin-right:7px;vertical-align:1px;accent-color:#3fb950;cursor:pointer}',
-      '.dsrf-send{margin-left:10px;padding:2px 10px;font-size:11.5px;border:1px solid #3fb950;border-radius:4px;background:transparent;color:#3fb950;cursor:pointer;font-family:inherit}',
+      '.dsrf-box{margin-right:7px;vertical-align:1px;accent-color:var(--dsw-alias-state-success-primary, #238636);cursor:pointer}',
+      '.dsrf-send{margin-left:10px;padding:2px 10px;font-size:11.5px;border:1px solid var(--dsw-alias-state-success-primary, #238636);border-radius:4px;background:transparent;color:var(--dsw-alias-state-success-primary, #238636);cursor:pointer;font-family:inherit}',
       '.dsrf-send:disabled{opacity:.45;cursor:default}',
       '.dsrf-note{margin-left:8px;font-size:11px;opacity:.75}',
       '.dsr-item.dsrf-sent{opacity:.55}',
       '.dsr-item.dsrf-sent .dsrf-box{pointer-events:none}',
       // ── 0.12.0 ①裁决卡 + 块级 gutter（demo: prototypes/verdict-card-demo.html）
-      '.dsr-tail.dsr-verdict{border-left:3px solid rgba(130,130,130,.4)}',
-      '.dsr-tail.dsr-verdict-pass{border-left-color:#3fb950}',
-      '.dsr-tail.dsr-verdict-changes{border-left-color:#d29922}',
-      '.dsr-tail.dsr-verdict-neutral{border-left-color:#8b949e}',
+      '.dsr-tail.dsr-verdict{border-left:3px solid var(--dsw-alias-border-l2)}',
+      '.dsr-tail.dsr-verdict-pass{border-left-color:var(--dsw-alias-state-success-primary, #238636)}',
+      '.dsr-tail.dsr-verdict-changes{border-left-color:var(--dsw-alias-state-warn-primary, #b77700)}',
+      '.dsr-tail.dsr-verdict-neutral{border-left-color:var(--dsw-alias-label-tertiary, #737980)}',
       '.dsr-tail.dsr-rise{animation:dsrRise .3s ease}',
       '@keyframes dsrRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
       '.dsr-vsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:12.5px}',
       '.dsr-vchips{display:inline-flex;gap:6px;flex-wrap:wrap;max-width:100%;flex:none}',
       // 停止控制（评审在途时的取消按钮）
-      '.dsr-cancel{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:#f85149;opacity:.8;cursor:pointer}',
+      '.dsr-cancel{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:var(--dsw-alias-state-error-primary, #d24949);opacity:.8;cursor:pointer}',
       '.dsr-cancel:hover{opacity:1}',
       '.dsr-cancel:disabled{cursor:wait;opacity:.45}',
-      '.dsr-cancel.dsr-cancel-failed{color:#d29922;border-style:dashed}',
-      '.dsr-evidence{margin:4px 0 2px;padding:3px 8px;border-left:2px solid rgba(88,166,255,.5);font-size:11.5px;opacity:.85;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-downgraded{font-size:10px;font-family:ui-monospace,monospace;color:#79a7e8;border:1px solid rgba(88,166,255,.4);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap;cursor:help}',
+      '.dsr-cancel.dsr-cancel-failed{color:var(--dsw-alias-state-warn-primary, #b77700);border-style:dashed}',
+      '.dsr-evidence{margin:4px 0 2px;padding:3px 8px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 50%, transparent);font-size:11.5px;opacity:.85;white-space:pre-wrap;word-break:break-word}',
+      '.dsr-downgraded{font-size:10px;font-family:ui-monospace,monospace;color:var(--dsw-alias-state-business-primary, #4176e6);border:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap;cursor:help}',
       '.dsr-vcaret{flex:none;width:14px;opacity:.55;font-size:11px;transition:transform .18s}',
       '.dsr-tail.dsr-collapsed .dsr-vcaret{transform:rotate(-90deg)}',
       '.dsr-tail.dsr-collapsed>.dsr-details{display:none}',
@@ -1251,15 +1207,18 @@ window.__ModuleLoader__.load({
       '.dsr-gutter{position:absolute;left:-24px;top:2px;display:flex;flex-direction:column;gap:4px;z-index:2}',
       // 代码块（pre 横向 overflow 会裁掉左外侧徽章）→ 收进右上内沿，横排。
       'pre.dsr-blk>span.dsr-gutter{left:auto;right:6px;top:6px;flex-direction:row}',
+      'button.dsr-gmark,button.dsr-badge{padding:0;appearance:none}',
+      'button.dsr-gmark:focus-visible,button.dsr-badge:focus-visible{outline:2px solid var(--dsw-alias-border-focus, currentColor);outline-offset:3px}',
+      'button.dsr-badge{padding:0 3px;background:transparent}',
       '.dsr-gmark{width:17px;height:17px;border-radius:4px;font-size:10px;font-family:ui-monospace,monospace;line-height:15px;text-align:center;cursor:pointer;user-select:none;border:1px solid}',
-      '.dsr-gmark-blocker{color:#f85149;border-color:#f85149;background:rgba(248,81,73,.12)}',
-      '.dsr-gmark-nit{color:#d29922;border-color:#d29922;background:rgba(210,153,34,.10)}',
-      '.dsr-blk-hl{outline:1px solid rgba(88,166,255,.45);outline-offset:2px;border-radius:4px;background:rgba(88,166,255,.06)}',
+      '.dsr-gmark-blocker{color:var(--dsw-alias-state-error-primary, #d24949);border-color:var(--dsw-alias-state-error-primary, #d24949);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)}',
+      '.dsr-gmark-nit{color:var(--dsw-alias-state-warn-primary, #b77700);border-color:var(--dsw-alias-state-warn-primary, #b77700);background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)}',
+      '.dsr-blk-hl{outline:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent);outline-offset:2px;border-radius:4px;background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, transparent)}',
       '.dsr-blocktag{font-size:10px;font-family:ui-monospace,monospace;opacity:.5;margin-left:6px}',
-      '.dsrf-filter{display:inline-flex;border:1px solid rgba(130,130,130,.35);border-radius:6px;overflow:hidden;margin-left:10px}',
+      '.dsrf-filter{display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden;margin-left:10px}',
       '.dsrf-filter button{appearance:none;background:none;border:none;color:inherit;opacity:.6;padding:2px 9px;font-size:11px;cursor:pointer;font-family:inherit}',
-      '.dsrf-filter button.on{opacity:1;background:rgba(130,130,130,.18)}',
-      '.dsrf-blockers{margin-left:6px;padding:2px 10px;font-size:11px;border:1px solid rgba(130,130,130,.4);border-radius:4px;background:transparent;color:inherit;opacity:.8;cursor:pointer;font-family:inherit}',
+      '.dsrf-filter button.on{opacity:1;background:var(--dsw-alias-interactive-bg-active)}',
+      '.dsrf-blockers{margin-left:6px;padding:2px 10px;font-size:11px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;background:transparent;color:inherit;opacity:.8;cursor:pointer;font-family:inherit}',
       '.dsrf-blockers:hover{opacity:1}',
     ].join('\n')
 
@@ -1269,37 +1228,37 @@ window.__ModuleLoader__.load({
     // 未解析回退原文——任何状态都不比通用卡片差。边框/背景走主题 token 自适应
     // 亮暗，rgba 为兜底。
     const ADVISOR_CARD_CSS = [
-      '.adv-card{margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
-      '.adv-head{padding:9px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:rgba(127.5,127.5,127.5,.06);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
-      '.adv-head:hover{background:rgba(127.5,127.5,127.5,.12)}',
+      '.adv-card{color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
+      '.adv-head{padding:9px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
+      '.adv-head:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}',
       '.adv-head-icon{flex:none;font-size:13px}',
       '.adv-head-title{font-weight:600;font-size:13px;white-space:nowrap;flex:none}',
       '.adv-chips{display:inline-flex;gap:6px;align-items:center;margin-left:2px;flex:none}',
       '.adv-chip{font-size:10.5px;font-family:ui-monospace,monospace;font-weight:600;line-height:16px;padding:0 8px;border-radius:999px}',
-      '.adv-chip-high{color:#3fb950;background:rgba(63,185,80,.13)}',
-      '.adv-chip-mid{color:#d29922;background:rgba(210,153,34,.13)}',
-      '.adv-chip-low{color:#8b949e;background:rgba(139,148,158,.16)}',
+      '.adv-chip-high{color:var(--dsw-alias-state-success-primary, #238636);background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent)}',
+      '.adv-chip-mid{color:var(--dsw-alias-state-warn-primary, #b77700);background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 13%, transparent)}',
+      '.adv-chip-low{color:var(--dsw-alias-label-tertiary, #737980);background:var(--dsw-alias-bg-layer-3)}',
       '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}',
       '.adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
-      '.adv-head-issues{font-size:11px;color:#d29922;font-family:ui-monospace,monospace;flex:none}',
+      '.adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary, #b77700);font-family:ui-monospace,monospace;flex:none}',
       '.adv-body{padding:4px 14px 12px}',
-      '.adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid rgba(130,130,130,.45);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
-      '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid rgba(130,130,130,.14)}',
+      '.adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid var(--dsw-alias-border-l2);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
+      '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}',
       '.adv-item:first-of-type{border-top:none}',
       '.adv-badge{flex:none;margin-top:2px;font-size:10px;font-family:ui-monospace,monospace;font-weight:700;line-height:15px;padding:0 6px;border-radius:4px;border:1px solid}',
-      '.adv-badge-high{color:#3fb950;border-color:#3fb950}',
-      '.adv-badge-mid{color:#d29922;border-color:#d29922}',
-      '.adv-badge-low{color:#8b949e;border-color:#8b949e}',
+      '.adv-badge-high{color:var(--dsw-alias-state-success-primary, #238636);border-color:var(--dsw-alias-state-success-primary, #238636)}',
+      '.adv-badge-mid{color:var(--dsw-alias-state-warn-primary, #b77700);border-color:var(--dsw-alias-state-warn-primary, #b77700)}',
+      '.adv-badge-low{color:var(--dsw-alias-label-tertiary, #737980);border-color:var(--dsw-alias-label-tertiary, #737980)}',
       '.adv-item-content{flex:1;min-width:0}',
       '.adv-item-title{font-weight:600;font-size:13.5px;margin-bottom:6px}',
       '.adv-frow{display:flex;gap:8px;margin-bottom:5px;font-size:12.5px}',
       '.adv-frow:last-child{margin-bottom:0}',
       '.adv-flabel{flex:none;width:56px;font-size:11.5px;opacity:.6;padding-top:1px}',
       '.adv-fval{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;opacity:.88}',
-      '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:#d29922;border:1px solid rgba(210,153,34,.35);border-radius:8px;background:rgba(210,153,34,.06)}',
+      '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:var(--dsw-alias-state-warn-primary, #b77700);border:1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent);border-radius:8px;background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, transparent)}',
       '.adv-raw{white-space:pre-wrap;word-break:break-word;opacity:.92;font-size:12.5px;padding-top:8px}',
-      '.adv-err{color:#f85149;font-size:12.5px;white-space:pre-wrap;word-break:break-word;padding-top:8px}',
+      '.adv-err{color:var(--dsw-alias-state-error-primary, #d24949);font-size:12.5px;white-space:pre-wrap;word-break:break-word;padding-top:8px}',
       '.adv-ctx{margin-top:10px;font-size:12px;opacity:.7}',
       '.adv-ctx summary{cursor:pointer;opacity:.8}',
       '.adv-ctx-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-style:normal}',
@@ -1395,7 +1354,7 @@ window.__ModuleLoader__.load({
       const body = advBodyText(block.content)
       // PTC dispatches carry rendered content but no presentationMeta.
       if (!isError && items.length === 0 && body !== '') {
-        const parsed = parseAdviseItems(body); items = parsed.items; issues = [...issues, ...parsed.issues]
+        const parsed = parseAdvisorItems(body); items = parsed.items; issues = [...issues, ...parsed.issues]
       }
       const chips = advTierChips(items)
       // 耗时：settled 节点同时带 callTime 与 time。
@@ -1409,7 +1368,7 @@ window.__ModuleLoader__.load({
           : '顾问建议（未解析出结构化条目，原文如下）'
 
       if (sidebar && !isError) {
-        const callId = props.node?.commandId ? 'command:' + props.node.commandId : props.callId ? 'tool:' + props.callId : null
+        const callId = props.callId ? 'tool:' + props.callId : null
         if (callId) return h('div', { className: 'adv-card ciel-advice-summary' },
           h('div', { className: 'adv-head', 'data-ciel-summary-head': '' }, h('span', { className: 'adv-head-title' }, headText), chips,
             navigationButton({ onClick: () => sidebar.openAdvice(props.sessionId, callId) }, '在侧栏查看')),
@@ -1423,7 +1382,7 @@ window.__ModuleLoader__.load({
         },
           h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
           h('span', { className: 'adv-head-icon' }, '💡'),
-          h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
+          h('span', { className: 'adv-head-title', style: isError ? { color: 'var(--dsw-alias-state-error-primary, #d24949)' } : undefined }, headText),
           chips,
           issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
           duration !== '' ? h('span', { className: 'adv-head-note', style: { marginLeft: 0 } }, duration) : null,
@@ -1448,10 +1407,9 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    // ── P3: /advise 命令卡片（advcmd 原型 pkg-16 移植）─────────────────────
-    // host 侧 parseAdvisorItems 的客户端复刻（同一正则契约）——命令结果只有
-    // text 通道（无工具的 output.schema/meta），结构化全靠 persona + 解析。
-    function parseAdviseItems(text) {
+    // PTC tool results lack presentationMeta; recover the structured advisor
+    // items from their rendered text using the host Markdown contract.
+    function parseAdvisorItems(text) {
       const heads = []
       const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm
       let m
@@ -1485,95 +1443,6 @@ window.__ModuleLoader__.load({
       return { items, issues }
     }
 
-    // CommandNode 数据源：args=问题原文，outcome=null 在途，
-    // outcome.kind/text 定成败。条目渲染复用 AdvisorItem（同一视觉语言）。
-    function AdviseCommandView(props) {
-      const node = props.node
-      const question = node && typeof node.args === 'string' ? node.args.trim() : ''
-      const outcome = node ? node.outcome : null
-      const modelLabel = useCallModelLabel(null, props.sessionId, 'command', node && node.commandId, outcome != null)
-      const [open, setOpen] = useState(true)
-
-      if (outcome === null || outcome === undefined) {
-        return h('div', { className: 'adv-card' },
-          h('div', { className: 'adv-head', style: { cursor: 'default' } },
-            h('span', { className: 'adv-head-icon' }, '💡'),
-            h('span', { className: 'adv-head-title', style: { opacity: .7 } }, '顾问咨询中…'),
-            h('span', { className: 'adv-head-note' }, '/advise 人类触发'),
-            question !== '' ? h('span', { className: 'adv-head-note', style: { marginLeft: 0 } }, clipAdv(question, 60)) : null))
-      }
-
-      const isError = outcome.kind === 'error'
-      const body = typeof outcome.text === 'string' ? outcome.text : ''
-      const parsed = isError ? { items: [], issues: [] } : parseAdviseItems(body)
-      const items = parsed.items
-      const issues = parsed.issues
-
-      const chips = advTierChips(items)
-      const headText = isError
-        ? '顾问咨询失败'
-        : items.length > 0
-          ? '顾问建议 · ' + items.length + ' 条'
-          : '顾问建议（未解析出结构化条目，原文如下）'
-
-      if (sidebar && !isError) {
-        const callId = props.node?.commandId ? 'command:' + props.node.commandId : props.callId ? 'tool:' + props.callId : null
-        if (callId) return h('div', { className: 'adv-card ciel-advice-summary' },
-          h('div', { className: 'adv-head', 'data-ciel-summary-head': '' }, h('span', { className: 'adv-head-title' }, headText), chips,
-            navigationButton({ onClick: () => sidebar.openAdvice(props.sessionId, callId) }, '在侧栏查看')),
-          h('div', { className: 'ciel-model-usage' }, modelLabel))
-      }
-      return h('div', { className: 'adv-card' },
-        h('div', {
-          className: 'adv-head',
-          onClick: () => setOpen(!open),
-          'aria-expanded': open,
-        },
-          h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
-          h('span', { className: 'adv-head-icon' }, '💡'),
-          h('span', { className: 'adv-head-title', style: isError ? { color: '#f85149' } : undefined }, headText),
-          chips,
-          issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
-          h('span', { className: 'adv-head-note' }, '/advise 人类触发'),
-          question !== '' ? h('span', { className: 'adv-head-q', style: { marginLeft: 0 } }, clipAdv(question, 60)) : null),
-        h('div', { className: 'ciel-model-usage' }, modelLabel),
-        open
-          ? h('div', { className: 'adv-body' },
-              question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
-              isError
-                ? h('div', { className: 'adv-err' }, body !== '' ? body : '（无错误详情）')
-                : items.length > 0
-                  ? items.map((item, i) => h(AdvisorItem, { key: i, item }))
-                  : h('div', { className: 'adv-raw' }, body !== '' ? body : '（空回复）'),
-              issues.length > 0
-                ? h('div', { className: 'adv-issues' }, '解析问题：' + issues.join('；'))
-                : null)
-          : null)
-    }
-
-    /** Follow bounded host pages; never label an unfinished traversal hydrated. */
-    async function loadReviewPages(call, sessionId, isActive = () => true) {
-      const result = { reviews: [], sentKeys: [], triage: {} }, seen = new Set()
-      let cursor, bytes = 0
-      for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
-        if (!isActive()) throw new Error('Ciel client stopped')
-        const page = await call('list', { sessionId, ...(cursor ? { cursor } : {}) })
-        if (!isListResultLoaded(page)) return page
-        bytes += JSON.stringify(page).length * 2
-        if (bytes > 32 * 1024 * 1024) throw new Error('评审列表超过本页内存上限，未完整加载；请清理不再需要的 Ciel 记录')
-        result.reviews.push(...page.reviews)
-        if (Array.isArray(page.sentKeys)) result.sentKeys.push(...page.sentKeys)
-        Object.assign(result.triage, page.triage || {})
-        if (page.nextCursor == null) {
-          if (page.limited) throw new Error('评审列表受限但缺少后续游标')
-          return result
-        }
-        if (typeof page.nextCursor !== 'string' || !page.nextCursor || seen.has(page.nextCursor)) throw new Error('评审分页没有进展')
-        seen.add(page.nextCursor); cursor = page.nextCursor
-      }
-      throw new Error('评审分页超过上限，未完整加载')
-    }
-
     function apply(ctx) {
       settingsEditor = createSettingsEditor()
       const ownedEditor = settingsEditor
@@ -1601,19 +1470,6 @@ window.__ModuleLoader__.load({
         ),
       )
 
-      // ═══════════════ P3: /advise 命令卡片（advcmd 原型移植） ═══════════════
-      // conversation.chat.commandview 键控 'advise'（开放键域，纯增量），
-      // 与 ask_advisor 工具卡片同一视觉语言：条目渲染直接复用 AdvisorItem，
-      // CSS 复用 ADVISOR_CARD_CSS。数据源是 CommandNode：args=问题原文，
-      // outcome=null 在途，outcome.kind/text 定成败；解析器是 host 侧
-      // parseAdvisorItems 的客户端复刻（同一正则契约），失败一律回退原文。
-      ctx.slots.inject('conversation.chat.commandview', () =>
-        ctx.slots.register(
-          { name: 'conversation.chat.commandview', key: 'advise' },
-          (props) => h(AdviseCommandView, props),
-        ),
-      )
-
       // ═══════════════ M3-③ 批注评审 UI（annrev 原型移植） ═══════════════
       // Marks/badges/panel are driven by the per-message button's effect —
       // deliberately NOT the turnTail chain (winner-take-all, deliverables
@@ -1622,46 +1478,48 @@ window.__ModuleLoader__.load({
       // only, so one message never disturbs another's marks.
 
       const styleEl = document.createElement('style')
-      styleEl.textContent = REVIEW_CSS + '\n' + ADVISOR_CARD_CSS + '\n' + SIDEBAR_CSS
+      styleEl.textContent = REVIEW_CSS + '\n' + ADVISOR_CARD_CSS + '\n' + SIDEBAR_CSS + '\n' + INBOX_CSS
       document.head.appendChild(styleEl)
       ctx.effect(() => () => styleEl.remove(), 'dsh-advisor: review styles')
 
-      // Mount the advisorReview Remote namespace; callers await readiness.
-      let reviewApiResolve
-      const reviewApiReady = new Promise((resolve) => { reviewApiResolve = resolve })
-      const remoteService = ctx.get('remote')
-      if (remoteService !== undefined && typeof remoteService.$mount === 'function') {
-        ctx.effect(async () => {
-          let dispose = null
-          try {
-            dispose = await remoteService.$mount(ADVISOR_REMOTE)
-            reviewApiResolve(ctx.get('remote.advisorReview') ?? null)
-          } catch (error) {
-            // A failed $mount must still settle readiness — otherwise every
-            // reviewCall hangs forever awaiting a promise that never resolves.
-            console.error('dsh-advisor: review remote mount failed', error && error.message)
-            reviewApiResolve(null)
-          }
-          return async () => { if (dispose) await dispose() }
-        }, 'dsh-advisor: review remote mount')
-      } else {
-        reviewApiResolve(null)
-      }
+      const reviewTransport = createReviewTransport({
+        getRemote: () => ctx.get('remote'),
+        getApi: () => ctx.get('remote.advisorReview'),
+        descriptor: ADVISOR_REMOTE,
+      })
+      ctx.effect(() => {
+        void reviewTransport.ready()
+        return () => reviewTransport.dispose()
+      }, 'dsh-advisor: review remote mount')
+      const reviewCall = (method, request) => reviewTransport.call(method, request)
 
-      async function reviewCall(method, request) {
-        const api = await reviewApiReady
-        if (!api || typeof api[method] !== 'function') return { ok: false, error: 'review remote unavailable' }
-        let res
-        try {
-          res = await api[method](request)
-        } catch (error) {
-          return { ok: false, error: String(error && error.message || error) }
+      /**
+       * Unwrap one inbox call. The mounted Remote returns a RemoteResult
+       * envelope ({ ok, value } / { ok, error }); the harness and older
+       * callers hand back the business object directly. Both carry an ok
+       * field, so the envelope is recognised by its own value member.
+       */
+      function unwrapInboxResult(res) {
+        if (res === null || typeof res !== 'object') return { ok: false, code: 'store_error', error: '收件箱返回格式无效' }
+        if (res.ok === true) {
+          if (!Object.prototype.hasOwnProperty.call(res, 'value')) return res
+          const value = res.value
+          return value !== null && typeof value === 'object' ? value : { ok: false, code: 'store_error', error: '收件箱返回格式无效' }
         }
-        if (res && typeof res === 'object' && res.ok === true) return res.value
-        if (res && typeof res === 'object' && res.ok === false) {
-          return { ok: false, error: String((res.error && (res.error.message || res.error.code)) || 'remote failure') }
+        if (res.ok === false) {
+          if (typeof res.code === 'string' || typeof res.error === 'string') return res
+          const error = res.error
+          if (error !== null && typeof error === 'object') {
+            return { ok: false, code: typeof error.code === 'string' ? error.code : 'store_error', error: String(error.message || error.code || '远程调用失败') }
+          }
+          return { ok: false, code: 'store_error', error: '远程调用失败' }
         }
         return res
+      }
+
+      /** Business-level inbox RPC; the same mount readiness reviewCall awaits. */
+      async function inboxCall(method, request) {
+        return unwrapInboxResult(await reviewCall(method, request))
       }
 
       const sessionRoots = new Map()
@@ -1673,7 +1531,11 @@ window.__ModuleLoader__.load({
           call: async (method, request) => {
             const result = await reviewCall(method, request)
             const root = result?.review?.workspaceRoot || result?.evidence?.workspaceRoot
-            if (clientActive && typeof root === 'string') sessionRoots.set(request.sessionId, root)
+            if (clientActive && typeof root === 'string') {
+              sessionRoots.delete(request.sessionId)
+              sessionRoots.set(request.sessionId, root)
+              if (sessionRoots.size > 16) sessionRoots.delete(sessionRoots.keys().next().value)
+            }
             return result
           },
           onTriage: request => reviewCall('triage', request),
@@ -1687,6 +1549,47 @@ window.__ModuleLoader__.load({
       }
       if (typeof ctx.inject === 'function') ctx.inject(['resources', 'sidebarRightTabs', 'sidebarRight'], installSidebar)
       else if (ctx.get('resources') && ctx.get('sidebarRightTabs') && ctx.get('sidebarRight')) installSidebar(ctx)
+
+      // ── 夏尔收件箱：独立主面板 + 左栏入口（与批注评审共享 advisorReview Remote） ──
+      // Read/write go through inboxCall; every navigation gesture reuses the
+      // native right sidebar (sidebar.openReview/openEvidence) and the native
+      // layout (selectPanel). Nothing here holds model calls or draft access.
+      const getLayout = () => {
+        try { return ctx.get('layout') } catch { return undefined }
+      }
+      const inbox = createCielInbox({ React, Tag, Button })
+      inbox.install(ctx, {
+        call: inboxCall,
+        getSessions: () => {
+          try { return ctx.get('sessions') } catch { return undefined }
+        },
+        openReview: (sessionId, reviewId, options) => (sidebar === null || sidebar === undefined
+          ? { ok: false, error: '原生右栏不可用' }
+          : sidebar.openReview(sessionId, reviewId, options)),
+        openEvidence: (sessionId, reviewId, evidenceId, options) => (sidebar === null || sidebar === undefined
+          ? { ok: false, error: '原生右栏不可用' }
+          : sidebar.openEvidence(sessionId, reviewId, evidenceId, options)),
+        revealConversation: () => {
+          const layout = getLayout()
+          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+        },
+        revealInbox: () => {
+          const layout = getLayout()
+          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(INBOX_PANEL_ID)
+        },
+        beginNavigation: () => {
+          const layout = getLayout()
+          return layout && typeof layout.beginNavigation === 'function' ? layout.beginNavigation() : undefined
+        },
+      })
+      ctx.effect(() => () => inbox.dispose(), 'dsh-ciel: inbox lifetime')
+      // Root sessions subscription: keeps invalidating in-flight inbox reads on
+      // a session switch even when the panel is unmounted.
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['sessions'], (sctx) => {
+          try { inbox.bindSessions(sctx.get('sessions')) } catch { /* sessions unavailable */ }
+        })
+      }
 
       ctx.effect(() => {
         const reader = createModelUsageReader(reviewCall)
@@ -1704,28 +1607,14 @@ window.__ModuleLoader__.load({
         createPortal(tag.kind === 'button'
           ? navigationButton({ className: 'ciel-open-review', onClick: tag.onClick }, tag.text)
           : h(Tag, { tone: tag.tone }, tag.text), tag.target, tag.key))
-      const store = {
-        byMessage: new Map(),
-        loadErrors: new Map(),
-        collapsed: new Set(), // Review identity, retained across panel repaint; page-local only.
-        hydrated: new Set(),
-        retrySessions: new Set(), // 加载失败的 session——重连后重试
-        popover: null,
-        // 回传状态，全部按 reviewId 归键——面板是 imperative DOM，React 重建
-        // 后由 buildPanel 从这里重读，勾选/已回传/注记随重绘保留。
-        feedback: {
-          sel: new Map(),      // reviewId -> Set<annotation index>
-          sent: new Map(),     // reviewId -> Set<index>（hydrate 自 sentKeys，发送后更新）
-          note: new Map(),     // reviewId -> 面板头注记文本
-          sending: new Set(),  // 有在途回传的 reviewId
-          tick: new Map(),     // messageId -> 重绘计数器（回传 settle 后 bump）
-          filter: new Map(),   // reviewId -> 'all' | 'blocker'（分诊过滤）
-          meta: new Map(),     // reviewId -> { triageStates, filter }（WAL 规范化元数据）
-          touched: new Set(),  // 本次页面生命周期内被本地编辑过的 reviewId（防旧水合覆盖）
-          triageChain: new Map(), // reviewId -> Promise，串行化分诊写入，避免竞态
-        },
-      }
+      // One document-level mark supervisor for every reviewed message; it is
+      // created with the runtime and disposed with it.
+      const markSupervisor = createMarkSupervisor(document)
+      ctx.effect(() => () => markSupervisor.dispose(), 'dsh-advisor: mark supervisor lifetime')
       const emit = () => { for (const l of Array.from(listeners)) l() }
+      const reviewState = createReviewState({ call: reviewCall, emit, active: () => clientActive, onEvict: id => sessionRoots.delete(id) })
+      const { store, absorb, hydrate } = reviewState
+      ctx.effect(() => () => { reviewState.dispose(); listeners.clear() }, 'Ciel: review state lifetime')
       function useStoreTick() {
         const [, set] = useState(0)
         useEffect(() => {
@@ -1734,83 +1623,6 @@ window.__ModuleLoader__.load({
           return () => { listeners.delete(tick) }
         }, [])
       }
-      function absorb(entry) {
-        if (!entry || typeof entry.messageId !== 'string') return
-        // Fence by createdAt/review generation: never let an older list entry or
-        // an untimestamped legacy record clobber a newer start result.
-        if (shouldReplace(store.byMessage.get(entry.messageId), entry)) {
-          store.byMessage.set(entry.messageId, entry)
-        }
-      }
-      // Hydration is deduplicated (a concurrent non-force call joins the
-      // in-flight one) and retryable: an error-shaped list result does NOT mark
-      // the session loaded, so a mount/reconnect re-runs it. `force` bypasses
-      // the loaded set for inFlight->false refreshes, and — importantly — when a
-      // load is already running a forced call does NOT settle from that stale
-      // query: it chains a FRESH load after it so the terminal result is seen.
-      const hydratePromises = new Map()
-      async function hydrate(sessionId, { force = false } = {}) {
-        if (typeof sessionId !== 'string') return
-        if (!force && store.hydrated.has(sessionId)) return
-        const prev = hydratePromises.get(sessionId)
-        if (prev && !force) return prev
-        const p = (async () => {
-          if (prev) await prev // forced: wait out the stale query, then reload fresh
-          let res
-          try {
-            res = await loadReviewPages(reviewCall, sessionId, () => clientActive)
-          } catch (error) {
-            store.hydrated.delete(sessionId)
-            store.retrySessions.add(sessionId)
-            store.loadErrors.set(sessionId, String(error?.message || error)); emit()
-            console.error('review.list threw', error && error.message)
-            return
-          }
-          // Malformed / error-shaped return is NOT success — leave the session
-          // un-loaded so the next mount/reconnect retries.
-          if (!isListResultLoaded(res)) {
-            store.hydrated.delete(sessionId)
-            store.retrySessions.add(sessionId)
-            store.loadErrors.set(sessionId, String(res?.error || '评审记录加载失败')); emit()
-            console.error('review.list error-shaped', res && res.error)
-            return
-          }
-          for (const r of res.reviews) absorb(r)
-          // 已回传去重键（reviewId#index）→ 置灰对应条目，刷新后不依赖服务端重放拒绝。
-          const sentKeys = res.sentKeys && Array.isArray(res.sentKeys) ? res.sentKeys : []
-          for (const key of sentKeys) {
-            if (typeof key !== 'string') continue
-            const at = key.lastIndexOf('#')
-            if (at <= 0) continue
-            const rid = key.slice(0, at)
-            const idx = Number(key.slice(at + 1))
-            if (!Number.isInteger(idx)) continue
-            if (!store.feedback.sent.has(rid)) store.feedback.sent.set(rid, new Set())
-            store.feedback.sent.get(rid).add(idx)
-          }
-          // 0.12.0 ④分诊水合：WAL 里的采纳/忽略与过滤器恢复进 store（规范化
-          // 为 meta，供 buildPanel 首建选择时应用）；仅对未被本地编辑过的
-          // review 应用，防止旧水合覆盖新分诊。
-          const triage = res.triage && typeof res.triage === 'object' ? res.triage : {}
-          for (const [rid, t] of Object.entries(triage)) {
-            if (!t || typeof t !== 'object') continue
-            if (store.feedback.touched.has(rid)) continue
-            const states = t.states && typeof t.states === 'object' ? t.states : {}
-            store.feedback.meta.set(rid, {
-              triageStates: states,
-              filter: t.filter === 'all' || t.filter === 'blocker' ? t.filter : undefined,
-            })
-            if (t.filter === 'all' || t.filter === 'blocker') store.feedback.filter.set(rid, t.filter)
-          }
-          if (!clientActive) return
-          store.loadErrors.delete(sessionId)
-          store.hydrated.add(sessionId)
-          store.retrySessions.delete(sessionId)
-          emit()
-        })().finally(() => { if (hydratePromises.get(sessionId) === p) hydratePromises.delete(sessionId) })
-        hydratePromises.set(sessionId, p)
-        return p
-      }
       // Reconnect reconcile: retry sessions that failed to load AND force a
       // fresh load of already-hydrated sessions — a disconnected start can
       // finish offscreen, so reconnecting must re-fetch to surface the terminal
@@ -1818,6 +1630,7 @@ window.__ModuleLoader__.load({
       if (typeof clientOn === 'function') {
         ctx.effect(() => {
           const dispose = clientOn('connection/reset', () => {
+            void reviewTransport.ready().then(() => retryProgress())
             const sessions = new Set([...store.hydrated, ...store.retrySessions])
             for (const sessionId of sessions) void hydrate(sessionId, { force: true })
           })
@@ -1825,345 +1638,28 @@ window.__ModuleLoader__.load({
         }, 'dsh-advisor: review reconnect retry')
       }
 
-      // ── anchor normalization: anchors quote MARKDOWN SOURCE (with **, `, []()
-      // etc.) while the DOM holds RENDERED text — strip markdown syntax from the
-      // anchor, collapse whitespace on both sides, then substring-match.
-      function normalizeAnchor(anchor) {
-        return String(anchor)
-          .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-          .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-          .replace(/[*`_~#>]/g, '')
-          .replace(/\s+/g, ' ')
-          .trim()
-      }
+      const progressScheduler = createReviewProgress({ reviewCall, store, emit, hydrate, pin: reviewState.pin, document,
+        setInterval: (...args) => setInterval(...args), clearInterval: id => clearInterval(id) })
+      const { subscribeProgress, retryProgress } = progressScheduler
+      ctx.effect(() => () => progressScheduler.dispose(), 'dsh-advisor: review progress poller lifetime')
 
-      // ── text-node collection excluding our own chrome: the card panel quotes
-      // the anchors and would self-match (reject .dsr-tail explicitly); the
-      // popover lives outside the turn anyway.
-      function inOurChrome(n) {
-        const el = n.parentElement
-        return el !== null && typeof el.closest === 'function' && el.closest('.dsr-tail') !== null
-      }
-      function collectTextNodes(container, excludeEl) {
-        const doc = container.ownerDocument
-        const walker = doc.createTreeWalker(container, 4, {
-          acceptNode: (n) => (excludeEl.contains(n) || inOurChrome(n) ? 2 : n.nodeValue.trim() === '' ? 3 : 1),
-        })
-        const nodes = []
-        let cur = walker.nextNode()
-        while (cur) { nodes.push(cur); cur = walker.nextNode() }
-        return nodes
-      }
-      function textOf(container, excludeEl) {
-        return collectTextNodes(container, excludeEl).map((n) => n.nodeValue).join(' ')
-      }
-
-      // ── smallest ancestor of the button whose text holds at least one probe:
-      // the text universe for matching. In the real chat DOM this settles on the
-      // shared flow column (flow items have no per-turn wrapper) — which is SAFE
-      // here, because matching is proximity-disambiguated and cleanup is by
-      // owned spans, so a big universe cannot leak across turns.
-      function findChatRoot(anchorEl, annotations) {
-        const probes = (annotations || [])
-          .filter((a) => a && typeof a.anchor === 'string')
-          .map((a) => normalizeAnchor(a.anchor))
-          .filter((s) => s.length >= 4)
-          .map((s) => s.slice(0, 40))
-        let node = anchorEl.parentElement
-        // 渐进挂载兜底：长消息分多个 mutation 周期上树，probe 可能暂时落空。
-        // 记住沿途第一个「够大」的祖先——被评审文本总在按钮自己的 flow item
-        // 里，而匹配本来就是 proximity 消歧，落到这里不跨消息串味。
-        let firstBig = null
-        for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
-          if (node === (anchorEl.ownerDocument && anchorEl.ownerDocument.body)) break
-          const hay = textOf(node, anchorEl).replace(/\s+/g, ' ')
-          if (firstBig === null && hay.length > 200) firstBig = node
-          if (probes.length === 0 ? hay.length > 200 : probes.some((p) => hay.includes(p))) return node
+      const openAnnotation = (event, entry, a, i, doc) => {
+        event.stopPropagation()
+        if (sidebar && entry.sessionId && entry.reviewId) {
+          const result = sidebar.openReview(entry.sessionId, entry.reviewId, { annotationIndex: i })
+          if (result.ok) return
         }
-        return firstBig
-      }
-
-      // ── undo exactly what one effect created: mark spans unwrap back to
-      // their text; badge spans are chrome, not content — remove them outright.
-      // Spans already gone (React re-rendered the body) are skipped.
-      function clearOwned(created) {
-        for (const item of created) {
-          const span = item.el
-          if (item.kind === 'gutter') {
-            if (span.isConnected && span.parentNode) span.parentNode.removeChild(span)
-            if (item.host && item.host.classList) item.host.classList.remove('dsr-blk', 'dsr-blk-hl')
-            continue
-          }
-          if (!span.isConnected || !span.parentNode) continue
-          const parent = span.parentNode
-          if (item.kind === 'badge') {
-            parent.removeChild(span)
-          } else {
-            parent.replaceChild(span.ownerDocument.createTextNode(span.textContent), span)
-          }
-          parent.normalize()
+        const rect = event.currentTarget.getBoundingClientRect()
+        const docEl = doc.documentElement
+        const maxX = Math.max(12, (docEl ? docEl.clientWidth : 800) - 440)
+      store.popover = {
+        sessionId: entry.sessionId,
+          annotation: a,
+          index: i + 1,
+          x: Math.min(Math.max(12, rect.left), maxX),
+          y: rect.bottom + 6,
         }
-      }
-
-      // ── 0.12.0 ①块级解析：entry.blocks（host 落库的 id+type 序号空间）对到
-      // 渲染 DOM 的顶层块元素。规则与切分器同纪律——宁简勿繁 + 失败退回
-      // proximity：候选 = root 内按文档序、位于按钮之前的块元素（P/H1-6/PRE/
-      // UL/OL/TABLE/BLOCKQUOTE/HR，未分类的薄壳 div 下降一层），取末尾
-      // blocks.length 个按序号 zip；类型不符即放弃该块映射。
-      function classifyBlockEl(el) {
-        const tag = el.tagName
-        if (/^H[1-6]$/.test(tag)) return 'heading'
-        if (tag === 'PRE') return 'code'
-        if (tag === 'UL' || tag === 'OL') return 'list'
-        if (tag === 'TABLE') return 'table'
-        if (tag === 'BLOCKQUOTE') return 'quote'
-        if (tag === 'HR') return 'hr'
-        if (tag === 'P') return 'paragraph'
-        return null
-      }
-      function resolveBlockDoms(root, beforeEl, blocks) {
-        const map = new Map()
-        if (!root || !Array.isArray(blocks) || blocks.length === 0) return map
-        const candidates = []
-        const precedes = (el) => {
-          if (!beforeEl || el === beforeEl || beforeEl.contains(el)) return false
-          const pos = el.compareDocumentPosition(beforeEl)
-          return (pos & 4) !== 0 // beforeEl follows el
-        }
-        // 有界 DFS：文档序收集按钮之前的块元素。命中的元素不再下降（块内嵌套
-        // 如 blockquote>p 只记外层）；评审自身的 chrome 与按钮操作区跳过。
-        const visit = (el) => {
-          if (el.classList && (el.classList.contains('dsr-tail') || el.classList.contains('dsr-pop') || el.classList.contains('dsr-gutter'))) return
-          if (beforeEl && el !== beforeEl && beforeEl.contains(el)) return
-          const type = classifyBlockEl(el)
-          if (type !== null) {
-            if (precedes(el)) candidates.push({ el, type })
-            return
-          }
-          for (const child of el.children) visit(child)
-        }
-        visit(root)
-        if (candidates.length === 0) return map
-        // 类型序列对齐 + 前缀位置对齐的混合：正文之后的交付物/折叠段会让
-        // 候选比块少（渲染器把富代码卡渲成自定义组件而非 pre，折叠段整块
-        // 不上树），盲目取末尾 N 个或要求全长相等都会清零。做法：对每个偏移
-        // 按「类型一致数 / 重叠长度」打分取最优；匹配率 ≥60% 时按位置映射
-        // 全部重叠块（吸收组件分类噪音），否则只映射类型一致的位置——对不
-        // 上的块保持未映射，消费方退回 proximity。
-        const overlap = (o) => Math.min(candidates.length - o, blocks.length)
-        let bestOffset = -1
-        let bestRatio = 0
-        for (let o = 0; o < candidates.length; o += 1) {
-          const n = overlap(o)
-          if (n <= 0) break
-          let score = 0
-          for (let i = 0; i < n; i += 1) {
-            if (candidates[o + i].type === blocks[i].type) score += 1
-          }
-          const ratio = score / n
-          if (ratio > bestRatio) { bestRatio = ratio; bestOffset = o }
-          if (ratio === 1) break
-        }
-        if (bestOffset < 0) return map
-        const n = overlap(bestOffset)
-        const positional = bestRatio >= 0.6
-        for (let i = 0; i < n; i += 1) {
-          if (positional || candidates[bestOffset + i].type === blocks[i].type) {
-            map.set(blocks[i].id, candidates[bestOffset + i].el)
-          }
-        }
-        return map
-      }
-
-      // ── locate one normalized anchor in the concatenated text (whitespace
-      // collapsed) and map it back to raw node/offset boundaries. Duplicate
-      // phrases are disambiguated by PROXIMITY: the last occurrence whose start
-      // node precedes `beforeEl` (the message's own button) wins — the reviewed
-      // text always sits right above its own action row, while duplicates in
-      // older turns are further up. Falls back to the first occurrence.
-      function locateRange(nodes, needle, beforeEl) {
-        let collapsed = ''
-        const map = []
-        let prevSpace = true
-        for (let ni = 0; ni < nodes.length; ni += 1) {
-          const v = nodes[ni].nodeValue
-          for (let i = 0; i < v.length; i += 1) {
-            const isSpace = /\s/.test(v[i])
-            if (isSpace) {
-              if (!prevSpace) { collapsed += ' '; map.push([ni, i]); prevSpace = true }
-            } else { collapsed += v[i]; map.push([ni, i]); prevSpace = false }
-          }
-        }
-        const before = (node) => {
-          if (!beforeEl || node === beforeEl || beforeEl.contains(node)) return true
-          const pos = node.compareDocumentPosition(beforeEl)
-          return (pos & 4) !== 0 // DOCUMENT_POSITION_FOLLOWING: beforeEl follows node
-        }
-        let chosen = null
-        let first = null
-        let at = collapsed.indexOf(needle)
-        while (at >= 0) {
-          const start = map[at]
-          const end = map[at + needle.length - 1]
-          if (start && end) {
-            const range = { startNode: nodes[start[0]], startOffset: start[1], endNode: nodes[end[0]], endOffset: end[1] + 1 }
-            if (!first) first = range
-            if (before(range.startNode)) chosen = range
-          }
-          at = collapsed.indexOf(needle, at + 1)
-        }
-        return chosen || first
-      }
-
-      // ── index-based portion splitting: the anchor occupies exactly
-      // [startOffset, endOffset) of the raw text; split so it becomes whole text
-      // node(s), then wrap them. The DFS is bounded by `root` so a bug can never
-      // escape the chat root. Every created span is recorded in `created` for
-      // owned cleanup.
-      function wrapRange(doc, root, range, spanClass, badge, onActivate, created, index) {
-        let first
-        let last
-        if (range.startNode === range.endNode) {
-          const mid = range.startNode.splitText(range.startOffset)
-          mid.splitText(range.endOffset - range.startOffset)
-          first = mid
-          last = mid
-        } else {
-          range.endNode.splitText(range.endOffset)
-          first = range.startNode.splitText(range.startOffset)
-          last = range.endNode
-        }
-        const nodes = []
-        let cur = first
-        while (cur) {
-          if (cur.nodeType === 3) nodes.push(cur)
-          if (cur === last) break
-          let next = cur.firstChild || cur.nextSibling
-          let climb = cur
-          while (!next && climb !== root && climb.parentNode) { climb = climb.parentNode; next = climb.nextSibling }
-          cur = next
-        }
-        let lastSpan = null
-        for (const node of nodes) {
-          if (node.nodeValue.trim() === '') continue
-          const span = doc.createElement('span')
-          span.className = spanClass
-          span.addEventListener('click', onActivate)
-          node.parentNode.replaceChild(span, node)
-          span.appendChild(node)
-          created.push({ kind: 'mark', el: span, index })
-          if (node === last) lastSpan = span
-        }
-        if (lastSpan && lastSpan.parentNode) {
-          lastSpan.parentNode.insertBefore(badge, lastSpan.nextSibling)
-        } else if (last.parentNode) {
-          last.parentNode.insertBefore(badge, last.nextSibling)
-        }
-        created.push({ kind: 'badge', el: badge, index })
-      }
-
-      // ── mark every annotation with per-item try/catch and return visible
-      // stats plus the owned span list for cleanup.
-      function markTurn(anchorEl, entry) {
-        const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
-        const stats = { marked: 0, total: 0, failures: [] }
-        const created = []
-        const root = findChatRoot(anchorEl, annotations)
-        if (!root) {
-          stats.failures.push('chat root not found')
-          console.error('advisor-review: chat root not found')
-          return { root: null, stats, created, byIndex: new Map() }
-        }
-        const doc = root.ownerDocument
-        // 0.12.0 ①：有块地图时先解析块级 DOM；块命中的批注挂 gutter 徽章
-        // （零文本侵入），未命中的退回旧 proximity 划线（旧记录/解析失败）。
-        const blockDoms = resolveBlockDoms(root, anchorEl, entry.blocks)
-        const gutterByBlock = new Map() // blockEl -> gutter el（多块共用去重）
-        annotations.forEach((a, i) => {
-          if (!a || typeof a.anchor !== 'string') return
-          const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
-          const open = (event) => {
-            event.stopPropagation()
-            if (sidebar && entry.sessionId && entry.reviewId) {
-              const result = sidebar.openReview(entry.sessionId, entry.reviewId, { annotationIndex: i })
-              if (result.ok) return
-            }
-            const rect = event.currentTarget.getBoundingClientRect()
-            const docEl = doc.documentElement
-            const maxX = Math.max(12, (docEl ? docEl.clientWidth : 800) - 440)
-            store.popover = {
-              annotation: a,
-              index: i + 1,
-              x: Math.min(Math.max(12, rect.left), maxX),
-              y: rect.bottom + 6,
-            }
-            emit()
-          }
-          const mapped = typeof a.block === 'string' ? blockDoms.get(a.block) : undefined
-          // 证据护栏：位置映射只是猜测，锚引文才是证据。块元素文本不含锚引文
-          // 时（渲染器折叠/改写了块，如富代码卡）退回 proximity 找精确位置，
-          // 绝把徽章挂到错块上。
-          const blockEl = (() => {
-            if (mapped === undefined) return undefined
-            const probe = normalizeAnchor(a.anchor)
-            if (probe.length < 4) return mapped
-            const hay = textOf(mapped, anchorEl).replace(/\s+/g, ' ')
-            return hay.includes(probe) ? mapped : undefined
-          })()
-          if (blockEl !== undefined) {
-            stats.total += 1
-            try {
-              blockEl.classList.add('dsr-blk')
-              let gutter = gutterByBlock.get(blockEl)
-              if (gutter === undefined) {
-                gutter = doc.createElement('span')
-                gutter.className = 'dsr-gutter'
-                blockEl.insertBefore(gutter, blockEl.firstChild)
-                gutterByBlock.set(blockEl, gutter)
-                created.push({ kind: 'gutter', el: gutter, host: blockEl })
-              }
-              const mark = doc.createElement('span')
-              mark.className = 'dsr-gmark dsr-gmark-' + sev
-              mark.textContent = String(i + 1)
-              mark.title = (a.severity === 'blocker' ? 'blocker' : 'nit') + ' · ' + (a.title || '')
-              mark.addEventListener('click', open)
-              gutter.appendChild(mark)
-              created.push({ kind: 'badge', el: mark, index: i })
-              stats.marked += 1
-            } catch (error) {
-              stats.failures.push('#' + (i + 1) + ' ' + String(error && error.message || error))
-            }
-            return
-          }
-          const needle = normalizeAnchor(a.anchor)
-          if (needle.length < 4) return
-          stats.total += 1
-          try {
-            const range = locateRange(collectTextNodes(root, anchorEl), needle, anchorEl)
-            if (!range) {
-              stats.failures.push('#' + (i + 1) + ' anchor not found in DOM text')
-              return
-            }
-            const badge = doc.createElement('span')
-            badge.className = 'dsr-badge dsr-badge-' + sev
-            badge.textContent = String(i + 1)
-            badge.title = (a.severity === 'blocker' ? 'blocker' : 'nit') + ' · ' + (a.title || '')
-            badge.addEventListener('click', open)
-            wrapRange(doc, root, range, 'dsr-mark dsr-mark-' + sev, badge, open, created, i)
-            stats.marked += 1
-          } catch (error) {
-            stats.failures.push('#' + (i + 1) + ' ' + String(error && error.message || error))
-          }
-        })
-        if (stats.failures.length > 0) console.error('advisor-review mark failures:', stats.failures.join(' | '))
-        // Spans grouped by annotation index: panel cards click-locate through this.
-        const byIndex = new Map()
-        for (const item of created) {
-          if (item.index === undefined) continue
-          if (!byIndex.has(item.index)) byIndex.set(item.index, [])
-          byIndex.get(item.index).push(item.el)
-        }
-        return { root, stats, created, byIndex }
+        emit()
       }
 
       // ── the annotation card panel, built as plain DOM and inserted right
@@ -2426,7 +1922,7 @@ window.__ModuleLoader__.load({
           const foot = doc.createElement('div')
           foot.className = 'dsr-tail-head'
           foot.style.borderBottom = 'none'
-          foot.style.borderTop = '1px solid rgba(130,130,130,.2)'
+          foot.style.borderTop = '1px solid var(--dsw-alias-border-l2)'
           const filter = doc.createElement('span')
           filter.className = 'dsrf-filter'
           for (const [f, label] of [['all', '全部'], ['blocker', '只看 blocker']]) {
@@ -2454,6 +1950,9 @@ window.__ModuleLoader__.load({
         useStoreTick()
         const messageId = props.messageId
         const sessionId = props.sessionId
+        const requestScope = reviewMessageKey(sessionId, messageId)
+        const currentScope = React.useRef(requestScope)
+        currentScope.current = requestScope
         const [busy, setBusy] = useState(false)
         // 0.13.0 契约 v3 进展通道 + 在途恢复（修复「点评审后切换会话按钮
         // 复位」）：busy 是组件内 state，随卸载丢失；挂载即探一次远端
@@ -2464,56 +1963,39 @@ window.__ModuleLoader__.load({
         const progRef = React.useRef(null)
         const aliveRef = React.useRef(true)
         const genRef = React.useRef(0)        // 丢弃过期响应（响应乱序）
-        const pollBusyRef = React.useRef(false) // 避免同一消息的并发请求
         const idleRef = React.useRef(false)    // true 仅当确认无在途（停止轮询）
         useEffect(() => {
-          let live = true
           aliveRef.current = true
           // 新代际：复位 idleRef，避免「上一代在途请求未回时初始 probe 被跳过」
-          // 且 idleRef 仍为 true 而导致轮询永久停摆。
+          // 且 idleRef 仍为 true 而导致轮询永久停摆。订阅交给共享轮询器：同
+          // session+message 的探活在 key 上 single-flight，旧代际由 active 标记
+          // 丢弃；busy 期间 keepAlive 保持探活，本地 start 结束后重新挂载。
           idleRef.current = false
-          const probe = () => {
-            if (!live) return
-            if (pollBusyRef.current) return // 不重叠：上一请求未回，不发新的
-            pollBusyRef.current = true
-            const gen = genRef.current
-            reviewCall('progress', { sessionId, messageId })
-              .then((res) => {
-                if (!live || gen !== genRef.current) return // 忽略迟到的过期响应
-                // 失败/错误形状/缺 inFlight 字段一律不是「完成」：保留既有
-                // progRef/idleRef、继续轮询，绝不把 {} 之类误判为无在途。
-                if (res === null || res.ok === false || typeof res !== 'object' || typeof res.inFlight !== 'boolean') return
-                const inflight = res.inFlight === true
-                const next = inflight ? res : null
-                if (progRef.current && !inflight) {
-                  // 评审在别处（或本页上一生命周期）结束：条目已持久化，
-                  // 强制重水合拿到 verdict/失败态。
-                  store.hydrated.delete(sessionId)
-                  hydrate(sessionId, { force: true })
-                }
-                idleRef.current = !inflight
-                progRef.current = next
-                setProg(next)
-              })
-              .catch(() => { /* 网络错误：不是完成，保持轮询 */ })
-              .finally(() => { pollBusyRef.current = false })
+          const sub = {
+            sessionId,
+            messageId,
+            setProg,
+            progRef,
+            idleRef,
+            keepAlive: busy === true,
+            active: true,
           }
-          probe()
-          const iv = setInterval(() => { if (busy || !idleRef.current) probe() }, 1000)
-          return () => { live = false; aliveRef.current = false; genRef.current += 1; clearInterval(iv) }
+          const unsubscribe = subscribeProgress(sub)
+          return () => { aliveRef.current = false; genRef.current += 1; unsubscribe() }
         }, [busy, messageId, sessionId])
         // 停止控制：取消本次 session+message 的评审。失败必须保持可见可重试，
         // 不因请求失败而错误清除在途状态。
         const [cancelling, setCancelling] = useState(false)
         const [cancelError, setCancelError] = useState('')
         const [startError, setStartError] = useState(null)
+        const stillCurrent = () => clientActive && aliveRef.current && currentScope.current === requestScope
         const cancelStop = () => {
           if (cancelling || !aliveRef.current) return
           setCancelling(true)
           setCancelError('')
           reviewCall('cancel', { sessionId, messageId })
             .then((res) => {
-              if (!aliveRef.current) return
+              if (!stillCurrent()) return
               const o = cancelOutcome(res)
               if (o.kind === 'accepted') {
                 // 取消请求被接受。若服务端报告无在途（cancelled:false），说明
@@ -2528,19 +2010,20 @@ window.__ModuleLoader__.load({
               }
             })
             .catch((error) => {
-              if (!aliveRef.current) return
+              if (!stillCurrent()) return
               setCancelError(String(error && error.message || '取消失败'))
             })
-            .finally(() => { if (aliveRef.current) setCancelling(false) })
+            .finally(() => { if (stillCurrent()) setCancelling(false) })
         }
         const rootRef = React.useRef(null)
         const [portalPanel, setPortalPanel] = useState(null)
         useEffect(() => { void hydrate(sessionId) }, [sessionId])
-        const entry = store.byMessage.get(messageId)
+        const entry = store.byMessage.get(reviewMessageKey(sessionId, messageId))
         // 回传 settle 后的重绘触发器：bump 本消息的 tick → 下面的 effect 重跑。
-        const fbTick = store.feedback.tick.get(messageId) || 0
+        const fbTick = store.feedback.tick.get(reviewMessageKey(sessionId, messageId)) || 0
         const bumpTick = () => {
-          store.feedback.tick.set(messageId, (store.feedback.tick.get(messageId) || 0) + 1)
+          if (!clientActive) return
+          store.feedback.tick.set(reviewMessageKey(sessionId, messageId), (store.feedback.tick.get(reviewMessageKey(sessionId, messageId)) || 0) + 1)
           emit()
         }
         // One effect owns every visual artifact for this message: inline marks,
@@ -2578,20 +2061,23 @@ window.__ModuleLoader__.load({
             // 分诊写入：串行化（逐 review 排队），失败注记到头部并保持可重试，
             // 不再 fire-and-forget 静默吞掉。
             const sendTriage = (payload) => {
+              const release = reviewState.pin(sessionId)
               store.feedback.touched.add(reviewId)
               if (!store.feedback.triageChain.has(reviewId)) store.feedback.triageChain.set(reviewId, Promise.resolve())
               store.feedback.triageChain.set(reviewId, store.feedback.triageChain.get(reviewId)
                 .then(() => reviewCall('triage', { sessionId, reviewId, ...payload }))
                 .then((res) => {
                   if (!res || res.ok === false) {
+                    if (!clientActive) return
                     store.feedback.note.set(reviewId, '分诊保存失败：' + String((res && res.error) || 'unknown'))
                     bumpTick()
                   }
                 })
                 .catch((error) => {
+                  if (!clientActive) return
                   store.feedback.note.set(reviewId, '分诊保存异常：' + String(error && error.message || error))
                   bumpTick()
-                }))
+                }).finally(release))
             }
             fb = {
               sel,
@@ -2638,19 +2124,24 @@ window.__ModuleLoader__.load({
                   return
                 }
                 const generation = genRef.current
+                const release = reviewState.pin(sessionId)
                 store.feedback.sending.add(reviewId)
                 bumpTick()
                 stageFeedbackDraft(ctx, { sessionId, reviewId, messageId, items: items.map((item) => ({ index: item.index })) }, reviewCall,
                   () => aliveRef.current && generation === genRef.current)
                   .then((staged) => {
+                    if (!clientActive) return
                     store.feedback.note.set(reviewId, staged.duplicate
                       ? '这些批注已在输入框中，尚未自动发送'
                       : '✓ 已填入输入框，请编辑确认后手动发送')
                   })
                   .catch((error) => {
+                    if (!clientActive) return
                     store.feedback.note.set(reviewId, '未填入：' + String(error && error.message || error))
                   })
                   .finally(() => {
+                    release()
+                    if (!clientActive) return
                     store.feedback.sending.delete(reviewId)
                     bumpTick()
                   })
@@ -2665,7 +2156,12 @@ window.__ModuleLoader__.load({
               markResult = null
               panel = null
               if (entry.status !== 'error') {
-                markResult = markTurn(el, entry)
+                // Reuse the previous chat root while it still contains the
+                // button: findChatRoot walks and re-texts ancestors, and a
+                // repaint caused by our own chrome must not redo that work.
+                const previousRoot = markResult !== null && markResult.root !== null && markResult.root !== undefined
+                  && markResult.root.isConnected && markResult.root.contains(el) ? markResult.root : undefined
+                markResult = markTurn(el, entry, previousRoot, openAnnotation)
                 entry.markStats = markResult.stats
               }
               const root = markResult && markResult.root
@@ -2702,42 +2198,58 @@ window.__ModuleLoader__.load({
               spans = markResult && markResult.byIndex ? markResult.byIndex.get(index) : undefined
               targetEl = spans ? spans.find((s) => s.isConnected) : undefined
             }
-            ;(targetEl || el).scrollIntoView({ behavior: 'smooth', block: 'center' })
-            if (targetEl !== undefined && spans) {
-              for (const s of spans) {
-                s.classList.remove('dsr-flash')
-                void s.offsetWidth // restart the animation
-                s.classList.add('dsr-flash')
-              }
+            const reduceMotion = prefersReducedMotion()
+            ;(targetEl || el).scrollIntoView(reduceMotion ? { block: 'center' } : { behavior: 'smooth', block: 'center' })
+            if (targetEl !== undefined && spans && !reduceMotion) {
+              // Batch the animation restart: remove from every span, force ONE
+              // layout read, then re-add, instead of a forced reflow per span.
+              for (const s of spans) s.classList.remove('dsr-flash')
+              void targetEl.offsetWidth
+              for (const s of spans) s.classList.add('dsr-flash')
             }
           }
           paint()
           emit()
           let timer = null
           let deadRepaints = 0
-          const observer = new MutationObserver((mutations) => {
-            if (painting || !el.isConnected || timer !== null) return
-            // React owns the native Tag children inside the card. Their commits
-            // are not destroyed source anchors and must not trigger a repaint.
-            if (panel && mutations.length > 0 && mutations.every((m) => panel.contains(m.target))) return
-            const marksAlive = markResult !== null
-              && markResult.created.some((item) => item.el.isConnected)
-            const panelAlive = panel !== null && panel.parentNode !== null
-            if (marksAlive && panelAlive) return
-            timer = setTimeout(() => {
-              timer = null
-              if (!el.isConnected) return
-              const before = entry.markStats ? entry.markStats.marked : 0
-              paint()
-              emit()
-              const after = entry.markStats ? entry.markStats.marked : 0
-              deadRepaints = after > 0 || after !== before ? 0 : deadRepaints + 1
-              if (deadRepaints >= 3) observer.disconnect() // anchor truly unmatchable; stop retrying
-            }, 120)
+          let watching = true
+          // One shared document supervisor dispatches every mutation; this
+          // watcher owns only its own 120ms debounce and its own dead count.
+          // The self-heal contract is unchanged: React destroying the message
+          // subtree (turn regrouping, list re-slicing) detaches the marks and
+          // the next quiet mutation repaints them; only a genuinely
+          // unmatchable anchor stops after three dead repaints.
+          const unwatch = markSupervisor.add({
+            onMutations(mutations) {
+              if (!watching || painting || !el.isConnected || timer !== null) return
+              // React owns the native Tag children inside the card. Their
+              // commits are not destroyed source anchors and must not trigger
+              // a repaint.
+              if (panel && mutations.length > 0 && mutations.every((m) => panel.contains(m.target))) return
+              const marksAlive = markResult !== null
+                && markResult.created.some((item) => item.el.isConnected)
+              const panelAlive = panel !== null && panel.parentNode !== null
+              if (marksAlive && panelAlive) return
+              timer = setTimeout(() => {
+                timer = null
+                if (!el.isConnected || !watching) return
+                const before = entry.markStats ? entry.markStats.marked : 0
+                paint()
+                emit()
+                const after = entry.markStats ? entry.markStats.marked : 0
+                deadRepaints = after > 0 || after !== before ? 0 : deadRepaints + 1
+                if (deadRepaints >= 3) {
+                  // Anchor truly unmatchable; stop retrying. The effect cleanup
+                  // still unregisters the watcher.
+                  watching = false
+                  unwatch()
+                }
+              }, 120)
+            },
           })
-          observer.observe(doc.body, { childList: true, subtree: true })
           return () => {
-            observer.disconnect()
+            watching = false
+            unwatch()
             if (timer !== null) clearTimeout(timer)
             if (markResult) clearOwned(markResult.created)
             if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
@@ -2750,10 +2262,13 @@ window.__ModuleLoader__.load({
           if (inFlight) return
           setBusy(true)
           setStartError(null)
+          const release = reviewState.pin(sessionId)
           reviewCall('start', { sessionId, messageId })
             .then((res) => {
+              if (!clientActive) return
+              if (res?.review) { absorb(res.review, sessionId); emit() }
+              if (!stillCurrent()) return
               if (res && res.review) {
-                absorb(res.review)
                 setStartError(null)
               } else if (!res || !res.ok) {
                 setStartError({ message: String(res && res.error || 'unknown error'), reviewId: entry?.reviewId })
@@ -2763,7 +2278,7 @@ window.__ModuleLoader__.load({
                 // this transient entry once inFlight->false force-rehydrates.
                 // Marked `transient:true` so a durable host result (reviewId)
                 // always outranks it regardless of the client wall-clock stamp.
-                absorb({ messageId, status: 'error', error: String(res && res.error || 'unknown error'), annotations: [], createdAt: Date.now(), transient: true })
+                absorb({ sessionId, messageId, status: 'error', error: String(res && res.error || 'unknown error'), annotations: [], createdAt: Date.now(), transient: true })
                 if (res && res.error && /already in flight/i.test(String(res.error))) {
                   store.hydrated.delete(sessionId)
                   hydrate(sessionId, { force: true })
@@ -2773,16 +2288,17 @@ window.__ModuleLoader__.load({
               emit()
             })
             .catch((error) => {
+              if (!stillCurrent()) return
               // reviewCall usually converts a thrown call to {ok:false}; a raw
               // catch here means the process disconnects mid-start. The review
               // may still be running remotely — leave a transient error and let
               // polling (force-rehydrate on inFlight->false) surface the truth.
               setStartError({ message: String(error && error.message || error), reviewId: entry?.reviewId })
-              absorb({ messageId, status: 'error', error: String(error && error.message || error), annotations: [], createdAt: Date.now(), transient: true })
+              absorb({ sessionId, messageId, status: 'error', error: String(error && error.message || error), annotations: [], createdAt: Date.now(), transient: true })
               console.error('review.start call threw:', error && error.message)
               emit()
             })
-            .then(() => setBusy(false))
+            .then(() => { if (stillCurrent()) setBusy(false) }).finally(release)
         }
         const stats = entry && entry.markStats
         const tip = entry && entry.status === 'error'
@@ -2823,9 +2339,14 @@ window.__ModuleLoader__.load({
             ref: rootRef,
           }, label),
           stopButton,
+          store.progressErrors.has(reviewMessageKey(sessionId, messageId))
+            ? h('button', { type: 'button', className: 'dsr-progress-retry',
+                title: store.progressErrors.get(reviewMessageKey(sessionId, messageId)),
+                onClick: () => { retryProgress(reviewMessageKey(sessionId, messageId)); void hydrate(sessionId, { force: true }) },
+              }, '进度同步失败 · 重试') : null,
           store.loadErrors.has(sessionId) ? h('span', { className: 'dsr-load-error', role: 'status', title: store.loadErrors.get(sessionId) }, '评审记录未完整加载 · ' + store.loadErrors.get(sessionId)) : null,
           startError && (!entry || entry.transient || entry.reviewId === startError.reviewId)
-            ? h('span', { className: 'dsr-start-error', title: startError.message, style: { fontSize: '11px', color: '#d29922' } }, '本次请求失败 · 可重试')
+            ? h('span', { className: 'dsr-start-error', title: startError.message, style: { fontSize: '11px', color: 'var(--dsw-alias-state-warn-primary, #b77700)' } }, '本次请求失败 · 可重试')
             : null,
           portalPanel ? renderPanelTags(portalPanel) : null,
         )
@@ -2860,7 +2381,7 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('conversation.chat.assistant-actions', () =>
         ctx.slots.register(
           { name: 'conversation.chat.assistant-actions', id: 'advisor-review', order: 20, label: '批注评审' },
-          (props) => h(ReviewButton, props),
+          (props) => h(ReviewButton, { ...props, key: reviewMessageKey(props.sessionId, props.messageId) }),
         ),
       )
       // ── M3-④: ask_advisor 的 keyed tool view（未占用键，纯增量；通用行兜底不变）
@@ -2878,7 +2399,7 @@ window.__ModuleLoader__.load({
       )
       // Test hook: expose live runtime internals so node integration tests can
       // drive the actual apply/hydrate/ReviewButton wiring (not helper logic).
-      Object.assign(__runtime, { store, hydrate, reviewCall, emit, absorb, ReviewButton, buildPanel, renderPanelTags })
+      Object.assign(__runtime, { reviewState, store, hydrate, reviewCall, emit, absorb, ReviewButton, buildPanel, renderPanelTags, inbox })
       // Clear the test-runtime capture on teardown so a stopped runtime is not
       // retained (avoids stale store/slots after plugin stop).
       ctx.effect(() => () => {
@@ -2917,9 +2438,10 @@ window.__ModuleLoader__.load({
       CielSettingsSection,
       getSettingsEditor: () => settingsEditor,
       AdvisorToolView,
-      AdviseCommandView,
       // live internals captured by apply() (undefined until apply runs)
       runtime: __runtime,
+      // inbox observation surface for browser scripts (no extra behavior)
+      inbox: { panelId: INBOX_PANEL_ID },
       // descriptor / settings completeness (refresh-free snapshots for tests)
       remoteMethodNames: ADVISOR_REMOTE.descriptors.map((d) => d.method),
       defaults: { ...DEFAULTS },

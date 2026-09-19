@@ -8,6 +8,7 @@ pnpm-lock.yaml
 # Local-only operational upgrade scripts: kept on disk, never published.
 /scripts/restart-ciel-web.mjs
 /scripts/finalize-ciel-upgrade.mjs
+/scripts/prepare-inbox-instance.mjs
 
 # Local credentials / authentication state (never force-add these).
 .env
@@ -45,6 +46,10 @@ playwright/.auth/
 /.cache/
 /.npm-cache/
 /archive/
+
+# Local isolated acceptance instance (private DSH home, sessions and auth state):
+# kept on disk for verification, never published. Do not delete the artifacts.
+/.artifacts/
 
 # Local history, drafts and raw test evidence are not public deliverables.
 /prototypes/

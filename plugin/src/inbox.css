@@ -1,0 +1,663 @@
+/* 夏尔收件箱 (Ciel inbox) — main-panel page + left-sidebar entry.
+ *
+ * Scoped under .ciel-inbox so it cannot leak into host chrome. Every color
+ * comes from the platform alias tokens, with a local --ciel-* scale defined on
+ * the root so the whole panel shares one control/radius/type rhythm.
+ *
+ * Visual pass (kept container-width aware, 320px safe):
+ *  - one control scale (height / radius / type) for every Ciel button, all
+ *    interaction targets >= 28px and no narrow-screen font shrinking;
+ *  - clear card hierarchy: group head > summary > annotation rows;
+ *  - the page status summary and every failure banner are lifted above the
+ *    fold with flex order (non-interactive status copy only, so keyboard order
+ *    is untouched);
+ *  - a review group with zero annotations is boxed, and tinted when its status
+ *    is anomalous — zero annotations never read as a normal quiet line;
+ *  - :focus-visible rings on every control, no horizontal overflow at 320px;
+ *  - the panel, cards, evidence, code and every error/warning surface stay
+ *    opaque with full-opacity text.
+ */
+
+/* ── local scale + root ─────────────────────────────────────────────────── */
+
+.ciel-inbox {
+  --ciel-font: var(--dsh-content-font-size-secondary, 13px);
+  --ciel-font-xs: 12px;
+  --ciel-radius-sm: 6px;
+  --ciel-radius-md: 8px;
+  --ciel-radius-lg: 10px;
+  --ciel-control-h: 30px;
+  --ciel-pill-h: 28px;
+  --ciel-intent-h: 28px;
+  --ciel-surface-1: var(--dsw-alias-bg-layer-1, #ffffff);
+  --ciel-surface-2: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06));
+  --ciel-surface-3: var(--dsw-alias-bg-layer-3, rgba(127, 127, 127, .08));
+  --ciel-border-soft: var(--dsw-alias-border-l1, rgba(127, 127, 127, .18));
+  --ciel-border: var(--dsw-alias-border-l2, rgba(127, 127, 127, .3));
+  --ciel-text-1: var(--dsw-alias-label-primary, inherit);
+  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary, inherit));
+  --ciel-text-3: var(--dsw-alias-label-tertiary, rgba(127, 127, 127, .85));
+  --ciel-focus: var(--dsw-alias-state-business-primary, #4176e6);
+  --ciel-danger: var(--dsw-alias-state-error-primary, #d24949);
+  --ciel-warn: var(--dsw-alias-state-warn-primary, #d29922);
+  --ciel-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .08));
+  --ciel-active: var(--dsw-alias-interactive-bg-active, rgba(127, 127, 127, .14));
+  --ciel-plain: var(--dsw-alias-bg-module-platform, var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06)));
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 14px 16px 20px;
+  gap: 10px;
+  overflow: auto;
+  font-size: var(--ciel-font);
+  line-height: 1.55;
+  color: var(--ciel-text-1);
+  /* The opaque baseline surface; the host panel is not relied on. */
+  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));
+  container: ciel-inbox / inline-size;
+}
+
+/* ── header: title + tools ─────────────────────────────────────────────── */
+
+.ciel-inbox-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ciel-border-soft);
+  order: 0;
+}
+
+.ciel-inbox-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ciel-inbox-title h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ciel-inbox-session {
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ciel-inbox-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ── controls: one geometry, native fill preserved ──────────────────────── */
+
+/* Card actions may arrive as the platform Button adapter (a <button> carrying
+ * data-ciel-action and data-ciel-native-button); the toolbar and filters are
+ * plain <button>. Geometry/layout/type and the focus ring apply to both paths
+ * and are rooted at .ciel-inbox so a Ciel control wins over the primitive's
+ * own md geometry without an override flag. The self-drawn fill (border,
+ * background, colour, hover/active) is limited to the plain fallback button;
+ * a native Button keeps the fill and text colour its variant chose. */
+.ciel-inbox button,
+.ciel-inbox [data-ciel-action] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Disabled reads as disabled for every Ciel button, native or not. Only the
+   plain fallback fades; a native Button keeps its own variant disabled paint. */
+.ciel-inbox button:disabled,
+.ciel-inbox [data-ciel-action]:disabled {
+  cursor: default;
+}
+
+.ciel-inbox button:disabled:not([data-ciel-native-button]),
+.ciel-inbox [data-ciel-action]:disabled:not([data-ciel-native-button]) {
+  opacity: .5;
+}
+
+.ciel-inbox button:focus-visible,
+.ciel-inbox [data-ciel-action]:focus-visible,
+.ciel-inbox [tabindex]:focus-visible {
+  outline: 2px solid var(--ciel-focus);
+  outline-offset: 2px;
+}
+
+.ciel-inbox .ciel-inbox-refresh,
+.ciel-inbox .ciel-inbox-page,
+.ciel-inbox .ciel-inbox-evidence,
+.ciel-inbox .ciel-inbox-review-actions button,
+.ciel-inbox .ciel-inbox-review-actions [data-ciel-action],
+.ciel-inbox .ciel-inbox-filter,
+.ciel-inbox .ciel-inbox-intent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--ciel-font-xs);
+  line-height: 1.2;
+  font-weight: 500;
+}
+
+.ciel-inbox .ciel-inbox-refresh,
+.ciel-inbox .ciel-inbox-page,
+.ciel-inbox .ciel-inbox-evidence,
+.ciel-inbox .ciel-inbox-review-actions button,
+.ciel-inbox .ciel-inbox-review-actions [data-ciel-action] {
+  height: var(--ciel-control-h);
+  min-height: var(--ciel-control-h);
+  padding: 0 10px;
+  border-radius: var(--ciel-radius-md);
+  white-space: nowrap;
+}
+
+.ciel-inbox .ciel-inbox-refresh {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox .ciel-inbox-filter,
+.ciel-inbox .ciel-inbox-intent {
+  height: var(--ciel-pill-h);
+  min-height: var(--ciel-pill-h);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.ciel-inbox .ciel-inbox-filter {
+  padding: 0 11px;
+}
+
+.ciel-inbox .ciel-inbox-intent {
+  padding: 0 9px;
+}
+
+/* Fallback skin: plain <button> only, never the native Button adapter. */
+.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]) {
+  border: 1px solid var(--ciel-border);
+  background: var(--ciel-surface-2);
+  color: inherit;
+}
+
+.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent):not([data-ciel-native-button]) {
+  border: 1px solid var(--ciel-border);
+  background: transparent;
+  color: inherit;
+}
+
+.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]):hover:not(:disabled) {
+  background: var(--ciel-hover);
+}
+
+.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]):active:not(:disabled) {
+  background: var(--ciel-active);
+}
+
+.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent):not([data-ciel-native-button]):hover:not(:disabled) {
+  background: var(--ciel-hover);
+}
+
+.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent).is-active:not([data-ciel-native-button]) {
+  border-color: var(--dsw-alias-brand-primary, var(--ciel-border));
+  background: var(--ciel-active);
+  font-weight: 600;
+}
+
+/* ── filters + page scope ───────────────────────────────────────────────── */
+
+.ciel-inbox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  order: 3;
+}
+
+.ciel-inbox-pageinfo {
+  margin-left: auto;
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-3);
+}
+
+/* ── status summary + filter note (first screen) ────────────────────────── */
+
+/* Flex order puts failures first, then this summary, then the controls. Only
+   static status copy and the banner <p> elements move: no control changes
+   keyboard order because none of these nodes is focusable. */
+.ciel-inbox-status-summary {
+  order: 2;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
+  background: var(--ciel-plain);
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-2);
+}
+
+.ciel-inbox-filter-note {
+  order: 4;
+  margin: 0;
+  font-size: var(--ciel-font-xs);
+  line-height: 1.5;
+  color: var(--ciel-text-3);
+}
+
+/* ── banners ────────────────────────────────────────────────────────────── */
+
+.ciel-inbox-banner {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
+  background: var(--ciel-surface-2);
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
+  overflow-wrap: anywhere;
+}
+
+/* A neutral banner is context, so it stays below the controls. */
+.ciel-inbox-banner[data-tone='neutral'] {
+  order: 5;
+}
+
+/* A failure banner is the first thing after the header. Its surface is an
+   opaque base mixed with the status colour: never a transparent wash. */
+.ciel-inbox-banner[data-tone='danger'] {
+  order: 1;
+  font-weight: 500;
+  color: var(--ciel-text-1);
+  border-color: rgba(210, 80, 80, .5);
+  border-color: color-mix(in srgb, var(--ciel-danger) 55%, transparent);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-danger) 10%, var(--ciel-surface-1));
+}
+
+.ciel-inbox-banner[data-tone='warning'] {
+  color: var(--ciel-text-1);
+  border-color: rgba(210, 153, 34, .5);
+  border-color: color-mix(in srgb, var(--ciel-warn) 55%, transparent);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-warn) 10%, var(--ciel-surface-1));
+}
+
+/* ── list + card hierarchy ──────────────────────────────────────────────── */
+
+.ciel-inbox-list {
+  order: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ciel-inbox-review {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--ciel-border);
+  border-radius: var(--ciel-radius-lg);
+  background: var(--ciel-surface-3);
+  overflow-wrap: anywhere;
+}
+
+/* An anomalous group keeps a fixed accent stripe so it reads as a state, not
+   as a normal card. Inset shadow: no layout shift, follows the radius. */
+.ciel-inbox-review[data-ciel-inbox-review-status='error'],
+.ciel-inbox-review[data-ciel-inbox-review-status='failed'] {
+  box-shadow: inset 3px 0 0 0 var(--ciel-danger);
+}
+
+.ciel-inbox-review[data-ciel-inbox-review-status='cancelled'],
+.ciel-inbox-review[data-ciel-inbox-review-status='canceled'],
+.ciel-inbox-review[data-ciel-inbox-review-status='incomplete'],
+.ciel-inbox-review[data-ciel-inbox-review-status='unverified'],
+.ciel-inbox-review[data-ciel-inbox-review-status='completed-unparsed'] {
+  box-shadow: inset 3px 0 0 0 var(--ciel-warn);
+}
+
+.ciel-inbox-review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.ciel-inbox-review-id {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--ciel-font-xs);
+  font-weight: 600;
+  color: var(--ciel-text-1);
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-meta {
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-3);
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-review-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.ciel-inbox-summary {
+  margin: 8px 0 0;
+  color: var(--ciel-text-1);
+  font-size: var(--ciel-font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-review-error {
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  border: 1px solid rgba(210, 80, 80, .45);
+  border-color: color-mix(in srgb, var(--ciel-danger) 50%, transparent);
+  border-radius: var(--ciel-radius-sm);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-danger) 9%, var(--ciel-surface-1));
+  color: var(--ciel-danger);
+  font-size: var(--ciel-font-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── annotations ────────────────────────────────────────────────────────── */
+
+.ciel-inbox-annotations {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ciel-inbox-annotation {
+  min-width: 0;
+  padding: 10px 0 1px;
+  border-top: 1px solid var(--ciel-border-soft);
+}
+
+.ciel-inbox-annotation-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.ciel-inbox-annotation-title {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-anchor {
+  margin: 6px 0 4px;
+  padding: 5px 9px;
+  border-left: 2px solid var(--ciel-border);
+  border-radius: 0 var(--ciel-radius-sm) var(--ciel-radius-sm) 0;
+  background: var(--ciel-surface-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ciel-inbox-comment {
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-annotation-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.ciel-inbox-intents {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.ciel-inbox-write-error {
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  border: 1px solid rgba(210, 80, 80, .45);
+  border-color: color-mix(in srgb, var(--ciel-danger) 50%, transparent);
+  border-radius: var(--ciel-radius-sm);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-danger) 9%, var(--ciel-surface-1));
+  color: var(--ciel-danger);
+  font-size: var(--ciel-font-xs);
+  overflow-wrap: anywhere;
+}
+
+.ciel-inbox-locate-note {
+  font-size: var(--ciel-font-xs);
+  color: var(--ciel-text-3);
+}
+
+.ciel-inbox-locate-note[data-tone='danger'] {
+  color: var(--ciel-danger);
+}
+
+/* ── empty / state ──────────────────────────────────────────────────────── */
+
+/* Zero annotations is a state of the group, not a quiet sentence: box it.
+   The copy (and whether it is a failure) still comes from the client. */
+.ciel-inbox-empty[data-ciel-inbox-no-annotations] {
+  display: block;
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border: 1px dashed var(--ciel-border);
+  border-radius: var(--ciel-radius-sm);
+  background: var(--ciel-surface-1);
+  color: var(--ciel-text-2);
+  font-size: var(--ciel-font-xs);
+}
+
+.ciel-inbox-empty[data-ciel-inbox-no-matching-annotations] {
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border: 1px dashed var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-sm);
+  background: transparent;
+  color: var(--ciel-text-3);
+  font-size: var(--ciel-font-xs);
+}
+
+.ciel-inbox-review[data-ciel-inbox-review-status='error'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],
+.ciel-inbox-review[data-ciel-inbox-review-status='failed'] .ciel-inbox-empty[data-ciel-inbox-no-annotations] {
+  border-style: solid;
+  border-color: rgba(210, 80, 80, .45);
+  border-color: color-mix(in srgb, var(--ciel-danger) 45%, transparent);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-danger) 8%, var(--ciel-surface-1));
+  color: var(--ciel-text-1);
+}
+
+.ciel-inbox-review[data-ciel-inbox-review-status='cancelled'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],
+.ciel-inbox-review[data-ciel-inbox-review-status='canceled'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],
+.ciel-inbox-review[data-ciel-inbox-review-status='incomplete'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],
+.ciel-inbox-review[data-ciel-inbox-review-status='unverified'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],
+.ciel-inbox-review[data-ciel-inbox-review-status='completed-unparsed'] .ciel-inbox-empty[data-ciel-inbox-no-annotations] {
+  border-style: solid;
+  border-color: rgba(210, 153, 34, .45);
+  border-color: color-mix(in srgb, var(--ciel-warn) 45%, transparent);
+  background: var(--ciel-surface-1);
+  background: color-mix(in srgb, var(--ciel-warn) 8%, var(--ciel-surface-1));
+  color: var(--ciel-text-1);
+}
+
+.ciel-inbox-empty {
+  margin: 10px 0 0;
+  font-size: var(--ciel-font);
+  color: var(--ciel-text-3);
+}
+
+.ciel-inbox-state {
+  order: 6;
+  margin: 0;
+  padding: 14px 0;
+  color: var(--ciel-text-2);
+  /* A state panel is not a material surface: loading/empty/failure copy stays
+     on an opaque base and is never put on a translucent wash. */
+  background: var(--ciel-surface-1);
+}
+
+.ciel-inbox-state p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+/* A filter can leave the page with nothing to show; that must not look like a
+   clean page, so it is framed and the copy names the reason. */
+.ciel-inbox-state[data-ciel-inbox-state='filtered'],
+.ciel-inbox-state[data-ciel-inbox-state='empty'] {
+  padding: 10px 12px;
+  border: 1px dashed var(--ciel-border);
+  border-radius: var(--ciel-radius-md);
+  background: var(--ciel-surface-1);
+}
+
+.ciel-inbox-state[data-ciel-inbox-state='failed'] {
+  border: 1px solid var(--ciel-danger);
+  border-radius: var(--ciel-radius-md);
+  padding: 10px 12px;
+  color: var(--ciel-danger);
+}
+
+/* The left-sidebar list entry: the page count sits centered on the glyph. */
+.ciel-inbox-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+}
+
+.ciel-inbox-glyph {
+  display: block;
+  opacity: .85;
+}
+
+/* ── narrow Ciel container (right rail / split pane, down to 320px) ─────── */
+
+/* Only spacing/wrapping changes here: no font is ever shrunk to fit. */
+@container ciel-inbox (max-width: 440px) {
+  .ciel-inbox-head {
+    gap: 6px 8px;
+    padding-bottom: 8px;
+  }
+
+  .ciel-inbox-tools {
+    width: 100%;
+  }
+
+  .ciel-inbox-pageinfo {
+    margin-left: 0;
+  }
+
+  .ciel-inbox-review {
+    padding: 10px 12px;
+  }
+
+  .ciel-inbox-review-actions,
+  .ciel-inbox-intents {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+@container ciel-inbox (max-width: 340px) {
+  .ciel-inbox-refresh {
+    flex: 1 1 100%;
+  }
+
+  .ciel-inbox-review {
+    padding: 9px 10px;
+  }
+}
+
+/* No added motion; keep it that way under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .ciel-inbox button {
+    transition: none;
+  }
+}
+
+/* ── long-card annotation disclosure (native details/summary) ───────────── */
+/*
+ * The client wraps the annotation list in this <details> only when a review
+ * shows more than eight annotations; a short card keeps the bare list and is
+ * untouched here. The summary is a real control: a >=28px hit area, 12px type
+ * and a clear focus ring. No open/close or colour transition is added, so
+ * prefers-reduced-motion needs no override, and the group summary and its
+ * error line stay outside the <details>, so collapsing never hides them.
+ */
+.ciel-inbox-annotations-disclosure > summary {
+  box-sizing: border-box;
+  min-height: var(--ciel-pill-h);
+  padding: 4px 0;
+  font-size: var(--ciel-font-xs);
+  line-height: 20px;
+  color: var(--ciel-text-2);
+  cursor: pointer;
+}
+
+.ciel-inbox-annotations-disclosure > summary:hover {
+  color: var(--ciel-text-1);
+}
+
+.ciel-inbox-annotations-disclosure > summary:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+  border-radius: var(--ciel-radius-sm);
+}

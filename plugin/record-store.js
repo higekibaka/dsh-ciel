@@ -40,8 +40,8 @@ import { dirname, join, resolve } from 'node:path'
 /** The persisted envelope schema version. */
 export const RECORD_SCHEMA_VERSION = 1
 
-/** Record kinds. reviews/evidence/advice are current; calls/feedback are reserved. */
-export const RECORD_KINDS = Object.freeze(['reviews', 'evidence', 'advice', 'calls', 'feedback'])
+/** Record kinds. reviews/evidence/advice/inbox are current; calls/feedback are reserved. */
+export const RECORD_KINDS = Object.freeze(['reviews', 'evidence', 'advice', 'inbox', 'calls', 'feedback'])
 
 /** Hard per-file bound; an oversized record is an explicit error, never truncated. */
 export const RECORD_MAX_FILE_BYTES = 512 * 1024
@@ -257,7 +257,7 @@ async function assertReplaceableFile(path) {
  * publish a final review state); cross-identity replacement cannot happen
  * because the target filename is derived from kind/session/id.
  */
-async function atomicWriteFile(path, serialized) {
+async function atomicWriteFile(path, serialized, beforeCommit) {
   const temp = join(dirname(path), '.tmp-' + randomBytes(16).toString('hex'))
   let handle
   try {
@@ -266,6 +266,8 @@ async function atomicWriteFile(path, serialized) {
     await handle.sync()
     await handle.close()
     handle = undefined
+    // Synchronous terminal fence: no await may separate it from publication.
+    beforeCommit?.()
     await rename(temp, path)
   } catch (error) {
     if (handle !== undefined) await handle.close().catch(() => {})
@@ -376,7 +378,7 @@ function assertRecordIdentity(record, kind, sessionId, id) {
  * @param {string} sessionId safe single path segment
  * @param {string} id opaque id (may contain ':')
  * @param {unknown} value JSON-serializable payload
- * @param {{ home?: string }} [options] home injection for tests only
+ * @param {{ home?: string, beforeCommit?: () => void }} [options] home override and synchronous publication fence
  */
 export async function writeRecord(kind, sessionId, id, value, options = {}) {
   assertKind(kind)
@@ -419,7 +421,7 @@ export async function writeRecord(kind, sessionId, id, value, options = {}) {
   const dir = await ensureStoreDir(home, kind, sessionId)
   const path = join(dir, recordFileName(id))
   await assertReplaceableFile(path)
-  await atomicWriteFile(path, serialized)
+  await atomicWriteFile(path, serialized, options.beforeCommit)
   return Object.freeze({ schemaVersion: RECORD_SCHEMA_VERSION, kind, sessionId, id, bytes })
 }
 
@@ -556,8 +558,8 @@ export async function listRecords(kind, sessionId, options = {}) {
  * Page through one session's records by stable hashed filename order, for
  * sessions that exceed the listRecords hard bounds.
  *
- * Returns `{ values, nextCursor, limited }`:
- *   - `values` is a `value[]` in ascending filename order;
+ * Returns `{ entries, nextCursor, limited }`:
+ *   - `entries` is a `{ id, name, value, bytes }[]` in ascending filename order;
  *   - `nextCursor` is the opaque hashed filename of the last returned record
  *     when more records remain, otherwise null (iteration complete);
  *   - `limited` is true exactly when `nextCursor !== null`, i.e. the page is a
@@ -573,18 +575,18 @@ export async function listRecords(kind, sessionId, options = {}) {
  * @param {string} kind
  * @param {string} sessionId
  * @param {{ home?: string, cursor?: string|null, limit?: number }} [options]
- * @returns {Promise<{ values: unknown[], nextCursor: string|null, limited: boolean }>}
+ * @returns {Promise<{ entries: { id: string, name: string, value: unknown, bytes: number }[], nextCursor: string|null, limited: boolean }>}
  */
-export async function listRecordsPage(kind, sessionId, options = {}) {
+export async function listRecordEntriesPage(kind, sessionId, options = {}) {
   assertKind(kind)
   assertSessionId(sessionId)
   const home = homeFromOptions(options)
   const limit = assertPageLimit(options.limit)
   const cursor = assertPageCursor(options.cursor)
   const dir = await locateStoreDir(home, kind, sessionId)
-  if (dir === null) return { values: [], nextCursor: null, limited: false }
+  if (dir === null) return { entries: [], nextCursor: null, limited: false }
   const names = await enumerateRecordNames(dir, { maxEntries: RECORD_MAX_ENUMERATED_FILES })
-  if (names === null) return { values: [], nextCursor: null, limited: false }
+  if (names === null) return { entries: [], nextCursor: null, limited: false }
   // Start strictly after the cursor filename; the cursor is only a sort key.
   let start = 0
   if (cursor !== null) {
@@ -597,22 +599,37 @@ export async function listRecordsPage(kind, sessionId, options = {}) {
     }
     start = low
   }
-  const values = []
+  const entries = []
   let totalBytes = 0
   let lastIncluded = null
   let index = start
   for (; index < names.length; index += 1) {
-    if (values.length >= limit) break
+    if (entries.length >= limit) break
     const record = await readValidatedRecord(dir, names[index], kind, sessionId)
     // Per-page byte budget: stop before a record that would exceed it. A single
     // record is capped at RECORD_MAX_FILE_BYTES < RECORD_MAX_LIST_BYTES, so the
     // first record of a page always fits.
-    if (values.length > 0 && totalBytes + record.bytes > RECORD_MAX_LIST_BYTES) break
+    if (entries.length > 0 && totalBytes + record.bytes > RECORD_MAX_LIST_BYTES) break
     totalBytes += record.bytes
-    values.push(record.value)
+    entries.push(record)
     lastIncluded = record.name
   }
   const hasMore = lastIncluded !== null && index < names.length
   const nextCursor = hasMore ? lastIncluded : null
-  return { values, nextCursor, limited: nextCursor !== null }
+  return { entries, nextCursor, limited: nextCursor !== null }
+}
+
+/**
+ * The value-only projection of `listRecordEntriesPage`. Kept as a separate
+ * public function so existing callers keep the exact `{ values, ... }` shape;
+ * callers that must verify `value` against the stored id use the entry form.
+ *
+ * @param {string} kind
+ * @param {string} sessionId
+ * @param {{ home?: string, cursor?: string|null, limit?: number }} [options]
+ * @returns {Promise<{ values: unknown[], nextCursor: string|null, limited: boolean }>}
+ */
+export async function listRecordsPage(kind, sessionId, options = {}) {
+  const page = await listRecordEntriesPage(kind, sessionId, options)
+  return { values: page.entries.map((entry) => entry.value), nextCursor: page.nextCursor, limited: page.limited }
 }

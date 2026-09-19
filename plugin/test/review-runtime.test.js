@@ -36,7 +36,7 @@ for (const text of ['I cannot review this.', '', '## suspects\n1. suspect: bad c
     assert.match(result.error, /format error/)
     assert.equal(h.requests.length, 1)
     assert.equal(h.disposals.length, 1)
-    assert.equal(h.service.inFlight.size, 0)
+    assert.equal(h.service.coordinator.inFlight.size, 0)
   })
 }
 
@@ -47,8 +47,11 @@ test('only a well-formed empty list short-circuits, without a verified green res
   assert.equal(result.review.status, 'unverified')
   assert.equal(result.review.coverage, 'not-verified')
   assert.equal(result.review.sound, false)
+  assert.equal(result.review.anchorSeq, 4, 'success entry keeps the target seq for loadThrough navigation')
   assert.equal(h.requests.length, 1)
-  assert.equal((await readReviews(h.sid))[0].status, 'unverified')
+  const persisted = (await readReviews(h.sid))[0]
+  assert.equal(persisted.status, 'unverified')
+  assert.equal(persisted.anchorSeq, 4, 'anchorSeq is persisted, not only returned')
 })
 
 test('strict parsing never turns a malformed verdict dossier into annotations', () => {
@@ -81,9 +84,24 @@ test('phase one excludes author evidence; phase two gets it and all handles drai
   assert.equal(result.review.modelRequests, 2)
   assert.equal(result.review.explore.toolCalls, 1)
   assert.equal(h.requests[0].prompt[0].text.includes('AUTHOR_EVIDENCE_SENTINEL'), false)
+  assert.equal(h.requests[0].prompt[0].text.includes('Host evidence reference'), false)
   assert.equal(h.requests[1].prompt[0].text.includes('AUTHOR_EVIDENCE_SENTINEL'), true)
-  assert.equal(h.service.children.size, 0)
+  assert.equal(h.service.coordinator.children.size, 0)
   assert.equal(h.disposals.length, 2)
+})
+
+test('unattributed request stays partial despite otherwise verified evidence and persists its recovery note', async (t) => {
+  const h = await scenario(t, [SUSPECT, ({ tool }) => verdict({ evidence: tool().evidence_refs[0] })])
+  delete h.parent.session.snapshotEvents()[1].data.source
+  const result = await h.start()
+  assert.equal(result.ok, true)
+  assert.equal(result.review.status, 'incomplete')
+  assert.equal(result.review.sound, false)
+  assert.match(result.review.coverageNote, /用户请求上下文.*请补充明确请求/)
+  assert.ok(h.requests.every(request => !request.prompt[0].text.includes('Check the file count.')))
+  const stored = (await readReviews(h.sid))[0]
+  assert.deepEqual(stored.requestContext, { mode: 'missing', limited: true, reasons: ['missing-input', 'unknown-source'] })
+  assert.equal(stored.coverageNote, result.review.coverageNote)
 })
 
 test('all nominated suspects reach verification regardless of legacy count settings', async (t) => {
@@ -118,7 +136,7 @@ for (const stopReason of ['error', 'refusal', 'max-tokens', 'aborted']) {
     assert.equal(result.ok, false)
     assert.equal(h.requests.length, 2)
     assert.equal(h.disposals.length, 2)
-    assert.equal(h.service.inFlight.size, 0)
+    assert.equal(h.service.coordinator.inFlight.size, 0)
   })
 }
 
@@ -216,7 +234,7 @@ test('cancel reaches the active phase, persists cancellation, and forbids salvag
   const result = await pending
   assert.equal(result.review.status, 'cancelled')
   assert.equal(h.requests.length, 2)
-  assert.equal(h.service.inFlight.size, 0)
+  assert.equal(h.service.coordinator.inFlight.size, 0)
   assert.equal((await h.service.progress({ sessionId: h.sid, messageId: h.messageId })).inFlight, false)
 })
 
@@ -279,8 +297,8 @@ for (const phase of [1, 2]) {
     assert.equal(result.review.diagnostics.toolCalls, phase === 2 ? 70 : 0)
     assert.equal(h.requests.length, phase)
     assert.equal(h.disposals.length, phase)
-    assert.equal(h.service.children.size, 0)
-    assert.equal(h.service.activeOperations.size, 0)
+    assert.equal(h.service.coordinator.children.size, 0)
+    assert.equal(h.service.coordinator.activeOperations.size, 0)
     assert.equal((await h.service.progress({ sessionId: h.sid, messageId: h.messageId })).inFlight, false)
   })
 }
@@ -300,7 +318,7 @@ test('source preparation spends the same deadline before any model starts', asyn
   const h = await scenario(t, [])
   let started
   const ready = new Promise(resolve => { started = resolve })
-  h.service.createCorpus = async ({ signal }) => {
+  h.service.coordinator.createCorpus = async ({ signal }) => {
     started()
     await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
     throw new Error('fixture capture stopped')
@@ -312,16 +330,16 @@ test('source preparation spends the same deadline before any model starts', asyn
   assert.equal(result.ok, false)
   assert.match(result.error, /review timeout/)
   assert.equal(h.requests.length, 0)
-  assert.equal(h.service.inFlight.size, 0)
-  assert.equal(h.service.activeOperations.size, 0)
+  assert.equal(h.service.coordinator.inFlight.size, 0)
+  assert.equal(h.service.coordinator.activeOperations.size, 0)
 })
 
 test('disabled model calls and unavailable guards fail before spawning', async (t) => {
   const h = await scenario(t, [], { enabled: false })
   assert.match((await h.start()).error, /disabled/)
   h.configure({ enabled: true })
-  h.service.guardAvailable = false
-  assert.match((await h.start()).error, /tools.guard/)
+  h.service.coordinator.guardAvailable = false
+  assert.equal((await h.start()).code, 'CIEL_REVIEW_GUARD_UNAVAILABLE')
   assert.equal(h.requests.length, 0)
 })
 
@@ -494,6 +512,6 @@ test('the shared deadline denies nested PTC source calls after expiry', async (t
   assert.equal(result.ok, false)
   assert.match(result.error, /review timeout/)
   assert.equal(result.review.diagnostics.toolCalls, 3)
-  assert.equal(h.service.children.size, 0)
-  assert.equal(h.service.activeOperations.size, 0)
+  assert.equal(h.service.coordinator.children.size, 0)
+  assert.equal(h.service.coordinator.activeOperations.size, 0)
 })

@@ -19,7 +19,7 @@ export async function reviewHarness(scripts = [], overrides = {}) {
   const messageId = 'message-' + serial
   const parentEvents = [
     { seq: 0, type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Check the file count.' }] } },
+    { seq: 1, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Check the file count.' }] } },
     { seq: 2, type: 'tool/call', data: { name: 'bash', callId: 'author-call' } },
     { seq: 3, type: 'tool/result', data: { message: { content: [{ toolCallId: 'author-call', content: [{ type: 'text', text: 'AUTHOR_EVIDENCE_SENTINEL: 42 lines' }] }] } } },
     { seq: 4, type: 'assistant/message', data: { turn: 1, message: { id: messageId, content: [{ type: 'text', text: 'The file has 42 lines.' }] } } },
@@ -65,12 +65,12 @@ export async function reviewHarness(scripts = [], overrides = {}) {
       const drive = new Promise((done) => setImmediate(async () => {
         try {
           if (settled) return
-          service.beforeRequest(id)
+          service.coordinator.beforeRequest(id)
           const api = {
             signal: spec.signal,
             child,
             control,
-            request: () => service.beforeRequest(id),
+            request: () => service.coordinator.beforeRequest(id),
             visible(text) { events.push({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } }) },
             // PTC path: the outer run_code transport and every nested dispatch
             // pass through the fail-closed per-control gate, exactly as the
@@ -100,7 +100,7 @@ export async function reviewHarness(scripts = [], overrides = {}) {
             },
             tool(name = 'read', args = {}) {
               events.push({ type: 'tool/call', data: { name, arguments: JSON.stringify(args) } })
-              const denied = service.guard({ agent: child, name, arguments: args, signal: spec.signal })
+              const denied = service.coordinator.guard({ agent: child, name, arguments: args, signal: spec.signal })
               if (denied) return { denied }
               executions.push({ id, name })
               // Same order as the real restricted reader: guard first, then the
@@ -161,9 +161,9 @@ export async function reviewHarness(scripts = [], overrides = {}) {
       }),
       createProvider: async (callbacks) => { isolationCallbacks = callbacks; return { name: 'ciel-review-private' } },
     })
-    service.guardAvailable = true
+    service.coordinator.guardAvailable = true
     c.effect(() => async () => {
-      const ops = [...service.activeOperations]
+      const ops = [...service.coordinator.activeOperations]
       for (const op of ops) op.cancel('plugin stopped')
       await Promise.all(ops.map((op) => op.done))
     })

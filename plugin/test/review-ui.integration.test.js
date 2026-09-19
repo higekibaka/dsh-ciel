@@ -24,7 +24,7 @@ test('hydrate absorbs reviews + seeds sent/meta from the list result', async () 
   })
   const { store, hydrate } = rt.runtime
   await hydrate('s1')
-  assert.equal(store.byMessage.get('m1').reviewId, 'r1')
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'r1')
   assert.ok(store.hydrated.has('s1'))
   assert.ok(store.feedback.sent.get('r1').has(0))
   assert.equal(store.feedback.meta.get('r1').filter, 'blocker')
@@ -58,7 +58,7 @@ test('hydrate(force) while a load is pending chains a FRESH load (does not settl
   await flush()
   assert.equal(listCalls, 2, 'forced hydrate must trigger a fresh list call')
   // The terminal (fresher) result wins, not the stale one the in-flight query returned.
-  assert.equal(store.byMessage.get('m1').reviewId, 'r2')
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'r2')
   assert.ok(store.hydrated.has('s1'))
 })
 
@@ -66,29 +66,29 @@ test('hydrate(force) while a load is pending chains a FRESH load (does not settl
 test('absorb fences by createdAt: newer wins; old list never clobbers a newer start result', async () => {
   const rt = await createRuntime({})
   const { store, absorb } = rt.runtime
-  absorb({ messageId: 'm1', reviewId: 'old', status: 'error', error: 'x', createdAt: 100, annotations: [] })
-  absorb({ messageId: 'm1', reviewId: 'new', status: 'sound', createdAt: 200, annotations: [] })
-  assert.equal(store.byMessage.get('m1').reviewId, 'new')
+  absorb({ sessionId: 's1', messageId: 'm1', reviewId: 'old', status: 'error', error: 'x', createdAt: 100, annotations: [] })
+  absorb({ sessionId: 's1', messageId: 'm1', reviewId: 'new', status: 'sound', createdAt: 200, annotations: [] })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'new')
   // an OLD list entry must not clobber the newer one
-  absorb({ messageId: 'm1', reviewId: 'stale', status: 'sound', createdAt: 150, annotations: [] })
-  assert.equal(store.byMessage.get('m1').reviewId, 'new')
+  absorb({ sessionId: 's1', messageId: 'm1', reviewId: 'stale', status: 'sound', createdAt: 150, annotations: [] })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'new')
 })
 
 test('absorb order: transient never overwrites durable; newer transient wins over older transient', async () => {
   const rt = await createRuntime({})
   const { store, absorb } = rt.runtime
   // a transient (marked) must NOT overwrite a durable reviewId entry
-  absorb({ messageId: 'm2', reviewId: 'old2', status: 'sound', createdAt: 100, annotations: [] })
-  absorb({ messageId: 'm2', status: 'error', error: 'failed', annotations: [], createdAt: Date.now(), transient: true })
-  assert.equal(store.byMessage.get('m2').reviewId, 'old2', 'durable must survive a transient')
+  absorb({ sessionId: 's1', messageId: 'm2', reviewId: 'old2', status: 'sound', createdAt: 100, annotations: [] })
+  absorb({ sessionId: 's1', messageId: 'm2', status: 'error', error: 'failed', annotations: [], createdAt: Date.now(), transient: true })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm2'])).reviewId, 'old2', 'durable must survive a transient')
   // newer transient replaces an older transient (same low tier, time-based)
-  absorb({ messageId: 'm3', status: 'error', error: 'first', annotations: [], createdAt: 100, transient: true })
-  absorb({ messageId: 'm3', status: 'error', error: 'second', annotations: [], createdAt: 200, transient: true })
-  assert.equal(store.byMessage.get('m3').error, 'second')
+  absorb({ sessionId: 's1', messageId: 'm3', status: 'error', error: 'first', annotations: [], createdAt: 100, transient: true })
+  absorb({ sessionId: 's1', messageId: 'm3', status: 'error', error: 'second', annotations: [], createdAt: 200, transient: true })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm3'])).error, 'second')
   // a durable replaces any transient regardless of timestamp
-  absorb({ messageId: 'm4', status: 'error', error: 'e', annotations: [], createdAt: 200, transient: true })
-  absorb({ messageId: 'm4', reviewId: 'real', status: 'sound', createdAt: 100, annotations: [] })
-  assert.equal(store.byMessage.get('m4').reviewId, 'real', 'durable outranks transient regardless of wall clock')
+  absorb({ sessionId: 's1', messageId: 'm4', status: 'error', error: 'e', annotations: [], createdAt: 200, transient: true })
+  absorb({ sessionId: 's1', messageId: 'm4', reviewId: 'real', status: 'sound', createdAt: 100, annotations: [] })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm4'])).reviewId, 'real', 'durable outranks transient regardless of wall clock')
 })
 
 // ── reconnect reconcile ───────────────────────────────────────────────────
@@ -113,18 +113,18 @@ test('rehydrate returning a committed durable result replaces a LATER transient 
     list: () => ({ reviews: [{ messageId: 'm1', reviewId: 'r1', status: 'sound', createdAt: 100 }], sentKeys: [], triage: {} }),
   })
   const { store, absorb, hydrate } = rt.runtime
-  absorb({ messageId: 'm1', status: 'error', error: 'RPC lost', annotations: [], createdAt: 200, transient: true })
-  assert.equal(store.byMessage.get('m1').status, 'error')
+  absorb({ sessionId: 's1', messageId: 'm1', status: 'error', error: 'RPC lost', annotations: [], createdAt: 200, transient: true })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).status, 'error')
   await hydrate('s1')
-  assert.equal(store.byMessage.get('m1').reviewId, 'r1', 'durable host result must outrank the later transient')
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'r1', 'durable host result must outrank the later transient')
 })
 
 test('a transient error never overwrites an existing durable review', async () => {
   const rt = await createRuntime({})
   const { store, absorb } = rt.runtime
-  absorb({ messageId: 'm1', reviewId: 'r1', status: 'sound', createdAt: 100 })
-  absorb({ messageId: 'm1', status: 'error', error: 'transport', annotations: [], createdAt: Date.now(), transient: true })
-  assert.equal(store.byMessage.get('m1').reviewId, 'r1', 'durable must survive a later transient')
+  absorb({ sessionId: 's1', messageId: 'm1', reviewId: 'r1', status: 'sound', createdAt: 100 })
+  absorb({ sessionId: 's1', messageId: 'm1', status: 'error', error: 'transport', annotations: [], createdAt: Date.now(), transient: true })
+  assert.equal(store.byMessage.get(JSON.stringify(['s1', 'm1'])).reviewId, 'r1', 'durable must survive a later transient')
 })
 
 test('plugin teardown clears the __test.runtime capture (no retained stopped runtime)', async () => {
@@ -161,7 +161,7 @@ test('mounting ReviewButton wires progress RPC → prog state → in-flight labe
   }
 })
 
-test('malformed progress response ({}) is NOT treated as idle — polling continues', async () => {
+test('malformed progress response ({}) pauses with a visible protocol error, never treated as idle', async () => {
   let progressCalls = 0
   const rt = await createRuntime({ progress: () => { progressCalls += 1; return {} } })
   const runner = rt.runner
@@ -175,7 +175,8 @@ test('malformed progress response ({}) is NOT treated as idle — polling contin
     timers.fireTick()
     timers.fireTick()
     await flush()
-    assert.ok(progressCalls >= initial + 1, `expected continued polling, got ${progressCalls}`)
+    assert.equal(progressCalls, initial)
+    assert.match(rt.runtime.store.progressErrors.values().next().value, /返回结构无效.*暂停/)
   } finally {
     timers.restore()
   }

@@ -94,7 +94,7 @@ for (const phase of ['claimed', 'submitting', 'adjudicating']) test('refuse comp
 })
 
 test('unclaimed slash input, invalid chips and rejected revision never fall back to sending', () => {
-  const command = composer({ draft: '/advise' })
+  const command = composer({ draft: '/help' })
   assert.throws(() => api.appendFeedbackDraft(command.ctx, 's1', '批注'), /处理命令或发送/)
   const invalid = composer({ draft: '@ref', occurrences: [{ offset: 0, length: 20 }] })
   assert.throws(() => api.appendFeedbackDraft(invalid.ctx, 's1', '批注'), /引用位置/)

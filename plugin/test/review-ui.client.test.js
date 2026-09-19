@@ -41,7 +41,8 @@ test('advisorReview Remote exposes the cancel descriptor', () => {
   assert.ok(t.remoteMethodNames.includes('callModelUsage'))
   assert.ok(t.remoteMethodNames.includes('prepareFeedback'))
   for (const method of ['readReview', 'readEvidence', 'readAdvice']) assert.ok(t.remoteMethodNames.includes(method))
-  assert.equal(t.remoteMethodNames.length, 11)
+  for (const method of ['inboxList', 'inboxSetIntent']) assert.ok(t.remoteMethodNames.includes(method))
+  assert.equal(t.remoteMethodNames.length, 13)
 })
 
 test('list/start/feedback/triage/progress remain present', () => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-ciel",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → 夏尔 Ciel 独立页面可配。",
   "license": "MIT",
   "repository": {
@@ -25,11 +25,23 @@
     "client.js",
     "review-corpus.js",
     "review-runner.js",
+    "review-identity.js",
+    "review-operation.js",
+    "review-errors.js",
+    "review-input.js",
     "review-evidence.js",
     "record-store.js",
+    "inbox-service.js",
     "ptc-runtime.js",
     "ptc-runtime-worker.mjs",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "model-usage.js",
+    "review-content.js",
+    "advisor-state.js",
+    "review-repository.js",
+    "review-coordinator.js",
+    "review-service.js",
+    "review-protocol.js"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -53,9 +65,15 @@
     "@deepseek-ai/dsh-tools": ">=0.1.5-alpha.2"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-subagent": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true }
+    "@deepseek-ai/dsh-subagent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -67,7 +85,9 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-resources",
-        "@deepseek-ai/dsh-client-ui-sidebar-right"
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
       ]
     },
     "bundle": {

@@ -34,9 +34,8 @@ jobs:
         run: npm pack --dry-run --ignore-scripts
         working-directory: plugin
 
-  # Offline integration against the pinned DSH target. No --live, no paid
-  # model calls. This job is a template added this round; it has not been
-  # executed on GitHub Actions yet.
+  # Offline integration against the validated DSH 0.1.6-alpha.2 target.
+  # No --live and no paid model calls; linked peers share the host registry.
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -56,7 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: b2e3b2a0125854567a4a5fcba75782e42fe84901
+          ref: ddefc45fbc7f8e46dd73185e68295696d1297887
           path: .dsh-target
       - name: Install DSH target dependencies
         working-directory: .dsh-target
@@ -64,8 +63,12 @@ jobs:
       - name: Build DSH target libraries
         working-directory: .dsh-target
         run: pnpm build:lib
+      - name: Link shared DSH peers
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/link-harness-peers.mjs
       - name: Offline DSH execution-chain replay
-        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-runtime.mjs
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target CIEL_VERIFY_NATIVE_PEERS=1 node scripts/verify-runtime.mjs
+      - name: Offline DSH protocol verification
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-protocol.mjs
       - name: Offline native sidebar verification
         working-directory: .dsh-target
         run: |

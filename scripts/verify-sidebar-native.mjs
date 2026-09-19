@@ -184,10 +184,21 @@ try {
       'rightbar': { kind: 'single', scope: 'root' },
       'conversation.session.header.corner': { kind: 'single', scope: 'session' },
     })
-    // Add every session without selecting, then make the first current: the seat
-    // must render the session under test, and the others stay for isolation checks.
-    for (const id of sessions) await runtime.sessions.add({ id }, { current: false })
-    await runtime.sessions.setCurrent(sessions[0])
+    // alpha.2 selects the main view through retention, not a mutable `current`.
+    // Keep the other open sessions alive while switching the visible seat.
+    const references = new Map()
+    for (const id of sessions) {
+      await runtime.sessions.add({ id })
+      references.set(id, runtime.sessions.retainFor(runtime.ctx, id, { source: 'ciel-fixture' }))
+    }
+    let mainView = runtime.sessions.retainFor(runtime.ctx, sessions[0], { source: 'mainView' })
+    const selectSession = async (id) => {
+      await act(async () => {
+        const next = runtime.sessions.retainFor(runtime.ctx, id, { source: 'mainView' })
+        mainView.release()
+        mainView = next
+      })
+    }
     const feature = await runtime.mount({ inject: [...sidebarRightPlugin.inject], apply: sidebarRightPlugin.apply })
     assert.ok(runtime.ctx.sidebarRightTabs, 'real ctx.sidebarRightTabs is provided')
 
@@ -218,7 +229,8 @@ try {
       })
     }
     runtime.slots.register({ name: 'sidebar.right.pane.tab', key: 'fixture/file' }, FileBody)
-    return { runtime, feature, sidebar, uninstall, fixture, prepareCalls, triageCalls, session: sessions[0] }
+    sessionReferences.set(runtime, references)
+    return { runtime, feature, sidebar, uninstall, fixture, prepareCalls, triageCalls, selectSession, session: sessions[0] }
   }
 
   const open = async (runtime, address, options) => {
@@ -226,7 +238,8 @@ try {
     await act(async () => { await settle() })
   }
   const flush = async () => { await act(async () => { await settle() }) }
-  const layoutOf = (runtime, session) => runtime.storeOf('rightbar.session', session).getSnapshot().bySession[session].layout
+  const sessionReferences = new WeakMap()
+  const layoutOf = (runtime, session) => runtime.storeOf('rightbar.session', sessionReferences.get(runtime).get(session)).getSnapshot().bySession[session].layout
   const countCalls = (fixture, method, predicate) => fixture.calls.filter((entry) => entry.method === method && (predicate === undefined || predicate(entry.request))).length
 
   // ═══ scenario 1: wide room, full native flow ═════════════════════════════
@@ -325,14 +338,14 @@ try {
       ok('failed read: failure panel, no stale value')
 
       // 5. session isolation: the address, not the current session, is authority.
-      await h.runtime.sessions.setCurrent('s-b')
+      await h.selectSession('s-b')
       await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
       const cross = view.container.querySelector('[data-ciel-review="r-a"]')
       assert.ok(cross, "session A's review renders while the current session is B")
       assert.match(view.container.textContent, /A 会话的评审摘要/)
       assert.equal(countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-a' && request.sessionId === 's-a') >= 1, true, 'the read carried the address session')
       assert.equal(h.fixture.calls.some((entry) => entry.method === 'readReview' && entry.request.sessionId === 's-b' && entry.request.reviewId === 'r-a'), false, 'no read was issued under the current session')
-      await h.runtime.sessions.setCurrent('s-a')
+      await h.selectSession('s-a')
       ok('session isolation', { addressSession: 's-a', currentSession: 's-b' })
 
       // 6. per-occurrence pinning: the cross-session tab opened in step 5 still
@@ -347,7 +360,7 @@ try {
       await act(async () => { h.runtime.ctx.sidebarRight.close(liveTab.id) })
       await flush()
       assert.equal(h.runtime.ctx.resources.source(reviewAddress).getSnapshot().status, 'live', "session B's occurrence still pins the address")
-      await h.runtime.sessions.setCurrent('s-b')
+      await h.selectSession('s-b')
       const otherTab = findTab('s-b')
       assert.ok(otherTab, "session B's cross-session tab is still open")
       await act(async () => { h.runtime.ctx.sidebarRight.close(otherTab.id) })
@@ -355,7 +368,7 @@ try {
       const released = h.runtime.ctx.resources.source(reviewAddress).getSnapshot()
       assert.notEqual(released.status, 'live', 'the last close released the resource')
       assert.equal(released.value, undefined)
-      await h.runtime.sessions.setCurrent('s-a')
+      await h.selectSession('s-a')
       await open(h.runtime, reviewAddress, { kind: 'ciel-review' })
       assert.equal(countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-a'), beforeClose + 1, 'reopening reads again')
       ok('per-occurrence pinning and release', { heldWhileOtherTabOpen: true, releasedOnLastClose: true })

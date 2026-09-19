@@ -17,7 +17,7 @@ const secret = 'FAKE_SECRET_TEST_VALUE_NOT_REAL'
 function eventsFor(name, output, args = '') {
   return [
     { seq: 0, type: 'turn/start', data: { turn: 1 } },
-    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Check the source.' }] } },
+    { seq: 1, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Check the source.' }] } },
     { seq: 2, type: 'tool/call', data: { name, callId: 'call', arguments: args } },
     { seq: 3, type: 'tool/result', data: { message: { content: [{ toolCallId: 'call', content: [{ type: 'text', text: output }] }] } } },
   ]
@@ -41,7 +41,7 @@ test('continuation digest keeps earlier process private without asserting tests 
   const draft = events.pop()
   events.push({ seq: 4, type: 'turn/end', data: { turn: 1 } },
     { seq: 5, type: 'turn/start', data: { turn: 2 } },
-    { seq: 6, type: 'user/message', data: { content: [{ type: 'text', text: '继续' }] } })
+    { seq: 6, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }] } })
   draft.seq = 7; draft.data.turn = 2
   draft.data.message.content[0].text = '201 项测试、15 个离线流程通过。'
   events.push(draft)
@@ -96,7 +96,7 @@ test('request and draft credentials prevent any model request', async (t) => {
     assert.match(result.error, /未发送/)
     assert.equal(h.requests.length, 0)
     assert.ok(!result.error.includes(secret))
-    assert.equal(h.service.activeOperations.size, 0)
+    assert.equal(h.service.coordinator.activeOperations.size, 0)
   }
 })
 
@@ -116,14 +116,14 @@ test('backend or corpus failure never falls back to normal spawn and does not le
   for (const stage of ['backend', 'corpus']) {
     const h = await reviewHarness([])
     t.after(() => h.dispose())
-    if (stage === 'backend') h.service.createProvider = async () => { throw new Error('/fake/private/path ' + secret) }
-    else h.service.createCorpus = async () => { throw new Error('/fake/private/path ' + secret) }
+    if (stage === 'backend') h.service.coordinator.createProvider = async () => { throw new Error('/fake/private/path ' + secret) }
+    else h.service.coordinator.createCorpus = async () => { throw new Error('/fake/private/path ' + secret) }
     const result = await h.start()
     assert.equal(result.ok, false)
     assert.equal(h.requests.length, 0)
     assert.ok(!result.error.includes(secret) && !result.error.includes('/fake/private/path'))
-    assert.equal(h.service.pendingReviewControls.size, 0)
-    assert.equal(h.service.activeOperations.size, 0)
+    assert.equal(h.service.coordinator.pendingReviewControls.size, 0)
+    assert.equal(h.service.coordinator.activeOperations.size, 0)
   }
 })
 
@@ -132,7 +132,7 @@ test('a remote filesystem view cannot be mistaken for a same-named local host di
   t.after(() => h.dispose())
   h.parent.ctx = { get: (name) => name === 'fs' ? { processPathFromHostPath: () => undefined } : undefined }
   let captured = false
-  h.service.createCorpus = async () => { captured = true; throw new Error('must not touch host directory') }
+  h.service.coordinator.createCorpus = async () => { captured = true; throw new Error('must not touch host directory') }
   const result = await h.start()
   assert.equal(result.ok, false)
   assert.match(result.error, /不是本机文件系统/)
@@ -144,7 +144,7 @@ test('one snapshot is shared across stages and disposed once at operation end', 
   const h = await reviewHarness([SUSPECT, verdict()])
   t.after(() => h.dispose())
   let built = 0, disposed = 0
-  h.service.createCorpus = async () => { built++; return { publicInfo: () => ({ fileCount: 1, byteCount: 10, roots: ['/project'], truncated: false }), dispose() { disposed++ } } }
+  h.service.coordinator.createCorpus = async () => { built++; return { publicInfo: () => ({ fileCount: 1, byteCount: 10, roots: ['/project'], truncated: false }), dispose() { disposed++ } } }
   const result = await h.start()
   assert.equal(result.ok, true)
   assert.equal(built, 1); assert.equal(disposed, 1)
