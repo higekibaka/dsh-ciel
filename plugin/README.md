@@ -6,14 +6,14 @@
 
 A planning advisor and annotation reviewer for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). The main model explores first and calls `ask_advisor` for ideas. A user can then request a two-stage restricted review of an assistant reply and decide what to do with its annotations.
 
-Current release: **[0.20.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.0) · [Changelog](https://github.com/higekibaka/dsh-ciel/blob/main/CHANGELOG.md). Local release checks target **DSH 0.2.0-rc.2**; CI includes pinned 0.1.6, 0.1.7 and 0.2.0 targets.
+Current release: **[0.20.1](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.1)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.1) · [Changelog](https://github.com/higekibaka/dsh-ciel/blob/main/CHANGELOG.md). Local release checks target **DSH 0.2.0-rc.2**; CI includes pinned 0.1.6, 0.1.7 and 0.2.0 targets.
 
 This release includes **DSH 0.1.7-alpha.1** configuration and session compatibility. Read the [settings migration and validation notes](https://github.com/higekibaka/dsh-ciel/blob/main/docs/compatibility-017.md) before upgrading.
 
 ## Install and use
 
 ```sh
-dsh plugin --profile web add dsh-ciel@0.20.0
+dsh plugin --profile web add dsh-ciel@0.20.1
 ```
 
 Install or update in your intended profile, restart DSH and refresh the browser. In **Settings → 夏尔 Ciel**, select advisor and critic models already configured in DSH, then save. Default route names do not register providers or credentials for you.
@@ -44,7 +44,13 @@ flowchart TD
 
 The planning reminder and consultation gate share the same consultation state. Rejected admission does not consume a consultation slot. Reviews are user-triggered; history loading and progress recovery do not start model calls.
 
-## What's new in 0.20.0
+## What's new in 0.20.1
+
+- Documentation-only patch: corrected configuration, security, evidence and draft-interaction descriptions, with current contracts separated from historical verification.
+- The npm README is generated from this English source; documentation consistency checks now run in CI and before publication.
+- Runtime code, defaults and record formats are unchanged from 0.20.0. No migration is required.
+
+## Features introduced in 0.20.0
 
 - Independent opt-in Jev evidence and advisor-context checks, with a shared secret API key, HTTPS endpoint and model configuration.
 - Up to eight independent restricted investigators sharing one deadline, with per-item outcomes, blocked reasons and request counts.

@@ -6,10 +6,17 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-03
+
 ### Documentation
 
 - 对照 0.20.0 修正 Jev 凭据与自定义接口、历史工具原文、Profile 设置、逐项调查及草稿替换确认说明；区分现行规范、历史验证和未完成的日常 GUI 验收。
-- 英文 README 生成 npm README；新增 `pnpm docs:sync` / `pnpm check:docs`，检查版本、Host Config 默认值、文档分类、相对链接和 CI 固定目标，并接入 CI/发布前检查。此项是仓库更新，不覆盖已发布的 0.20.0 包。
+- 英文 README 生成 npm README；新增 `pnpm docs:sync` / `pnpm check:docs`，检查版本、Host Config 默认值、文档分类、相对链接和 CI 固定目标，并接入 CI/发布前检查。本版将更新后的 README 带入 npm 包，不覆盖已发布的 0.20.0 包。
+- 文档补丁版本：运行时代码、配置默认值和记录格式与 0.20.0 相同，无需迁移。
+
+### Verification
+
+- 0.20.1 本地验证：703 项插件测试、8 项文档测试、23 份公开 Markdown 一致性、客户端生成一致性及发布隐私检查通过；未进行新的日常 GUI 或真实模型验收。
 
 ## [0.20.0] - 2026-10-03
 

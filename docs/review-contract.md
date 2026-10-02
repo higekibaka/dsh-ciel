@@ -1,8 +1,8 @@
-# 评审结果契约 v6（Ciel 0.20.0）
+# 评审结果契约 v6（Ciel 0.20.1）
 
 <!-- ciel-doc: current -->
 
-本文描述 Ciel 0.20.0 的当前实现；契约 v6 沿用宿主证据引用并包含逐项调查与可选 Jev。v5（0.17.0）仍是「只限时、直接调用原生读工具」的历史状态，见 [只限时评审交接](time-only-review.md)；0.18.0 起工具化核实阶段使用受限 PTC，见 [受限 PTC 评审交接](ptc-review.md)。新记录写入 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`（`reviews`/`evidence`/`advice`，保留 `calls`/`feedback`）的版本化原子记录；旧 `dsh-advisor` JSONL 不迁移、不读取。新版设置编辑 Profile 入口 `advisor`，旧宿主使用 `ciel` 命名空间，升级前见 [迁移说明](compatibility-017.md)。
+本文描述 Ciel 0.20.1 的当前实现（运行时与 0.20.0 相同）；契约 v6 沿用宿主证据引用并包含逐项调查与可选 Jev。v5（0.17.0）仍是「只限时、直接调用原生读工具」的历史状态，见 [只限时评审交接](time-only-review.md)；0.18.0 起工具化核实阶段使用受限 PTC，见 [受限 PTC 评审交接](ptc-review.md)。新记录写入 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`（`reviews`/`evidence`/`advice`，保留 `calls`/`feedback`）的版本化原子记录；旧 `dsh-advisor` JSONL 不迁移、不读取。新版设置编辑 Profile 入口 `advisor`，旧宿主使用 `ciel` 命名空间，升级前见 [迁移说明](compatibility-017.md)。
 
 ## 两阶段输入
 

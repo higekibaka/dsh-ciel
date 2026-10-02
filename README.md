@@ -17,14 +17,14 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的规划前顾问与批注评审插件。主模型先探查，顾问通过 `ask_advisor` 提供思路；用户对助手回复发起两阶段受限评审，再决定如何处理批注。
 
-当前版本：**[0.20.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.0) · [变更记录](CHANGELOG.md)。本轮本地验证目标为 **DSH 0.2.0-rc.2**，CI 包含固定的 0.1.6 / 0.1.7 / 0.2.0 目标。
+当前版本：**[0.20.1](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.1)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.1) · [变更记录](CHANGELOG.md)。本轮本地验证目标为 **DSH 0.2.0-rc.2**，CI 包含固定的 0.1.6 / 0.1.7 / 0.2.0 目标。
 
 本版包含 **DSH 0.1.7-alpha.1** 设置与会话适配，升级前请先阅读 [设置迁移与验证说明](docs/compatibility-017.md)。
 
 ## 安装与开始使用
 
 ```sh
-dsh plugin --profile web add dsh-ciel@0.20.0
+dsh plugin --profile web add dsh-ciel@0.20.1
 ```
 
 在自己的目标 profile 中安装或更新后，重启 DSH 并刷新浏览器。进入 **设置 → 夏尔 Ciel**，选择已在 DSH 中配置的顾问、批评者模型并保存；默认路由不会替你注册提供方或凭据。
@@ -55,7 +55,13 @@ flowchart TD
 
 规划提醒与咨询额度共用咨询状态；被准入门拒绝的请求不占额度。评审由用户触发，进度恢复和历史加载不会自动启动模型。
 
-## 0.20.0 更新
+## 0.20.1 更新
+
+- 文档补丁：修正配置、安全边界、证据及草稿交互说明，区分当前规范与历史验证。
+- npm README 从英文版生成；新增文档一致性检查，并接入 CI 和发布流程。
+- 运行时代码、默认值和记录格式与 0.20.0 相同，无需迁移。
+
+## 0.20.0 功能回顾
 
 - Jev 评审证据检查和顾问建议检查，两个独立开关，默认关闭；新增 API Key、HTTPS 接口地址和模型设置。
 - 至多 8 个疑点独立并发调查，保存逐项结论、未核实原因及调用计数，共享原总时限。

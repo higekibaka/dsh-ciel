@@ -2,7 +2,7 @@
 
 <!-- ciel-doc: current -->
 
-当前发布基线：**Ciel 0.20.0**。功能与默认值以代码为依据，发布事实以版本化记录和成功的远端结果为依据；“文件已修改”不等于日常实例已加载。
+当前发布基线：**Ciel 0.20.1**。功能与默认值以代码为依据，发布事实以版本化记录和成功的远端结果为依据；“文件已修改”不等于日常实例已加载。
 
 ## 现行文档
 
@@ -15,6 +15,8 @@
 
 ## 发布验证记录
 
+**0.20.1** 是文档补丁，将校准后的 npm README 与文档一致性检查纳入发布；运行时代码、默认值和记录格式与 0.20.0 相同，无需迁移。版本说明见 [CHANGELOG](../CHANGELOG.md)。本版发布前本地验证通过 703 项插件测试、8 项文档测试及 23 份公开 Markdown 一致性检查；未扩展日常 GUI 或真实模型验收范围。
+
 以下记录固定于 **0.20.0**，以后新增测试不回改这些计数：
 
 - 发布标签 v0.20.0 指向 `f0eb5c5044e6b9f851ebbeffd5e7da4aba85d996`。发布提交的 [CI](https://github.com/higekibaka/dsh-ciel/actions/runs/37063769171) 通过；后续仅工作流修复提交 `555a8d05aed3d9a680a10e0e3e4f7f855af38e55` 的 [CI](https://github.com/higekibaka/dsh-ciel/actions/runs/37064618781) 也通过。
@@ -24,7 +26,7 @@
   - dsh-v0.2.0-rc.2：639ed015397290b3745d163aafe02ffee4aa3f84
 - 703 项单元测试、57 个真实 Host 离线执行链场景、22 项原生侧栏检查通过；另有协议、原生设置、Profile 持久化/密钥脱敏/清除、迁移检查。执行链使用脚本模型，未请求外部付费 API。
 - [发布流水线](https://github.com/higekibaka/dsh-ciel/actions/runs/37064758406) 用已验证的原标签完成 npm OIDC 发布和 [GitHub Release](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.0)，未移动标签。首次发布在 npm 上传前因 npm 12 打包 JSON 变化失败，后将工具固定为 npm 11 后重试。
-- npm latest 已核验为 0.20.0；30 个包内文件逐字节匹配当时的候选，完整性摘要通过，具有 [来源证明](https://registry.npmjs.org/-/npm/v1/attestations/dsh-ciel@0.20.0)。Host 模块导入和打包的 QuickJS worker 在生产依赖 + 宿主共享模块下通过冒烟。
+- 当时 npm latest 已核验为 0.20.0；30 个包内文件逐字节匹配当时的候选，完整性摘要通过，具有 [来源证明](https://registry.npmjs.org/-/npm/v1/attestations/dsh-ciel@0.20.0)。Host 模块导入和打包的 QuickJS worker 在生产依赖 + 宿主共享模块下通过冒烟。
 - **未验证**：新 Jev API 字段的日常 GUI 在线验收、真实提供方质量/成本、长期负载及 Windows Desktop。2026-09-30 的隔离 Web UI 检查不包含随后加入的 API 设置。安装仍需正常重启 Host 和刷新浏览器。
 
 ## 历史资料
@@ -44,4 +46,4 @@
 3. 更新英文 README 后执行 `pnpm docs:sync`，生成 npm README，再运行 `pnpm check:docs`。生成页不要手改；默认值、版本、最新 changelog 版本、现行/历史分类、相对链接和 CI 固定目标有自动约束。
 4. 测试数量必须带版本/日期/范围，远端通过须附成功 run 链接；离线夹具、隔离 Web、日常 GUI 和真实模型分别记录。自动检查不能证明所有自然语言描述或外部链接正确。
 5. 发布前更新版本、安装命令和 CHANGELOG；先通过 CI，再推标签。发布流程使用 npm 11。上传前失败可修复 workflow 后以 workflow_dispatch 指定既有标签重试，不移动已公开标签；需要仓库 Actions 写权限。上传已成功时先核对 registry 状态，不直接重复 publish。
-6. **main 文档与不可变 npm 包不是同一份状态**：发布后的文档修正可先落在仓库；已发布 0.20.0 包内 README 不会随 main 更新，也不能覆盖同版本。下次新版本携带更新后的 npm README。
+6. **main 文档与不可变 npm 包不是同一份状态**：发布后的文档修正可先落在仓库；已发布版本的包内 README 不会随 main 更新，也不能覆盖同版本。0.20.1 携带本轮更新后的 npm README；后续文档修正仍需新版本才能进入 npm 包。
