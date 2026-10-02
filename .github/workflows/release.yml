@@ -9,6 +9,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish without moving it
+        required: true
+        type: string
 
 permissions:
   id-token: write # OIDC for npm Trusted Publishing
@@ -17,8 +23,15 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - name: Validate release tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected stable vX.Y.Z tag'; exit 1; }
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -27,7 +40,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
       - name: Upgrade npm (Trusted Publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
       - name: Install root development dependencies
         run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies (dev only; never shipped)
@@ -48,7 +61,7 @@ jobs:
         working-directory: plugin
       - name: Tag must match package version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${RELEASE_TAG#v}"
           PKG="$(node -p "require('./plugin/package.json').version")"
           if [ "$TAG" != "$PKG" ]; then
             echo "tag v$TAG does not match plugin/package.json version $PKG"
@@ -62,8 +75,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/release-notes.mjs > "$RUNNER_TEMP/ciel-release-notes.md"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "Ciel ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "Ciel ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Ciel ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
+            gh release create "$RELEASE_TAG" --verify-tag --title "Ciel ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
           fi
