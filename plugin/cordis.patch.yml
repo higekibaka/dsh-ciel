@@ -3,9 +3,9 @@
 # profile's own cordis.patch.yml, --patch overlays) override this row by id.
 #
 # The row mounts at the HOST layer on purpose:
-#   - settings namespaces are host-plane (an agent-preset row cannot register
-#     one), and the Settings → Plugins card edits the `advisor` namespace
-#     (ns 名保留 advisor：配置连续性优先于命名一致性);
+#   - Settings → 夏尔 Ciel edits this `advisor` Profile entry on modern DSH;
+#     older hosts use the `ciel` settings namespace via the legacy adapter.
+#     The entry id stays stable for configuration continuity;
 #   - the `ask_advisor` tool and the guidance prompt section become available
 #     to every agent in every preset, matching how dsh-vision-router wires
 #     its global tools.

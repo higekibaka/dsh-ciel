@@ -1,6 +1,8 @@
-# 评审结果契约 v6（宿主证据引用；0.18.0 起受限 PTC）
+# 评审结果契约 v6（Ciel 0.20.0）
 
-本文描述 0.18.0 的当前实现。v5（0.17.0）仍是「只限时、直接调用原生读工具」的历史状态，见 [只限时评审交接](time-only-review.md)；本版把工具化核实阶段切换为受限 PTC，见 [受限 PTC 评审交接](ptc-review.md)。新记录写入 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`（`reviews`/`evidence`/`advice`，保留 `calls`/`feedback`）的版本化原子记录；旧 `dsh-advisor` JSONL 不迁移、不读取，`ciel` 设置保留。
+<!-- ciel-doc: current -->
+
+本文描述 Ciel 0.20.0 的当前实现；契约 v6 沿用宿主证据引用并包含逐项调查与可选 Jev。v5（0.17.0）仍是「只限时、直接调用原生读工具」的历史状态，见 [只限时评审交接](time-only-review.md)；0.18.0 起工具化核实阶段使用受限 PTC，见 [受限 PTC 评审交接](ptc-review.md)。新记录写入 `$DSH_HOME/ciel/v1/<kind>/<sessionId>/<hash(id)>.json`（`reviews`/`evidence`/`advice`，保留 `calls`/`feedback`）的版本化原子记录；旧 `dsh-advisor` JSONL 不迁移、不读取。新版设置编辑 Profile 入口 `advisor`，旧宿主使用 `ciel` 命名空间，升级前见 [迁移说明](compatibility-017.md)。
 
 ## 两阶段输入
 
@@ -28,7 +30,7 @@ goal 关联说明的是原生生命周期归属，不能证明目标创建时的
 
 宿主为清单逐项分配 `s1`、`s2` 等编号，按重要性稳定排序，全部送入核实，不再按查询次数截取。清单仍受结构化回复上限（至多8项）约束。核实阶段收到这些固定编号，以及宿主整理的作者工具证据和顾问清单。不允许新增编号；意外发现的新问题留到后续评审，避免绕过分诊。
 
-### 开发版：逐项独立核查
+### 逐项独立核查
 
 核实阶段为每个提名疑点创建独立的受限调查子代理（至多 8 个并发）。每个代理只负责一个固定编号，共享不可变资料和同一个总截止时间，但不共享模型上下文；不增加每项独立时限、查询额度或自动补跑。一个疑点失败不会抹掉其他疑点的有效结果。程序保证逐项派发和记账，不保证模型一定找得到足以判定正误的证据；提供方失败、取消、资料边界仍会阻止完成。
 
@@ -74,7 +76,7 @@ comment: 草稿的配置断言与文件内容冲突。
 
 ## 宿主证据引用
 
-核实阶段的 `read` / `grep` / `glob` 结果由宿主在受限源码副本上捕获，并分配 `e1`、`e2`… 引用。开发版新增同样可引用的历史宿主事实与评审时根目录元数据；`a1` 等新工具输出回执保存经检查的本轮原文片段，不再只有空来源标记。旧的 `reported/author-tool` 记录仍保持原状，不能假装已有归档原文。`groundReview` 只接受本次账本中真实存在、分发给该调查者且被结果行引用的编号：伪造、越权或未返回的引用使该疑点整条退回未核实，不落批注。详见 [历史事实证据](host-fact-evidence.md)。
+核实阶段的 `read` / `grep` / `glob` 结果由宿主在受限源码副本上捕获，并分配 `e1`、`e2`… 引用。0.20.0 新增同样可引用的历史宿主事实与评审时根目录元数据；`a1` 等新工具输出回执保存经检查的本轮原文片段，不再只有空来源标记。旧的 `reported/author-tool` 记录仍保持原状，不能假装已有归档原文。`groundReview` 只接受本次账本中真实存在、分发给该调查者且被结果行引用的编号：伪造、越权或未返回的引用使该疑点整条退回未核实，不落批注。详见 [历史事实证据](host-fact-evidence.md)。
 
 随评审保存的只有被引用且有界的片段：每条记录默认 16 KiB / 200 行，每轮评审合计 128 KiB / 128 条。归档上限不会裁剪程序收到的原文、搜索命中或文件列表；`evidence_limited` 表达归档不足，`evidence_spans` 标出每个引用实际保存的文本。探索后应聚焦读取决定性行并保存引用。模型上下文仍只收到程序打印或返回的内容。完整内存副本在评审结束后释放。`contentSha256` 只用于一致性检查，不证明防篡改，也不证明引用内容为真。`readEvidence` 只按已提交评审的 `evidenceIds` 读取历史片段，记录缺失或不可用时明确失败，绝不改读当前文件；当前文件仅由 Host 解析的 `currentPath` 作为导航打开。
 
@@ -90,17 +92,17 @@ comment: 草稿的配置断言与文件内容冲突。
 
 ## 原生设置与状态组件
 
-设置通过 `settings.section` 注册为左侧独立“夏尔 Ciel”页，顺序30，位于 Agent 预设之后；不再注册 `settings.plugin.item`，仍使用原 `ciel` 命名空间。复用 DSH alpha.2 平台模块表中的 `Switch` 和 `Tag`，不复制其样式或实现。开关修改只进入当前页面生命周期内的草稿，导航/关闭设置不丢草稿；刷新或插件卸载不保存草稿。只有“保存”调用一次 `scope.mutate(ops, revision)`，配置修订变化时拒绝覆盖并保留草稿；“放弃”重新读取当前值。“当前已启用”标签显示保存值，“待保存”明确标记草稿预览。
+设置通过 `settings.section` 注册为左侧独立“夏尔 Ciel”页，顺序30，位于 Agent 预设之后；不再注册 `settings.plugin.item`。新版经 `configForms.get('advisor')` 编辑 Profile 入口，旧宿主回退 `settingsScope` 的 `ciel` 命名空间。复用 DSH 平台模块表中的 `Switch` 和 `Tag`，不复制其样式或实现。开关修改只进入当前页面生命周期内的草稿，导航/关闭设置不丢草稿；刷新或插件卸载不保存草稿。只有“保存”调用一次 `scope.mutate(ops, revision)`，配置修订变化时拒绝覆盖并保留草稿；“放弃”重新读取当前值。“当前已启用”标签显示保存值，“待保存”明确标记草稿预览。
 
 评审状态标签使用原生 Tag；未完整核实的零批注不涂成绿色通过。每张卡片只创建空挂载容器，由 `ReviewButton` 的 React portals 拥有其子节点，没有独立 React root 或 `flushSync`。卡片重绘与卸载由同一组件生命周期清理，原来的折叠、定位、筛选和手动回传不变。
 
 原生右侧栏资源由 `plugin/src/sidebar.js` 注册三个 `dsh-resource://` 协议（`ciel-review` / `ciel-evidence` / `ciel-advice`）及对应标签页；浏览器端源码 `plugin/src/` 模块 由 `scripts/build-client.mjs` 打成单一 `plugin/client.js`。资源提供方读取一次即结束：不后台监听、不轮询、不调用模型；失败时不显示上一次成功值，被隐私检查扣留的证据不渲染内容，只有 Host 解析的 `currentPath` 能打开当前文件。
 
-当前文件由 alpha.2 的官方 `fileAddressFor` 构造 Session 地址，绝对外部路径仍携带证据归属 Session，不借用当前显示会话。行定位通过 `params.line` 传递，Markdown 渲染视图不提供源码锚点，需切到代码或纯文本；历史行号不保证对应当前文件。原生侧栏空间不足时不强制分栏，当前文件作为单栏标签页打开。
+当前文件由 DSH 官方 `fileAddressFor` 构造 Session 地址，绝对外部路径仍携带证据归属 Session，不借用当前显示会话。行定位通过 `params.line` 传递，Markdown 渲染视图不提供源码锚点，需切到代码或纯文本；历史行号不保证对应当前文件。原生侧栏空间不足时不强制分栏，当前文件作为单栏标签页打开。
 
 ## 草稿回传与证据缺失
 
-“填入输入框”只调用 `prepareFeedback` 从已存评审生成文本，然后在对应会话输入框末尾追加。保留原文、引用卡片和附件，不调用 `followup` 或 `submit`；旧 `feedback` 端点明确拒绝自动发送。填入不记作已发送，不写已发送 WAL，也不永久置灰。相同完整文本仍在草稿中时跳过重复；清空后可重新填入。准备期间编辑草稿、切换会话、组件卸载或进入命令/发送状态时拒绝迟到写入，并提示重试。
+“填入输入框”只调用 `prepareFeedback` 从已存评审生成文本。输入框为空时直接填入；已有草稿时选择追加、取消或替换，替换须二次确认。追加保留原文、行内引用和附件；替换会覆盖文字与行内引用，不能承诺保留旧草稿。两种方式均不调用 `followup` 或 `submit`；旧 `feedback` 端点明确拒绝自动发送。填入不记作已发送，不写已发送 WAL，也不永久置灰。相同完整文本仍在草稿中时跳过重复；清空后可重新填入。准备期间编辑草稿、切换会话、组件卸载或进入命令/发送状态时拒绝迟到写入，并提示重试。
 
 本轮无工具记录不等于测试未发生，继续/总结回复可能引用更早的工作。提示词不再要求据此指控造假，也不把未知项包装成条件风险。旧报告或另一套测试的数量不能直接反驳新运行；须先对齐报告、套件、范围和运行身份。缺少对应证据时保持未查，不开放作者会话过程；有正面矛盾证据仍可判缺陷。这是提示纪律，不是对模型语义判断的硬保证。
 
@@ -119,9 +121,9 @@ comment: 草稿的配置断言与文件内容冲突。
 
 ## 可选 Jev 旁路
 
-顾问的 `advisorJevEnabled` 是另一独立开关，默认关闭：在顾问返回后检查建议与传入背景是否一致，将检查结果与原回答一起返回主模型并持久化。它不改变下述评审协议，也不把顾问建议变成核实证据；见 [顾问检查说明](jev-evidence-experiment.md#顾问建议检查开发版)。
+顾问的 `advisorJevEnabled` 是另一独立开关，默认关闭：在顾问返回后检查建议与传入背景是否一致，将检查结果与原回答一起返回主模型并持久化。它不改变下述评审协议，也不把顾问建议变成核实证据；见 [顾问检查说明](jev-evidence-experiment.md#顾问建议检查)。
 
-`jevEnabled` 默认为 `false`，只对开启后的新评审增加检查。主核实完成后，以逐字匹配草稿的单条主张和最终引用的宿主原文进行一次批量请求；支持、矛盾或证据不足均不改主评审的裁决、覆盖或批注。结果以可选 `jev` 字段持久化，旧记录继续兼容。缺钥、超时、错误及输入限制在详情中明确显示。关闭该开关取消在途 Jev，整次评审取消/插件停用仍由统一终态处理器接管。数据、数量与时限边界见 [模块说明](jev-evidence-experiment.md)。
+`jevEnabled` 默认为 `false`，只对开启后的新评审增加检查。主核实完成后，以逐字匹配草稿的单条主张和最终引用的宿主原文进行一次批量请求；支持、矛盾或证据不足均不改主评审的裁决、覆盖或批注。结果以可选 `jev` 字段持久化，旧记录继续兼容。缺钥、超时、错误及输入限制在详情中明确显示。关闭该开关取消在途 Jev，整次评审取消/插件停用仍由统一终态处理器接管。两个检查共用 `jevApiKey`、`jevEndpoint` 和 `jevModel`；密钥通过原生 secret 字段写入/脱敏，仅官方默认地址允许环境变量回退。数据、数量与时限边界见 [模块说明](jev-evidence-experiment.md)。
 
 ## 离线回归入口
 
@@ -132,7 +134,7 @@ comment: 草稿的配置断言与文件内容冲突。
 - 在 DSH checkout 运行 `DSH_CHECKOUT=$PWD node --import tsx/esm /path/to/dsh-ciel/scripts/verify-feedback-input.mjs`：真实 `SessionInputShell`、Lexical 和 Cordis 事件，在 JSDOM 中核对原稿、引用卡片、附件、重复填入及竞争保护。只替代 CSS 加载，不替代编辑器；不建立会话、启动模型或 Web 服务，不等同于完整浏览器界面验收。
 
 - 原生设置页与标签：在 DSH checkout 运行 `DSH_CHECKOUT=$PWD TSX_TSCONFIG_PATH=$PWD/tsconfig.base.client.json node --import tsx/esm /path/to/dsh-ciel/scripts/verify-native-settings.mjs`。使用真实 SettingsRoot、Switch、Tag、ReactDOM 和从原文件编译的 CSS，配置/RPC 数据为离线夹具；核对左侧顺序、跨页面草稿、原子保存、标签颜色语义、折叠重绘和 portal 清理，不启动模型或 Web 服务。
-- 原生右侧栏：在 DSH checkout 运行 `DSH_CHECKOUT=$PWD TSX_TSCONFIG_PATH=$PWD/tsconfig.base.client.json node --import tsx/esm /path/to/dsh-ciel/scripts/verify-sidebar-native.mjs`。使用真实 Cordis Context、资源/右侧栏注册表、React 与 Tag，Host RPC 为离线夹具；alpha.2 升级前 21 项检查通过，网络请求 0。这些脚本都不跑付费、不加 `--live`。
+- 原生右侧栏：在 DSH checkout 运行 `DSH_CHECKOUT=$PWD TSX_TSCONFIG_PATH=$PWD/tsconfig.base.client.json node --import tsx/esm /path/to/dsh-ciel/scripts/verify-sidebar-native.mjs`。使用真实 Cordis Context、资源/右侧栏注册表、React 与 Tag，Host RPC 为离线夹具；0.20.0 的 22 项检查通过，网络请求 0，见 [发布验证记录](index.md#发布验证记录)。这些脚本都不跑付费、不加 `--live`。
 
 ## 宿主会话日志
 
@@ -147,21 +149,21 @@ comment: 草稿的配置断言与文件内容冲突。
 
 ## 协议、缓存与部署边界
 
-评审/收件箱的请求与返回由共用 `review-protocol.js` 定义。当前 DSH 0.1.6-alpha.2 的 Client unary 调用不执行返回值 codec，Ciel Transport 因而显式验证结构及会话/消息归属。协议不匹配显示 `CIEL_PROTOCOL_REQUEST_INVALID` / `CIEL_PROTOCOL_RESPONSE_INVALID`，暂停同步并提示刷新及核对版本；不会当作“没有记录”或“评审已结束”，也不会自动重新调用模型。
+评审/收件箱的请求与返回由共用 `review-protocol.js` 定义。已核对的 DSH Client unary 调用路径不执行返回值 codec，Ciel Transport 因而显式验证结构及会话/消息归属。协议不匹配显示 `CIEL_PROTOCOL_REQUEST_INVALID` / `CIEL_PROTOCOL_RESPONSE_INVALID`，暂停同步并提示刷新及核对版本；不会当作“没有记录”或“评审已结束”，也不会自动重新调用模型。
 
 页面的历史请求保持分页上限；未使用会话的结果缓存按 LRU 保留最多 8 个会话、16 MiB 正文估算。在显示或请求尚未完成时 pin，释放后再次进入可重新读盘。页面临时勾选/折叠可能释放；已经保存的分诊、意向及宿主草稿不因此删除。加载期间多次强制刷新合并成一个后续新查询，插件卸载后的迟到结果不再回填状态。
 
 正常评审和顾问记录在原子发布前同步检查取消状态。summary 越过提交点后不能声称已经接受取消；磁盘故障可能使错误记录也无法保存。模块责任及验证方法见 [architecture.md](architecture.md)；全局额度、单 writer、指纹恢复和历史保留见 [architecture-decisions.md](architecture-decisions.md)。
 
 
-## 开发版：避免取证资料被无关内容挤出
+## 避免取证资料被无关内容挤出
 
 评审优先捕获被评回复及其真人要求提到的已授权项目，沿用原有容量与准入规则。查询的局部截断状态与全局清单限制分开；只根据所引用证据与未了结疑点判断覆盖，不把其他项目超限当作目标文件不可核实。目标路径不可用时，不通过等价绝对/虚拟路径反复重试同一冻结快照。
 
 历史 Playwright 验证的文字结果进入与终端输出相同的宿主引用链，保留事件序号、时间、错误及截断状态。引用共用原来的总额，优先保留近期记录并兼顾浏览器与终端/网页。未知或过程类工具仍不提供给评审，但不再被统一误报为凭据隐私问题；真正敏感输出仍在裁剪前整项拒绝。以上改动不新增执行能力、不自动重写历史结论；新的核查必须逐项给出实际证据。
 
 
-## 开发版：核查结束与证据完整性分别展示
+## 核查结束与证据完整性分别展示
 
 所有疑点已有结果但所引证据仍受限时，保留 partial 和黄色警示，显示“已核查 · 证据受限”及已完成项数，不再笼统写成“核查尚未完成”。引用截断仍阻止整体完整认证；不会根据排除数量直接把受限结果改绿。Jev 旁路状态不参与主评审覆盖判定。
 

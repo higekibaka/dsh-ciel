@@ -1,6 +1,8 @@
 # Ciel 架构与后续决策
 
-2026-09-19；当前核对环境为 DSH **0.1.6-alpha.2**、Ciel **0.19.0**。
+<!-- ciel-doc: current -->
+
+当前对应 Ciel **0.20.0**；发布验证覆盖 DSH **0.1.6-alpha.2 / 0.1.7-alpha.1 / 0.2.0-rc.2**。验证记录与维护规则见 [文档索引](index.md)。
 
 业务验收以 [review-contract.md](review-contract.md) 为准：主模型先探查，`ask_advisor` 提供思路；用户触发两阶段受限评审；收件箱记录处理意向；批注填入草稿后由用户手动发送。`/advise` 已移除，旧记录及可核对的旧请求来源保留兼容读取。本文件规定模块责任、生命周期和演进边界，不另起一套产品流程。
 
@@ -16,7 +18,9 @@
 | `review-content.js` | 阶段提示词、证据输入整理、Markdown 块与评审结果解析、只读子代理观察 | 不调用模型或保存记录 |
 | `model-usage.js` | 请求路由和实际执行来源的有界投影 | 不把配置值冒充实际用模 |
 | `review-coordinator.js` | 唯一的评审运行 owner：准入、两个阶段、私有 child、进度、取消、终态与清理 | 不实现文件系统协议，不持有 UI 状态 |
-| `jev-review.js` | 可选旁路：主张逐字匹配、引用原文投影、有界批量调用与响应验证 | 不读取额外文件或会话，不修改主评审裁决；密钥只来自宿主环境 |
+| `review-investigation.js`、`review-facts.js` | 单疑点引用范围、结果合并；历史模型/权限/工具名称最小投影 | 不共享兄弟调查上下文，不用当前配置补历史 |
+| `jev-config.js` | 共用接口/模型默认值与校验；已保存密钥优先，官方默认接口才回退环境变量 | 不自建秘密存储，不给自定义接口附送环境变量密钥 |
+| `jev-review.js`、`jev-advisor.js` | 可选检查：评审主张/引用原文和顾问问题/背景/建议的有界投影、调用与响应验证 | 不读取额外文件或会话，不修改主裁决或建议；不独立核实背景 |
 | `review-repository.js` | 评审/证据/顾问/回传记录访问；证据先写、summary 提交；可注入 store/home | 不判定模型结论，不修改全局 fs 以提供测试缝隙 |
 | `review-service.js` | Typert Remote 入口、读取投影、批注草稿准备、收件箱转发；start/progress/cancel 委托 Coordinator | 不运行 critic 阶段；旧 feedback 只返回停用说明 |
 | `review-protocol.js` | 13 个方法的统一 descriptor、请求/返回形状与关联身份检查 | 不依赖 DSH、Node、DOM 或第二份 schema 库实例 |
@@ -74,7 +78,7 @@ Host 与 Client 从同一 `review-protocol.js` 构造 descriptor。`create()` �
 
 请求只接受已声明字段及有界身份、页大小、批注序号、枚举与 revision；旧 `feedback` 接受旧对象后明确拒绝自动发送。响应检查业务形状，保留可扩展元数据，同时核对请求与返回的 session/message/review/evidence 归属。无效返回不会清空状态、标记加载完成或推断评审已经结束。
 
-当前 DSH Gateway 实际执行请求 codec；其 Client unary 调用路径直接返回 `result.value`，**不会执行返回值 codec**。因此 Ciel Transport 显式执行返回验证。仅改 descriptor 或只测 schema 工厂都不能证明这条边界生效。
+已验证的 DSH Gateway 执行请求 codec；所检查的 Client unary 调用路径直接返回 `result.value`，**不会执行返回值 codec**。因此 Ciel Transport 显式执行返回验证。仅改 descriptor 或只测 schema 工厂都不能证明这条边界生效。
 
 错误分为协议不匹配、Remote 未就绪/接口/挂载/卸载、受限后端依赖/守卫/运行时/执行、数据损坏/冲突等。协议错误为永久错误，暂停进度同步并提示刷新/核对 Host 与 Client；可恢复连接错误仍最多四次探测、按 1/2/4 tick 退避。显式重试同步不等于重新启动模型。
 
@@ -96,7 +100,7 @@ Host 与 Client 从同一 `review-protocol.js` 构造 descriptor。`create()` �
 
 `node scripts/verify-protocol.mjs`（设置 `DSH_CHECKOUT`）使用当前 DSH Registry/Gateway、Ciel 实际 Remote/Transport、临时记录与内存 carrier；验证注册、坏请求拒绝、CAS、草稿准备、旧客户端拒绝和返回校验。它不等同于浏览器或 HTTP 验收。`scripts/verify-runtime.mjs` 使用当前真实 DSH 代理/工具/受限运行时及本地脚本模型，验证业务链；不证明外部模型质量或成本。
 
-本轮证据位于工作区 `reviews/ciel-architecture-completion-20260919/`。200 会话 × 每会话 10 条 × 每条 8192 字符的五次合成 Client 测量中，保留结果由 2000 条/200 会话降为 80 条/8 会话，正文估算由 33,271,600 降为 1,331,040 字节，请求数仍为 200。中位耗时约 21.8 → 40.2 ms：新增校验与记账有成本，不能称为全面提速。这是生产 bundle + 模拟 Remote/DOM 的测量，不是 DSH/主题的 CPU 或实际浏览器 RSS。
+以下为 **2026-09-19 / Ciel 0.19.0 的历史合成测量**，原始产物不随仓库发布，不作为 0.20.0 性能结论。200 会话 × 每会话 10 条 × 每条 8192 字符的五次合成 Client 测量中，保留结果由 2000 条/200 会话降为 80 条/8 会话，正文估算由 33,271,600 降为 1,331,040 字节，请求数仍为 200。中位耗时约 21.8 → 40.2 ms：新增校验与记账有成本，不能称为全面提速。这是生产 bundle + 模拟 Remote/DOM 的测量，不是 DSH/主题的 CPU 或实际浏览器 RSS。
 
 ## 后续应怎样迭代
 

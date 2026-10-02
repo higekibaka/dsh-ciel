@@ -13,6 +13,8 @@
 
 # dsh-ciel（夏尔）
 
+<!-- ciel-doc: current -->
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的规划前顾问与批注评审插件。主模型先探查，顾问通过 `ask_advisor` 提供思路；用户对助手回复发起两阶段受限评审，再决定如何处理批注。
 
 当前版本：**[0.20.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.0) · [变更记录](CHANGELOG.md)。本轮本地验证目标为 **DSH 0.2.0-rc.2**，CI 包含固定的 0.1.6 / 0.1.7 / 0.2.0 目标。
@@ -30,7 +32,7 @@ dsh plugin --profile web add dsh-ciel@0.20.0
 1. 主模型先读、搜或执行必要的探查，再按需调用 `ask_advisor`。顾问只提供思路、先例、陷阱与验证清单，主模型负责计划和实现。
 2. 在助手回复上点击 **批注评审**。默认先提出疑点，再在受限资料范围内核实；生成的批注显示在原文和原生右侧栏。
 3. 打开左侧 **夏尔收件箱**，查看当前会话的评审，为批注标记「待判断／准备处理／暂不采纳」。这些标记只记录你的处理意向。
-4. 在评审详情选择批注并点 **填入输入框**，编辑草稿后手动发送。已有文字、引用和附件会保留；收件箱标记不会触发修复或发送消息。
+4. 在评审详情选择批注并点 **填入输入框**，编辑草稿后手动发送。已有草稿时可选择追加、取消或替换；追加保留文字、引用和附件，替换须二次确认并覆盖原文字与行内引用。收件箱标记不会触发修复或发送消息。
 
 `/advise` 命令已移除，已有顾问和命令记录保留；顾问咨询使用 `ask_advisor`。
 
@@ -90,7 +92,7 @@ flowchart TD
 | `model` | `kimi-for-coding` | 顾问模型 id；跨家族模型多样性收益更大 |
 | `reasoningEffort` | `provider` | 注入每次咨询的思考深度；`provider` 跟随提供方默认 |
 | `maxTokens` | `4096` | 顾问单次输出上限（256–32768） |
-| `maxCallsPerTurn` | `3` | 每轮咨询额度：1 次发散 + 追问预算 |
+| `maxCallsPerTurn` | `3` | 每个代理 turn 的硬上限（1–20），不是语义规划阶段计数 |
 | `requireExploration` | `true` | 首次咨询前要求先探查 |
 | `enforceFollowupGap` | `true` | 追问之间要求独立工作 |
 | `planReminderEnabled` | `true` | 规划时刻提醒 |
@@ -100,14 +102,15 @@ flowchart TD
 | `criticEffort` | `medium` | 注入评审请求的思考深度；亦接受 `provider` |
 | `enabled` | `true` | 本插件调用总开关；关闭取消在途顾问/评审，并禁止新调用与新回传 |
 | `advisorTimeoutSeconds` | `180` | 单次 `ask_advisor` 顾问咨询总时限，10–600 秒 |
-| `criticExploreEnabled` | `true` | 两阶段评审：先存疑，再只读核实 |
+| `criticExploreEnabled` | `true` | 启用存疑后的受限文件核查；关闭后仍做纯草稿裁决 |
 | `jevApiKey` | 未设置 | 原生秘密字段；官方默认接口可回退到 `TYPESAFE_API_KEY` |
 | `jevEndpoint` | `https://api.typesafe.ai/v1/systemone` | 完整 HTTPS 接口地址，须兼容 TypeSafe systemone 协议 |
 | `jevModel` | `jev-1.13.0` | 顾问与评审共用的 Jev 模型 ID |
-| `jevEnabled` | `false` | 可选 Jev 证据检查；向 TypeSafe 发送主张和已引用原文，展示分歧，不改主裁决 |
+| `jevEnabled` | `false` | 可选 Jev 证据检查；向配置服务（默认 TypeSafe）发送主张和已引用原文，展示分歧，不改主裁决 |
 | `advisorJevEnabled` | `false` | 独立的顾问建议检查；顾问回答后，对照传入背景检查建议，与原回答一起返回主模型 |
 | `criticTimeoutSeconds` | `180` | 评审唯一的执行预算：准备资料、存疑、核实共用总时限，10–600 秒 |
 | `criticMaxTokens` | `16384` | 单条模型响应的大小保护，256–32768；存疑最多 4096，不限制模型请求次数 |
+| `criticAdditionalRoots` | `[]` | 高级设置：明确允许核查的额外源码目录 |
 
 高级设置 `criticAdditionalRoots` 默认为 `[]`，可添加明确允许核查的源码目录。旧 `criticExploreBudget` / `criticMaxRequests` 仍能加载，但不再限制请求次数。
 
@@ -117,7 +120,7 @@ flowchart TD
 - Node.js `^22.19.0` 或 `>=24.0.0`。受限文件捕获目前要求 Linux 与可访问的 procfs；浏览器界面不因此限定为 Linux。
 - 需要 DSH 提供共享 Cordis、Typert、`dsh-subagent`、`dsh-llm` 和 `dsh-tools`，不能把 Ciel 当作独立 Host 运行。源码链接安装请读 [共享依赖说明](docs/compatibility-alpha2.md)。
 - Ciel 使用 DSH 主题语义变量；默认与终末地玻璃的明暗模式、主题退出和插件卸载已做隔离 Web 回归。
-- 记录保存在 `$DSH_HOME/ciel/v1/`，按会话、记录类型和标识关联，采用有界读取与原子写入。旧 `dsh-advisor` JSONL 历史不读取或迁移；`ciel` 设置保留。
+- 记录保存在 `$DSH_HOME/ciel/v1/`，按会话、记录类型和标识关联，采用有界读取与原子写入。旧 `dsh-advisor` JSONL 历史不读取或迁移；设置升级另按 [迁移说明](docs/compatibility-017.md) 处理，不是记录迁移。
 - 客户端最多缓存 8 个未使用会话、约 16 MiB 结果正文；显示中或请求中的会话会保留。这是缓存策略，不是整个浏览器内存上限，也不删除磁盘历史。
 
 完整约束见 [评审契约](docs/review-contract.md)、[读取隔离](docs/read-isolation.md) 和 [容量与恢复决策](docs/architecture-decisions.md)。
@@ -137,6 +140,7 @@ flowchart TD
 ```sh
 pnpm install --frozen-lockfile
 pnpm --dir plugin install --frozen-lockfile
+pnpm check:docs
 node scripts/build-client.mjs --check
 node --test plugin/test/*.test.js
 
@@ -146,11 +150,9 @@ DSH_CHECKOUT=/path/to/deepseek-harness CIEL_VERIFY_NATIVE_PEERS=1 node scripts/v
 DSH_CHECKOUT=/path/to/deepseek-harness node scripts/verify-protocol.mjs
 ```
 
-0.20.0 本地发布前验证：**703 项单元测试、57 个真实 DSH 离线执行链场景通过**；原生设置、协议、Profile 持久化/密钥脱敏与清除、迁移工具检查通过。Jev API 设置的日常 GUI 在线验收未完成；没有重启日常 Host，也没有发出付费模型请求。
+0.20.0 发布验证：**703 项单元测试、57 个真实 DSH 离线执行链场景、22 项原生侧栏检查通过**，包括设置持久化、密钥脱敏/清除和迁移验证。发布提交的 [三版本 CI](https://github.com/higekibaka/dsh-ciel/actions/runs/37063769171) 与 [发布流水线](https://github.com/higekibaka/dsh-ciel/actions/runs/37064758406) 均成功；npm 30 个发布文件逐字节匹配当时的候选，并带来源证明。
 
-历史 0.19.0：**605 个单元测试、52 个实际 DSH 受限运行链场景、21 个原生侧栏检查通过**，远端 [CI](https://github.com/higekibaka/dsh-ciel/actions/runs/35447737250) 与 [发布流水线](https://github.com/higekibaka/dsh-ciel/actions/runs/35448102257) 成功。npm 包有来源证明，全部 24 个发布文件与候选一致。
-
-运行链使用脚本模型、网络 0；隔离真实 Web 验证了评审、收件箱、分叉、刷新、协议故障、主题与卸载。以上不证明真实提供方的质量、成本或长时负载。Web 联调必须让服务使用独立 `DSH_HOME`，只换端口或 profile 不会隔离会话；不要把日常环境用于夹具。
+Jev API 设置的日常 GUI 在线验收仍未完成；这些离线测试没有重启日常 Host 或发出付费模型请求。之前的隔离 Web 检查是有日期/范围的独立证据，不证明所有新增功能已在线验收。详见 [文档索引与验证边界](docs/index.md)。Web 联调须使用独立 DSH_HOME；只换端口或 profile 不会隔离会话。
 
 后续实现从 [当前架构](docs/architecture.md) 开始，用 [评审契约](docs/review-contract.md) 验收；历史版本记录见 [CHANGELOG](CHANGELOG.md)，设计动机见 [设计说明](docs/design.md)。
 

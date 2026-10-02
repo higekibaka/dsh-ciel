@@ -1,5 +1,9 @@
 # DSH 0.1.6-alpha.2 本地兼容性
 
+<!-- ciel-doc: current -->
+
+本页保留 0.1.6-alpha.2 的适配缘由；以下共享依赖和会话规则适用于 Ciel 0.20.0。验证版本见 [文档索引](index.md#发布验证记录)。
+
 ## 链接开发安装的共享依赖
 
 Ciel 通过 `link:` 安装时，仓库自己的旧 peer 依赖可能继续参与运行。旧版 `dsh-tools` 使用另一份 `dsh-scope`，导致新版 Agent 的作用域无法被识别，表现为 `Restricted review is unavailable`。修复时保留私有 QuickJS runtime、工具守卫和只读快照。
@@ -9,7 +13,7 @@ DSH_CHECKOUT=/path/to/deepseek-harness node scripts/link-harness-peers.mjs
 DSH_CHECKOUT=/path/to/deepseek-harness CIEL_VERIFY_NATIVE_PEERS=1 node scripts/verify-runtime.mjs
 ```
 
-第一条只改本地 `plugin/node_modules` 中五个共享依赖的符号链接，并保存旧链接清单。第二条默认使用脚本模型、禁止网络；不添加 `--live`。DSH 原目录升级后链接仍指向该目录的新构建；重新安装 Ciel 自身依赖或移动 DSH 后重新执行。普通发布包的 peer 依赖应由安装环境统一解析。
+第一条只改本地 `plugin/node_modules` 中六个共享依赖（subagent、LLM、tools、Cordis、Schemastery、Typert）的符号链接，并保存旧链接清单。第二条默认使用脚本模型、禁止网络；不添加 `--live`。DSH 原目录升级后链接仍指向该目录的新构建；重新安装 Ciel 自身依赖或移动 DSH 后重新执行。普通发布包的 peer 依赖应由安装环境统一解析。
 
 ## 会话与主题
 

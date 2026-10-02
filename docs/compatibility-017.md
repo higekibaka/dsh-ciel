@@ -1,6 +1,8 @@
 # DSH 0.1.7-alpha.1 适配
 
-开发目录已适配 [DSH dsh-v0.1.7-alpha.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-alpha.1)，固定验证提交 `c36a83ff6bb95e3f82cf79f9be7c724270a8aa61`。这些改动纳入 Ciel 0.20.0；Ciel 0.19.0 仍以其原发布说明为准。
+<!-- ciel-doc: current -->
+
+Ciel 0.20.0 已适配 [DSH dsh-v0.1.7-alpha.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.7-alpha.1)，固定验证提交 `c36a83ff6bb95e3f82cf79f9be7c724270a8aa61`。这些改动纳入 Ciel 0.20.0；Ciel 0.19.0 仍以其原发布说明为准。
 
 ## 行为变化
 
@@ -27,16 +29,15 @@ DSH_CHECKOUT=/path/to/built/dsh node scripts/migrate-dsh-017-settings.mjs --home
 
 如果新版已把文档改名为 `settings.yaml.imported`，先停止实例，单独核对 Profile 中的现有选择，再恢复需要的字段；不要把旧备份盲目导入。自动脚本不推断这种升级后的冲突。
 
-升级时需要安装本目录构建出的适配包，不能仅升级 DSH 后继续使用旧主题安装包。源码链接环境还应重新运行 `scripts/link-harness-peers.mjs`，将共享模块指向实际运行的 DSH；**隔离验证时不要把正式插件链接切到验证 worktree**。
+升级时应安装匹配的 Ciel 发布包；主题是独立插件，如使用旧主题也需单独确认其适配版本。源码链接环境还应重新运行 `scripts/link-harness-peers.mjs`，将共享模块指向实际运行的 DSH；**隔离验证时不要把正式插件链接切到验证 worktree**。
 
 ## 已验证
 
-- Ciel 637 项单元测试，在 Schema 3.18.3 的引用配置下通过。
-- 新版真实 Agent / PTC / Session 链路 54 个离线场景通过，包含 Jev 旁路、压缩、分叉、全文证据和取消。
+- Ciel 0.20.0 的 703 项单元测试，以及 57 个真实 Agent / PTC / Session 离线场景通过，包含 Jev、逐项独立调查、压缩、分叉、全文证据和取消。
 - 新版原生侧栏 22 项、原生设置页面、真实 Registry / Gateway 协议通过。
 - 真实 Loader + ConfigEditor + Settings：表单发现、即时修改、同一 fiber、通知、输入拒绝、Profile 持久化及重启恢复通过；同一脚本可同时验证玻璃主题。
 - 迁移工具的预览、备份、冲突保留、注释、非法输入、幂等及输出脱敏测试通过。
-- CI 增加 0.1.6-alpha.2 / 0.1.7-alpha.1 两个固定提交；本地结果不等同于远端 CI 已运行。
+- 发布提交的 [远端 CI](https://github.com/higekibaka/dsh-ciel/actions/runs/37063769171) 已通过 0.1.6-alpha.2 / 0.1.7-alpha.1 / 0.2.0-rc.2 三个固定目标；精确提交和验证边界见 [文档索引](index.md#发布验证记录)。
 
 ```sh
 DSH_CHECKOUT=/path/to/built/dsh node scripts/verify-runtime.mjs

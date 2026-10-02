@@ -5,6 +5,8 @@
   "scripts": {
     "build:client": "node scripts/build-client.mjs",
     "check:client": "node scripts/build-client.mjs --check",
+    "docs:sync": "node scripts/sync-docs.mjs",
+    "check:docs": "node --test scripts/test/docs-contract.test.mjs && node scripts/check-docs.mjs",
     "test": "node --test plugin/test/*.test.js"
   },
   "devDependencies": {

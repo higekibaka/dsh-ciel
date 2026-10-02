@@ -1,5 +1,9 @@
 # 0.13.0 探索型批评者 A/B 报告（2026-09-05）
 
+<!-- ciel-doc: historical -->
+
+> 历史记录：以下行为、计数和待办仅代表写作时的版本/验证范围，不是当前部署状态。现行入口见 [文档索引](../index.md)。
+
 > 评估台：`scripts/ab-harness.js` + `ab-corpus.json`（五场景，逐场景对账
 > verdict / 自报 stats / 事件流实测 toolCalls / evidence 覆盖 / 耗时 /
 > 预期符合度）。原始批次：`ab-flash-v3.{json,md}`（契约 v3.2 同代，仅本地留存，不随仓库公开）。

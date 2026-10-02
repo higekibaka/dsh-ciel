@@ -45,6 +45,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies (dev only; never shipped)
         run: pnpm --dir plugin install --frozen-lockfile
+      - name: Check documentation consistency
+        run: pnpm check:docs
       - name: Check publication privacy
         run: |
           node scripts/check-publication.mjs

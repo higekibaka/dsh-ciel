@@ -1,5 +1,9 @@
 # Ciel UI integration — 2026-09-30
 
+<!-- ciel-doc: historical -->
+
+> 历史记录：以下行为、计数和待办仅代表写作时的版本/验证范围，不是当前部署状态。现行入口见 [文档索引](index.md)。
+
 This revision integrates the selected settings, review and evidence designs into the actual plugin, using existing Host services, native controls and resource identities. No backend review/exploration/credential logic or persistence schema changes.
 
 ## Interaction contracts

@@ -1,6 +1,10 @@
 # Ciel × DSH 0.1.5：兼容性与交接说明
 
-> 本文是 0.16.x 基线的历史兼容记录。当前版本为 0.18.0，见 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md)。
+<!-- ciel-doc: historical -->
+
+> 历史记录：以下行为、计数和待办仅代表写作时的版本/验证范围，不是当前部署状态。现行入口见 [文档索引](index.md)。
+
+> 本文是 0.16.x 基线的历史兼容记录。当前版本与验证范围见 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md)。
 
 ## 目标基线
 
