@@ -48,11 +48,11 @@ export function createReviewRepository({ store = records, home } = {}) {
     const record = await readRecord('calls', sessionId, callRecordId(kind, id))
     return record ? modelUsageSnapshot(record.modelUsage) : null
   }
-  async function persistAdvice(sessionId, kind, id, text, usage, operation) {
+  async function persistAdvice(sessionId, kind, id, text, usage, operation, jev) {
     if (detectSensitiveText(text)) throw new Error('顾问输出含疑似敏感内容，未保存')
     const callId = callRecordId(kind, id)
     const parsed = parseAdvisorItems(text)
-    await writeRecord('advice', sessionId, callId, { sessionId, callId, kind, text, ...parsed, modelUsage: modelUsageSnapshot(usage), createdAt: Date.now() }, { beforeCommit: operation ? () => operation.beginCommit() : undefined })
+    await writeRecord('advice', sessionId, callId, { sessionId, callId, kind, text, ...parsed, modelUsage: modelUsageSnapshot(usage), ...(jev ? { jev } : {}), createdAt: Date.now() }, { beforeCommit: operation ? () => operation.beginCommit() : undefined })
   }
   async function readFeedbackKeys(sessionId) {
     if (!reviewsPath(sessionId)) return new Set()

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { launchOwnedBrowser } from './browser-launch.mjs'
+import { REVIEW_METHODS } from '../plugin/review-protocol.js'
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT is required')
 if (!process.env.CIEL_UPGRADE_ROOT) throw new Error('CIEL_UPGRADE_ROOT is required')
@@ -23,6 +24,7 @@ if (!process.argv.includes('--startup-log') || !log) throw new Error('A private 
 const urls = (await readFile(log, 'utf8')).match(/https?:[/][/][^\s\x1b]+/g) || []
 const entry = urls.map(value => { try { return new URL(value) } catch { return null } }).findLast(url => url?.origin === expectedOrigin && url.pathname === '/' && url.searchParams.has('token'))
 if (!entry) throw new Error('The normal GUI startup URL was not found')
+await mkdir(join(root, 'reports'), { recursive: true })
 const owner = await launchOwnedBrowser(checkout)
 const checks = [], errors = []
 try {
@@ -60,7 +62,7 @@ try {
     const missing = await api.runtime.reviewCall('readReview', { sessionId: 'ciel-readonly-smoke-missing', reviewId: 'missing' })
     return { methods: api.remoteMethodNames, list, missing }
   })
-  assert.equal(rpc.methods.length, 11)
+  assert.deepEqual([...rpc.methods].sort(), [...REVIEW_METHODS].sort())
   assert.deepEqual(rpc.list.reviews, [])
   assert.equal(rpc.list.nextCursor, null)
   assert.equal(rpc.list.limited, false)
@@ -86,9 +88,30 @@ try {
   await dialog.getByRole('button', { name: '夏尔 Ciel', exact: true }).click()
   await dialog.getByText('启用 Ciel', { exact: true }).waitFor()
   assert.ok(await dialog.getByRole('switch').count() > 0)
+  await dialog.getByRole('switch', { name: '启用 Jev 证据检查', exact: true }).waitFor()
+  if (process.env.CIEL_VERIFY_ADVISOR_JEV === '1') {
+    const advisorJev = dialog.getByRole('switch', { name: '启用顾问建议检查（Jev）', exact: true })
+    await advisorJev.waitFor()
+    assert.equal(await advisorJev.getAttribute('aria-checked'), process.env.CIEL_EXPECT_ADVISOR_JEV_ENABLED || 'false')
+    checks.push('independent-advisor-jev-control-preserves-preference')
+  }
   checks.push('actual-settings-page-native-controls')
-  await mkdir(join(root, 'reports'), { recursive: true })
   await dialog.screenshot({ path: join(root, 'reports', shotName) })
+  if (process.env.CIEL_VERIFY_COMPANION_PLUGINS === '1') {
+    await dialog.getByRole('button', { name: '终末地玻璃', exact: true }).click()
+    await dialog.getByText('等高线地形', { exact: true }).waitFor()
+    assert.equal(await dialog.getByText('当前客户端未提供该设置命名空间，无法在此保存。', { exact: true }).count(), 0)
+    checks.push('glass-profile-settings-loaded')
+    await dialog.screenshot({ path: join(root, 'reports', 'live-glass-settings.png') })
+    await dialog.getByRole('button', { name: '性能优化', exact: true }).click()
+    await dialog.getByRole('radio', { name: '原生', exact: true }).waitFor()
+    assert.equal(await dialog.getByRole('radio').count(), 3)
+    assert.equal(await dialog.getByRole('checkbox').count(), 0)
+    assert.equal(await dialog.getByText('自动折叠已结束轮次', { exact: true }).count(), 0)
+    assert.equal(await page.locator('style[data-dsh-turn-fold], [data-dsh-turn-fold-control]').count(), 0)
+    checks.push('low-motion-animation-controls-without-plugin-folding')
+    await dialog.screenshot({ path: join(root, 'reports', 'live-low-motion-settings.png') })
+  }
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.waitForFunction(() => window.__CIEL_SMOKE__?.runtime?.reviewCall, null, { timeout: 60000 })
   checks.push('refresh-reconnects-without-new-token')

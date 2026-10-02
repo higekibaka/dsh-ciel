@@ -79,7 +79,9 @@ test('process-record and environment commands are not forwarded as ordinary evid
 test('other agent output and unknown process tools do not enter the evidence digest', () => {
   for (const name of ['subagent', 'session_query', 'ask_advisor']) {
     const result = turnEvidence(eventsFor(name, 'FAKE_PROCESS_SENTINEL'), target, { protectInputs: true })
-    assert.equal(result.withheld, true)
+    assert.equal(result.withheld, false)
+    assert.equal(result.omittedTools, 1)
+    assert.deepEqual(result.quotes, [])
     assert.ok(!result.tools.includes('FAKE_PROCESS_SENTINEL'))
   }
 })
@@ -151,4 +153,46 @@ test('one snapshot is shared across stages and disposed once at operation end', 
   assert.equal(result.review.privacy.mode, 'restricted-snapshot')
   assert.match(h.requests[1].prompt[0].text, /\/project = \/fixture-project/)
   assert.match(h.requests[1].prompt[0].text, /SAME captured files/)
+})
+
+test('recorded Playwright observations are citable without enabling browser execution', () => {
+  for (const name of ['browser_console_messages', 'browser_evaluate', 'browser_take_screenshot']) {
+    const output = 'Recorded check: 0 console errors; camera mode changed.'
+    const result = turnEvidence(eventsFor('mcp__playwright__' + name, output), target, { protectInputs: true })
+    assert.equal(result.withheld, false)
+    assert.equal(result.quotes[0].text, output)
+    assert.equal(result.quotes[0].sourceSeq, 3)
+  }
+})
+
+test('browser evidence keeps credential and private-source screening before clipping', () => {
+  for (const [output, args] of [
+    ['safe\n'.repeat(2000) + 'API_KEY=' + secret, {}],
+    ['safe-looking result', { expression: 'process.env' }],
+    ['safe-looking result', { url: 'file:///fixture/.env' }],
+  ]) {
+    const result = turnEvidence(eventsFor('mcp__playwright__browser_evaluate', output, args), target, { protectInputs: true })
+    assert.equal(result.withheld, true)
+    assert.deepEqual(result.quotes, [])
+  }
+})
+
+test('recent browser and terminal checks survive early output saturation within the original budget', () => {
+  const records = [{ seq: 0, type: 'turn/start', data: { turn: 1 } }]
+  const add = (name, output, isError = false) => {
+    const seq = records.length, id = 'c' + seq
+    records.push({ seq, type: 'tool/call', data: { name, callId: id } })
+    records.push({ seq: seq + 1, type: 'tool/result', data: { message: { content: [{ toolCallId: id, isError, content: [{ type: 'text', text: output }] }] } } })
+  }
+  add('bash', 'SETUP '.repeat(1600))
+  add('mcp__playwright__browser_console_messages', '0 errors')
+  add('mcp__playwright__browser_evaluate', 'camera check failed', true)
+  add('bash', 'FINAL TESTS: 10 passed')
+  const result = turnEvidence(records, { seq: records.length, data: { turn: 1 } }, { protectInputs: true })
+  assert.equal(result.withheld, false)
+  assert.ok(result.quotes.some(q => q.text === 'FINAL TESTS: 10 passed'))
+  assert.ok(result.quotes.some(q => q.text === '0 errors'))
+  assert.ok(result.quotes.some(q => q.text === 'camera check failed' && q.isError))
+  assert.ok(result.quotes.reduce((n, q) => n + q.text.length, 0) <= 8000)
+  assert.ok(result.quotes.every(q => !q.truncated), 'complete recent checks do not pull in a clipped setup log')
 })

@@ -16,7 +16,7 @@ function legacyAdvice(event, text) {
   return /^advise-[a-z0-9]+$/.test(event.data?.id || '') && text.startsWith(LEGACY_ADVICE_PREFIX)
 }
 
-const SURFACE_TYPES = new Set(['system/message', 'user/message', 'assistant/message', 'tool/result'])
+const SURFACE_TYPES = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
 
 /**
  * Track only request-bearing originals, not DSH's derived model messages.
@@ -53,7 +53,7 @@ function requestSurface(events) {
       const cited = new Set(event.sourceEventSeqs)
       const summary = previous?.type === 'compaction/summary' ? previous : undefined
       const opening = starts.get(source?.compactionId)
-      const compact = source?.kind === 'plugin' && source.plugin === 'compact'
+      const compact = (source?.kind === 'compact-checkpoint' || (source?.kind === 'plugin' && source.plugin === 'compact'))
         && typeof source.compactionId === 'string' && opening && summary
         && summary.data?.compactionId === source.compactionId
         && summary.data.shadowedRange?.start === op.startSeq && summary.data.shadowedRange?.end === op.endSeq

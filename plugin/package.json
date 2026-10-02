@@ -1,6 +1,6 @@
 {
   "name": "dsh-ciel",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → 夏尔 Ciel 独立页面可配。",
   "license": "MIT",
   "repository": {
@@ -30,6 +30,10 @@
     "review-errors.js",
     "review-input.js",
     "review-evidence.js",
+    "review-evidence-policy.js",
+    "jev-config.js",
+    "jev-review.js",
+    "jev-advisor.js",
     "record-store.js",
     "inbox-service.js",
     "ptc-runtime.js",
@@ -40,6 +44,8 @@
     "advisor-state.js",
     "review-repository.js",
     "review-coordinator.js",
+    "review-investigation.js",
+    "review-facts.js",
     "review-service.js",
     "review-protocol.js"
   ],
@@ -56,7 +62,7 @@
     "plugin"
   ],
   "dependencies": {
-    "@deepseek-ai/schemastery": ">=3.18.0",
+    "@deepseek-ai/schemastery": "^3.18.3",
     "quickjs-emscripten": "0.32.0"
   },
   "peerDependencies": {

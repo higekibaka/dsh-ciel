@@ -7,16 +7,16 @@ const DEFAULTS = {
   requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true,
   reasoningEffort: 'provider', guidanceEnabled: true, criticProvider: 'google',
   criticModel: 'gemini-3.8-flash', criticEffort: 'medium', criticExploreEnabled: true,
-  enabled: true, criticTimeoutSeconds: 180,
+  enabled: true, jevEnabled: false, advisorJevEnabled: false, criticTimeoutSeconds: 180,
   criticMaxTokens: 16384, advisorTimeoutSeconds: 180,
-  criticAdditionalRoots: [],
+  criticAdditionalRoots: [], jevApiKey: '', jevEndpoint: 'https://api.typesafe.ai/v1/systemone', jevModel: 'jev-1.13.0',
 }
 
 function settingsCard(overrides = {}) {
   let state = []
   let cursor = 0
   let revision = 0
-  let loseResponse = false
+  let loseResponse = false, refuse = false, legacy = false
   const mutations = []
   const registrations = []
   const h = (type, props, ...children) => ({ type, props: { ...props, children } })
@@ -37,10 +37,12 @@ function settingsCard(overrides = {}) {
   const cleanups = []
   plugin.apply({
     settingsScope: { bind: () => ({
-      getSnapshot: () => ({ status: 'ready', writable: true, value, user, revision }),
+      getSnapshot: () => ({ status: 'ready', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision,
+        ...(legacy ? {} : { secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }) }),
       subscribe: () => () => {},
       async mutate(ops, expectedRevision) {
         assert.equal(expectedRevision, revision)
+        if (refuse) return false
         mutations.push(ops)
         for (const op of ops) {
           const key = op.path[0]
@@ -58,6 +60,8 @@ function settingsCard(overrides = {}) {
   return {
     api: plugin.__test, writes, value, mutations, registrations,
     loseNextSaveResponse() { loseResponse = true },
+    refuseWrites() { refuse = true },
+    legacyHost() { legacy = true },
     externalEdit(key, next) { value[key] = next; revision++ },
     remount() { state = []; cursor = 0 },
     render() { cursor = 0; return plugin.__test.CielSettingsSection() },
@@ -81,6 +85,61 @@ function text(tree) {
 const button = (tree, label) => nodes(tree).find((n) => n.type === 'button' && text(n) === label)
 const input = (tree, label) => nodes(tree).find((n) => (['input', 'select', 'textarea'].includes(n.type) || n.props.role === 'switch') && n.props['aria-label'] === label)
 function open(rt) { return rt.render() }
+
+test('Jev API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
+  const rt = settingsCard({ jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
+  let tree = open(rt)
+  assert.equal(input(tree, 'Jev API Key').props.type, 'password')
+  assert.equal(input(tree, 'Jev API Key').props.value, '')
+  assert.match(text(tree), /已配置密钥/)
+  assert.doesNotMatch(JSON.stringify(tree), /fixture-secret/)
+  input(tree, 'Jev 模型 ID').props.onChange({ target: { value: 'jev-next' } })
+  await button(rt.render(), '保存').props.onClick()
+  assert.deepEqual(rt.writes, [['set', 'jevModel', 'jev-next']])
+  assert.equal(rt.value.jevApiKey, 'fixture-secret')
+  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'replacement-fixture' } })
+  rt.remount()
+  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'replacement-fixture')
+  await button(rt.render(), '保存').props.onClick()
+  assert.equal(rt.value.jevApiKey, 'replacement-fixture')
+  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  button(rt.render(), '清除密钥覆盖').props.onClick()
+  assert.match(text(rt.render()), /待保存：清除密钥覆盖/)
+  button(rt.render(), '放弃').props.onClick()
+  assert.equal(rt.value.jevApiKey, 'replacement-fixture')
+  button(rt.render(), '清除密钥覆盖').props.onClick()
+  await button(rt.render(), '保存').props.onClick()
+  assert.deepEqual(rt.writes.at(-1), ['unset', 'jevApiKey'])
+  assert.match(text(rt.render()), /未在设置中配置/)
+})
+
+test('Jev API validation prevents writes and discard removes new secret drafts', async t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  for (const [label, bad] of [['Jev 接口地址', 'http://proxy.invalid'], ['Jev 接口地址', 'https://u:p@proxy.invalid/v1'], ['Jev 模型 ID', 'bad model'], ['Jev API Key', 'key with spaces']]) {
+    input(rt.render(), label).props.onChange({ target: { value: bad } })
+    assert.equal(input(rt.render(), label).props['aria-invalid'], true)
+    assert.equal(button(rt.render(), '保存').props.disabled, true)
+    await button(rt.render(), '保存').props.onClick()
+    assert.deepEqual(rt.writes, [])
+    button(rt.render(), '放弃').props.onClick()
+  }
+  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'draft-fixture' } })
+  button(rt.render(), '放弃').props.onClick()
+  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+})
+
+test('refused atomic save retains the secret draft and old hosts cannot accept secrets', async t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'draft-fixture' } })
+  rt.refuseWrites()
+  await button(rt.render(), '保存').props.onClick()
+  assert.match(text(rt.render()), /保存未确认/)
+  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'draft-fixture')
+  button(rt.render(), '放弃').props.onClick()
+  rt.legacyHost()
+  assert.equal(input(rt.render(), 'Jev API Key').props.disabled, true)
+  assert.match(text(rt.render()), /重启 DSH/)
+})
 
 test('Ciel registers one dedicated left-navigation page after Agent presets', t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
@@ -221,6 +280,53 @@ test('global toggle and numeric edits stay staged, discard restores, one save wr
   assert.equal(button(rt.render(), '保存').props.disabled, true)
 })
 
+test('Jev is opt-in and its staged toggle saves, survives remount and resets to off', async t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  let tree = open(rt)
+  assert.equal(input(tree, '启用 Jev 证据检查').props['aria-checked'], false)
+  assert.match(text(tree), /TypeSafe.*额外 API 用量/)
+  assert.match(text(tree), /TYPESAFE_API_KEY/)
+  input(tree, '启用 Jev 证据检查').props.onClick()
+  rt.remount()
+  assert.equal(input(rt.render(), '启用 Jev 证据检查').props['aria-checked'], true)
+  assert.deepEqual(rt.writes, [])
+  await button(rt.render(), '保存').props.onClick()
+  assert.deepEqual(rt.writes, [['set', 'jevEnabled', true]])
+  rt.remount()
+  tree = rt.render()
+  assert.equal(input(tree, '启用 Jev 证据检查').props['aria-checked'], true)
+  button(tree, '重置').props.onClick()
+  await button(rt.render(), '保存').props.onClick()
+  assert.equal(rt.value.jevEnabled, false)
+  assert.deepEqual(rt.writes[1], ['unset', 'jevEnabled'])
+})
+
+test('advisor Jev defaults off and saves independently of review Jev', async t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  const label = '启用顾问建议检查（Jev）'
+  assert.equal(input(open(rt), label).props['aria-checked'], false)
+  input(rt.render(), label).props.onClick()
+  rt.remount()
+  assert.equal(input(rt.render(), label).props['aria-checked'], true)
+  assert.deepEqual(rt.writes, [])
+  await button(rt.render(), '保存').props.onClick()
+  assert.deepEqual(rt.writes, [['set', 'advisorJevEnabled', true]])
+  assert.equal(rt.value.jevEnabled, false)
+  rt.remount()
+  assert.equal(input(rt.render(), label).props['aria-checked'], true)
+  input(rt.render(), '启用 Jev 证据检查').props.onClick()
+  await button(rt.render(), '保存').props.onClick()
+  assert.equal(rt.value.advisorJevEnabled, true)
+  input(rt.render(), '启用 Jev 证据检查').props.onClick()
+  await button(rt.render(), '保存').props.onClick()
+  assert.equal(rt.value.advisorJevEnabled, true)
+  // Reset belongs to a field, so select the advisor field's second reset.
+  nodes(rt.render()).filter(n => n.type === 'button' && text(n) === '重置')[1].props.onClick()
+  await button(rt.render(), '保存').props.onClick()
+  assert.equal(rt.value.advisorJevEnabled, false)
+  assert.equal(rt.value.jevEnabled, false)
+})
+
 test('numeric reset stages a renderable default, can discard, and only unsets on save', async (t) => {
   const rt = settingsCard({ maxCallsPerTurn: 8 }); t.after(() => rt.dispose())
   let tree = open(rt)
@@ -255,4 +361,26 @@ test('model route groups preserve their labels, defaults, catalog choices, and c
   input(tree, '思考深度').props.onChange({ target: { value: 'medium' } })
   assert.match(text(input(rt.render(), '思考深度')), /medium（自定义）/)
   assert.deepEqual(rt.writes, [])
+})
+
+
+test('Jev evidence control follows file checking while advisor checking remains independent',t=>{
+ const rt=settingsCard({jevEnabled:true,advisorJevEnabled:true});t.after(()=>rt.dispose())
+ input(open(rt),'允许评审时查文件').props.onClick()
+ const tree=rt.render()
+ assert.equal(input(tree,'启用 Jev 证据检查').props.disabled,true)
+ assert.equal(input(tree,'启用 Jev 证据检查').props['aria-checked'],true)
+ assert.equal(input(tree,'启用顾问建议检查（Jev）').props.disabled,false)
+ assert.match(text(tree),/原有偏好仍保留/)
+ assert.deepEqual(rt.writes,[])
+})
+test('provider change clears a previously staged model reset and saves the new model atomically',async t=>{
+ const rt=settingsCard({model:'custom-old'});t.after(()=>rt.dispose())
+ rt.api.getSettingsEditor().set('catalog',{status:'ready',groups:[{id:'kimi-coding',models:[{id:'kimi-for-coding'}]},{id:'google',models:[{id:'gemini-3.8-flash',name:'Gemini'}]}]})
+ let tree=open(rt);nodes(tree).find(n=>n.type==='button'&&text(n).startsWith('顾问管道')).props.onClick();tree=rt.render()
+ const modelField=nodes(tree).find(n=>n.props['data-ciel-setting']==='model');button(modelField,'重置').props.onClick()
+ tree=rt.render();input(tree,'提供方路由').props.onChange({target:{value:'google'}})
+ await button(rt.render(),'保存').props.onClick()
+ assert.equal(rt.value.provider,'google');assert.equal(rt.value.model,'gemini-3.8-flash');assert.equal(rt.mutations.length,1)
+ assert.ok(rt.mutations[0].some(op=>op.op==='set'&&op.path[0]==='model'))
 })

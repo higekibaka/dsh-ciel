@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 // dsh-ciel unit tests: the plugin's pure logic, run with `node --test`.
 // No harness boot required — fakes stand in for the settings service, and
 // the sidecar store is redirected into a temp dir through DSH_HOME.
@@ -34,7 +35,7 @@ const {
 // ── Config schema ────────────────────────────────────────────────────────
 
 test('Config resolves schema defaults', () => {
-  const value = Config({})
+  const value = resolvedConfig({})
   assert.equal(value.provider, 'kimi-coding')
   assert.equal(value.model, 'kimi-for-coding')
   assert.equal(value.maxTokens, 4096)
@@ -49,14 +50,14 @@ test('Config resolves schema defaults', () => {
 test('Config admits every documented effort level on both pipelines', () => {
   const levels = ['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
   for (const level of levels) {
-    const value = Config({ reasoningEffort: level, criticEffort: level })
+    const value = resolvedConfig({ reasoningEffort: level, criticEffort: level })
     assert.equal(value.reasoningEffort, level)
     assert.equal(value.criticEffort, level)
   }
 })
 
 test('Config rejects an unknown effort level', () => {
-  assert.throws(() => Config({ criticEffort: 'ludicrous' }))
+  assert.throws(() => resolvedConfig({ criticEffort: 'ludicrous' }))
 })
 
 // ── parseAdvisorItems ────────────────────────────────────────────────────
@@ -168,14 +169,24 @@ function evidenceEvents(toolName, outputText) {
 }
 
 test('turnEvidence quotes ephemeral tool output verbatim, capped per call', () => {
-  const long = 'x'.repeat(5000)
+  const long = 'x'.repeat(10000)
   const ev = turnEvidence(evidenceEvents('bash', long), { seq: 4, data: { turn: 1 } })
   assert.equal(ev.quotes.length, 1)
   assert.equal(ev.quotes[0].name, 'bash')
-  assert.ok(ev.quotes[0].text.length <= 1600 + '\n…[truncated]'.length)
+  assert.equal(ev.quotes[0].truncated, true)
+  assert.ok(ev.quotes[0].text.length <= 8000 + '\n…[truncated]'.length)
   assert.ok(ev.quotes[0].text.endsWith('…[truncated]'))
   // 摘要行仍然在场（存在性核对不变）。
   assert.ok(ev.tools.includes('- bash: ok'))
+})
+
+test('a short historical directory listing is not arbitrarily clipped at 1600 characters', () => {
+  const output = 'entry\n'.repeat(350) + 'endfield-glass-pr\n'
+  const ev = turnEvidence(evidenceEvents('bash', output), { seq: 4, data: { turn: 1 } }, { protectInputs: true })
+  assert.equal(ev.quotes[0].text, output)
+  assert.equal(ev.quotes[0].truncated, false)
+  const upstream = turnEvidence(evidenceEvents('bash', output + '[output truncated]'), { seq: 4, data: { turn: 1 } })
+  assert.equal(upstream.quotes[0].truncated, true, 'upstream clipping cannot become a complete receipt')
 })
 
 test('turnEvidence keeps reproducible file tools as digest only', () => {

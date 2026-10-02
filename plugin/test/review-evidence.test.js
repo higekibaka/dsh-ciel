@@ -71,8 +71,10 @@ test('UTF-8 capture counts real bytes and never splits a code point', () => {
   const annotated = ledger.record('read', {}, {
     file_path: '/project/u.txt', offset: 1, total_lines: 1, content: 'a你b', truncated: false,
   })
-  assert.equal(annotated.content, 'a你')
-  assert.equal(annotated.truncated, true)
+  assert.equal(annotated.content, 'a你b', 'archive clipping must not change the original query')
+  assert.equal(annotated.truncated, false)
+  assert.equal(annotated.evidence_limited, true)
+  assert.equal(annotated.evidence_spans[0].content, 'a你')
   const record = ledger.get('e1')
   assert.equal(record.content, 'a你')
   assert.equal(record.contentSha256, sha('a你'))
@@ -86,7 +88,7 @@ test('the byte bound clips, identical reads dedup, and the cumulative budget is 
   const first = ledger.record('read', {}, {
     file_path: '/project/long.txt', offset: 1, total_lines: 1, content: 'abcdefghij', truncated: false,
   })
-  assert.equal(first.content, 'abcdefgh')
+  assert.equal(first.content, 'abcdefghij')
   assert.equal(ledger.stats().bytes, 8)
   const again = ledger.record('read', {}, {
     file_path: '/project/long.txt', offset: 1, total_lines: 1, content: 'abcdefghij', truncated: false,
@@ -103,8 +105,9 @@ test('the byte bound clips, identical reads dedup, and the cumulative budget is 
     file_path: '/project/third.txt', offset: 1, total_lines: 1, content: 'Z', truncated: false,
   })
   assert.deepEqual(exhausted.evidence_refs, [], 'no receipt once the total budget is spent')
-  assert.equal(exhausted.content, '')
-  assert.equal(exhausted.truncated, true)
+  assert.equal(exhausted.content, 'Z', 'archive exhaustion must not prevent reading')
+  assert.equal(exhausted.truncated, false)
+  assert.equal(exhausted.evidence_limited, true)
   assert.equal(ledger.stats().records, 2)
   assert.equal(ledger.stats().bytes, 10)
   ledger.dispose()
@@ -115,10 +118,40 @@ test('the per-record line bound truncates and marks the receipt limited', () => 
   const annotated = ledger.record('read', {}, {
     file_path: '/project/many.txt', offset: 1, total_lines: 9, content: 'l1\nl2\nl3\nl4\n', truncated: false,
   })
-  assert.equal(annotated.content, 'l1\nl2\n')
-  assert.equal(annotated.truncated, true)
+  assert.equal(annotated.content, 'l1\nl2\nl3\nl4\n')
+  assert.equal(annotated.truncated, false)
+  assert.equal(annotated.evidence_limited, true)
+  assert.equal(annotated.evidence_spans[0].content, 'l1\nl2\n')
   assert.equal(ledger.get('e1').endLine, 2)
   assert.equal(ledger.get('e1').status, 'limited')
+  ledger.dispose()
+})
+
+test('exploration preserves all search hits and keeps the archive available for decisive lines', () => {
+  const ledger = createEvidenceLedger({ roots: roots(), limits: { maxRecords: 1, maxTotalBytes: 16 } })
+  const matches = Array.from({ length: 250 }, (_, i) => ({ file_path: '/project/a.txt', line_number: i + 1, line: 'needle ' + i }))
+  const explored = ledger.record('grep', { pattern: 'needle', capture_evidence: false }, { matches, truncated: false })
+  assert.deepEqual(explored.matches, matches)
+  assert.deepEqual(explored.evidence_refs, [])
+  assert.equal(ledger.stats().records, 0)
+  const decisive = ledger.record('read', {}, { file_path: '/project/a.txt', offset: 250, total_lines: 250, content: 'needle 249', truncated: false })
+  assert.deepEqual(decisive.evidence_refs, ['e1'])
+  assert.equal(decisive.evidence_limited, false)
+  const exhaustedSearch = ledger.record('grep', { pattern: 'needle' }, { matches, truncated: false })
+  assert.deepEqual(exhaustedSearch.matches, matches, 'no hit disappears when the citation archive fills')
+  assert.equal(exhaustedSearch.evidence_limited, true)
+  const listing = ledger.record('glob', { pattern: '*' }, { paths: ['/project/a.txt'], truncated: false })
+  assert.deepEqual(listing.paths, ['/project/a.txt'])
+  ledger.dispose()
+})
+
+test('exploration still rejects sensitive data and invalid paths without archiving', () => {
+  const ledger = createEvidenceLedger()
+  const result = ledger.record('read', { capture_evidence: false }, readResult({ content: 'API_KEY=FAKE_CREDENTIAL_MARKER_ONLY' }))
+  assert.equal(result.withheld, true)
+  assert.equal(result.content, '')
+  assert.throws(() => ledger.record('read', { capture_evidence: false }, readResult({ file_path: '/etc/passwd' })), /Invalid captured/)
+  assert.equal(ledger.stats().records, 0)
   ledger.dispose()
 })
 
@@ -405,4 +438,22 @@ test('stats reports the active bounds', () => {
   const ledger = createEvidenceLedger({ roots: roots(), limits: { maxRecords: 2 } })
   assert.deepEqual(ledger.stats().limits, { ...EVIDENCE_LIMITS, maxRecords: 2 })
   ledger.dispose()
+})
+
+import { BROWSER_EVIDENCE_TOOLS } from '../review-evidence-policy.js'
+
+test('every admitted browser tool can be archived with original text and immutable source identity', () => {
+  const ledger = createEvidenceLedger()
+  try {
+    for (const name of BROWSER_EVIDENCE_TOOLS) {
+      const record = ledger.providedQuote({ name, text: 'Recorded observation: no errors', sourceSeq: 41, observedAt: 123 })
+      assert.ok(record, name)
+      assert.equal(record.tool, name)
+      assert.deepEqual(record.sourceSeqs, [41])
+      assert.equal(record.origin, 'session-tool')
+      assert.equal(record.truncated, false)
+    }
+    assert.equal(ledger.providedQuote({ name: 'mcp__arbitrary__dump_secrets', text: 'not a known source' }), null)
+    assert.equal(ledger.providedQuote({ name: 'mcp__playwright__browser_evaluate', text: 'API_KEY="FAKE_SECRET_TEST_VALUE_123456"' }), null)
+  } finally { ledger.dispose() }
 })

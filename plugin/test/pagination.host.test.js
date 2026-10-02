@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -10,7 +11,7 @@ const originalHome = process.env.DSH_HOME
 const home = await mkdtemp(join(tmpdir(), 'ciel-pagination-host-'))
 process.env.DSH_HOME = home
 after(async () => { if (originalHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = originalHome; await rm(home, { recursive: true, force: true }) })
-const service = new AdvisorReviewService(new Context(), new Set(), () => Config({}))
+const service = new AdvisorReviewService(new Context(), new Set(), () => resolvedConfig({}))
 const review = (id, count = 2) => ({ reviewId: id, messageId: 'm-' + id, createdAt: 1, annotations: Array.from({ length: count }, (_, i) => ({ severity: 'nit', title: 'note-' + i })) })
 
 test('review RPC pages past 200 records with exact cursor progression', async () => {

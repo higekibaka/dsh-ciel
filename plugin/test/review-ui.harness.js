@@ -23,6 +23,15 @@ export function fixtureClientRequire(React, modules = {}) {
   }
 }
 
+// Minimal optional-service injection for interface fixtures. Native acceptance
+// uses the real Cordis dependency lifecycle, including provider replacement.
+export function fixtureServiceInjection(ctx) {
+  if (typeof ctx.inject !== 'function') ctx.inject = (names, callback) => {
+    if (names.every(name => ctx[name] !== undefined)) callback(ctx)
+  }
+  return ctx
+}
+
 export function loadClientFactory(documentOverride) {
   let captured = null
   const src = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
@@ -39,7 +48,12 @@ export function loadClientFactory(documentOverride) {
   }
   const fn = new Function('window', 'document', src)
   fn.call({}, windowStub, doc)
-  return { captured, factory: (reactStub, modules) => captured.factory(fixtureClientRequire(reactStub, modules)), doc }
+  return { captured, factory: (reactStub, modules) => {
+    const plugin = captured.factory(fixtureClientRequire(reactStub, modules))
+    const apply = plugin.apply
+    plugin.apply = ctx => apply(fixtureServiceInjection(ctx))
+    return plugin
+  }, doc }
 }
 
 export function makeHookRunner() {

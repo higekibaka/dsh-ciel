@@ -1,4 +1,5 @@
 import { completeReviewFixture } from './review-protocol.fixtures.js'
+import { fixtureServiceInjection } from './review-ui.harness.js'
 // Stage-only copy of plugin/test/review-ui.harness.js for performance tests.
 // The relative '../client.js' lookup resolves to the stage build (candidate),
 // so the same wiring is exercised against the optimized sources.
@@ -45,7 +46,12 @@ export function loadClientFactory(documentOverride) {
   }
   const fn = new Function('window', 'document', src)
   fn.call({}, windowStub, doc)
-  return { captured, factory: (reactStub, modules) => captured.factory(fixtureClientRequire(reactStub, modules)), doc }
+  return { captured, factory: (reactStub, modules) => {
+    const plugin = captured.factory(fixtureClientRequire(reactStub, modules))
+    const apply = plugin.apply
+    plugin.apply = ctx => apply(fixtureServiceInjection(ctx))
+    return plugin
+  }, doc }
 }
 
 export function makeHookRunner() {

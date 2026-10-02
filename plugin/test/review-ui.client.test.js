@@ -176,7 +176,7 @@ test('native status tags keep coverage separate from the verdict', () => {
   assert.equal(t.verdictTagTone({ status: 'completed', verdict: 'changes', coverage: 'complete' }), 'danger')
   assert.equal(t.verdictBadgeText({ status: 'incomplete', verdict: 'pass', coverage: 'partial' }), '◇ 部分核实')
   assert.equal(t.verdictTagTone({ status: 'incomplete', verdict: 'pass', coverage: 'partial' }), 'warning')
-  assert.equal(t.verdictBadgeText({ status: 'sound', verdict: 'pass', coverage: 'complete' }), '✓ 整体成立')
+  assert.equal(t.verdictBadgeText({ status: 'sound', verdict: 'pass', coverage: 'complete' }), '✓ 已核实 · 无阻断')
   assert.equal(t.verdictTagTone({ status: 'sound', verdict: 'pass', coverage: 'complete' }), 'success')
 })
 

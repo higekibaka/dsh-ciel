@@ -9,7 +9,8 @@ import os from 'node:os'
  * Required descriptor/filesystem features are checked; fixture tests run on Node24.
  * Ancestors and children are opened through pinned directory descriptors with
  * O_NOFOLLOW; lstat/fstat identity and post-read metadata checks reject swaps.
- * Symlinks, multiply-linked files and nonregular files are never admitted.
+ * Symlink targets, multiply-linked files and nonregular file contents are never
+ * admitted. Shallow root metadata may label a link without following its target.
  * This is not isolation from hostile in-process code or a privileged mount attacker.
  * Secret detection is deliberately heuristic: arbitrary secrets hidden in otherwise
  * allowed source are NOT detected. No author tool-output sharing is implemented.
@@ -20,7 +21,7 @@ import os from 'node:os'
  * publicInfo contains no rejected names or values.
  */
 const MESSAGE = 'Review data unavailable or outside allowed scope'
-const DEFAULTS = Object.freeze({ maxFiles: 2000, maxBytes: 8 * 1024 * 1024, maxFileBytes: 256 * 1024, maxEntries: 20000, maxDepth: 32, maxResults: 250, maxReadLines: 2000, maxOutputBytes: 256 * 1024 })
+const DEFAULTS = Object.freeze({ maxFiles: 2000, maxBytes: 8 * 1024 * 1024, maxFileBytes: 8 * 1024 * 1024, maxEntries: 20000, maxDepth: 32, maxResults: 250, maxReadLines: 2000, maxOutputBytes: 256 * 1024 })
 const EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.mts', '.cts', '.md', '.mdx', '.txt', '.rst', '.adoc', '.html', '.htm', '.css', '.scss', '.sass', '.less', '.vue', '.svelte', '.json', '.yaml', '.yml', '.toml', '.xml', '.graphql', '.gql', '.sql', '.py', '.pyi', '.rb', '.go', '.rs', '.c', '.h', '.cc', '.cpp', '.hpp', '.cs', '.java', '.kt', '.kts', '.swift', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.lua', '.php', '.r', '.ex', '.exs', '.erl', '.hrl', '.hs', '.scala', '.proto', '.dockerfile', '.cmake'])
 const BASENAMES = new Set(['readme', 'license', 'licence', 'notice', 'copying', 'authors', 'changelog', 'contributing', 'makefile', 'gnumakefile', 'dockerfile', 'containerfile', 'cmakelists.txt', '.gitignore', '.gitattributes', '.editorconfig'])
 const BLOCKED_DIRS = new Set(['.git', '.dsh', '.ssh', '.aws', '.azure', '.config', '.local', '.session-repair', '.cache', '.npm', '.pnpm-store', '.yarn', '.venv', 'venv', '__pycache__', 'node_modules', 'vendor', 'dist', 'build', 'coverage', 'logs', 'log', 'cache', 'caches', 'archives', 'archive'])
@@ -154,12 +155,25 @@ function checkedPattern(pattern) {
   return pattern.replace(/^\.\//, '')
 }
 
-export async function createReviewCorpus({ root, additionalRoots = [], protectedRoots = [], signal, limits = {} } = {}) {
+// References change capture order only. Every candidate still comes from bounded
+// descriptor-safe enumeration and passes the unchanged admission policy.
+function mentionsPath(text, candidate) {
+  const boundary = char => !char || !/[\p{L}\p{N}_.-]/u.test(char)
+  let start = 0, at
+  while ((at = text.indexOf(candidate, start)) !== -1) {
+    if (boundary(text[at - 1]) && boundary(text[at + candidate.length])) return true
+    start = at + candidate.length
+  }
+  return false
+}
+
+export async function createReviewCorpus({ root, additionalRoots = [], protectedRoots = [], focusText = '', signal, limits = {} } = {}) {
   checkSignal(signal)
   if (process.platform !== 'linux' || !constants.O_NOFOLLOW || !constants.O_DIRECTORY || !constants.O_NONBLOCK || !['statfs', 'opendir', 'open', 'lstat'].every(name => typeof fs[name] === 'function')) {
     throw unsupported()
   }
   if (!Array.isArray(additionalRoots) || !Array.isArray(protectedRoots) || additionalRoots.length > 16 || protectedRoots.length > 128 || !limits || typeof limits !== 'object') throw limited()
+  if (typeof focusText !== 'string' || focusText.length > 32768) throw limited('INVALID_FOCUS')
   const bounds = { ...DEFAULTS }
   for (const [key, value] of Object.entries(limits)) {
     if (!(key in DEFAULTS) || !Number.isSafeInteger(value) || value < 1 || value > DEFAULTS[key]) throw limited('INVALID_LIMITS')
@@ -179,7 +193,20 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
   if (roots.some((r, i) => roots.some((other, j) => i !== j && (within(r, other) || within(other, r))))) throw limited()
   let mappings = roots.map((real, i) => ({ real, virtual: i === 0 ? '/project' : `/external-${i}` }))
   let redactions = [...protectedPaths].sort((a, b) => b.length - a.length)
-  const files = new Map(), directories = new Set()
+  const files = new Map(), directories = new Set(), rootManifests = []
+  const limitedScopes = new Set(), focusedPaths = new Set()
+  let focusedManifests = 0
+  function focusScore(real, virtual) {
+    if (!focusText) return 0
+    if (mentionsPath(focusText, real) || mentionsPath(focusText, virtual)) return 2
+    const mapping = mappings.find(m => within(virtual, m.virtual))
+    const relative = mapping ? virtual.slice(mapping.virtual.length + 1) : ''
+    return relative && mentionsPath(focusText, relative) ? 1 : 0
+  }
+  function markLimited(scope) { truncated = true; limitedScopes.add(scope) }
+  function scopeLimited(scope) {
+    return [...limitedScopes].some(limited => within(limited, scope) || within(scope, limited))
+  }
   let bytes = 0, scannedBytes = 0, entries = 0, truncated = false, disposed = false
   const handles = new Set()
   const anchor = handle => `/proc/self/fd/${handle.fd}`
@@ -230,7 +257,7 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
     try {
       handle = await openChecked(parent, name, false)
       const before = await handle.stat({ bigint: true })
-      if (before.size > BigInt(bounds.maxFileBytes) || before.size > BigInt(bounds.maxBytes - scannedBytes)) { truncated = true; return }
+      if (before.size > BigInt(bounds.maxFileBytes) || before.size > BigInt(bounds.maxBytes - scannedBytes)) { markLimited(virtual); return }
       scannedBytes += Number(before.size)
       const buffer = Buffer.alloc(Number(before.size) + 1)
       let used = 0
@@ -252,10 +279,46 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
       // as a whole; admitted source bytes stay exact (path metadata is virtual).
       if (redactions.some(root => text.includes(root))) return
       const size = Buffer.byteLength(text)
-      if (size > bounds.maxFileBytes || size > bounds.maxBytes - bytes) { truncated = true; return }
+      if (size > bounds.maxFileBytes || size > bounds.maxBytes - bytes) { markLimited(virtual); return }
       files.set(virtual, text); bytes += size
     } catch (error) { if (signal?.aborted) throw limited('CANCELLED') /* unreadable/changed files are excluded */ }
     finally { if (handle) await close(handle) }
+  }
+  // Root names are independent of recursive SOURCE byte/file budgets. Capturing
+  // metadata neither follows links nor admits their content to read/grep/glob.
+  async function captureRootManifest(handle, real, virtual) {
+    const observedAt = Date.now(), items = []
+    let complete = true, stream
+    try {
+      const before = await handle.stat({ bigint: true })
+      stream = await fs.opendir(anchor(handle))
+      const names = []
+      for await (const entry of stream) {
+        checkSignal(signal)
+        if (names.length >= Math.min(bounds.maxEntries, 2000)) { complete = false; names.length = 0; break }
+        names.push(entry.name)
+      }
+      for (const name of names.sort()) {
+        checkSignal(signal)
+        if (!validPath(name) || blockedName(name) || BLOCKED_DIRS.has(name.toLowerCase())
+          || detectSensitiveText(name) || protectedPaths.some(p => within(`${real}/${name}`, p))) continue
+        try {
+          const stat = await fs.lstat(`${anchor(handle)}/${name}`, { bigint: true })
+          // Non-source regular file names and special files stay undisclosed.
+          const kind = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() && stat.nlink === 1n && allowedFile(name) ? 'file' : undefined
+          if (kind) items.push({ name, kind })
+        } catch { complete = false }
+      }
+      const after = await handle.stat({ bigint: true })
+      if (!identity(before, after) || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+        complete = false; items.length = 0
+      }
+    } catch { checkSignal(signal); complete = false; items.length = 0 }
+    finally { await stream?.close().catch(() => {}) }
+    rootManifests.push({ path: virtual, observedAt, complete, entries: items,
+      scope: 'policy-visible immediate entries only; sensitive/protected/excluded names and special files are omitted; symlink targets are never followed',
+      temporal: 'review-start, not the historical target-reply time; absence in this filtered list alone does not establish physical nonexistence',
+    })
   }
   async function walk(handle, real, virtual, depth) {
     checkSignal(signal)
@@ -267,15 +330,20 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
     try {
       for await (const entry of stream) {
         checkSignal(signal)
-        if (entries >= bounds.maxEntries) { truncated = true; names.length = 0; break }
+        if (entries >= bounds.maxEntries) { markLimited(virtual); names.length = 0; break }
         entries++; names.push(entry.name)
       }
     } finally { await stream.close().catch(() => {}) }
     directories.add(virtual)
-    names.sort()
-    for (const name of names) {
+    const ordered = names.map(name => ({ name, score: focusScore(`${real}/${name}`, `${virtual}/${name}`) }))
+      .sort((a, b) => b.score - a.score || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    for (const [index, { name, score }] of ordered.entries()) {
       checkSignal(signal)
-      if (files.size >= bounds.maxFiles || bytes >= bounds.maxBytes) { truncated = true; break }
+      if (files.size >= bounds.maxFiles || scannedBytes >= bounds.maxBytes) {
+        // A skipped sibling does not make a completed target subtree incomplete.
+        for (const remaining of ordered.slice(index)) markLimited(`${virtual}/${remaining.name}`)
+        break
+      }
       if (!validPath(name) || blockedName(name) || BLOCKED_DIRS.has(name.toLowerCase())) continue
       const childReal = `${real}/${name}`, childVirtual = `${virtual}/${name}`
       if (childReal.length > 4096 || protectedPaths.some(p => within(childReal, p))) continue
@@ -283,9 +351,17 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
       try { stat = await fs.lstat(`${anchor(handle)}/${name}`, { bigint: true }) } catch { continue }
       if (stat.isSymbolicLink()) continue
       if (stat.isDirectory()) {
-        if (depth >= bounds.maxDepth || entries >= bounds.maxEntries) { truncated = true; continue }
+        if (depth >= bounds.maxDepth || entries >= bounds.maxEntries) { markLimited(childVirtual); continue }
         let child
-        try { child = await openChecked(handle, name, true); await walk(child, childReal, childVirtual, depth + 1) }
+        try {
+          child = await openChecked(handle, name, true)
+          if (score > 0 && focusedManifests < 16) {
+            focusedManifests++
+            focusedPaths.add(childVirtual)
+            await captureRootManifest(child, childReal, childVirtual)
+          }
+          await walk(child, childReal, childVirtual, depth + 1)
+        }
         catch { if (signal?.aborted) throw limited('CANCELLED') }
         finally { if (child) await close(child) }
       } else if (stat.isFile() && stat.nlink === 1n && allowedFile(name)) await captureFile(handle, name, childVirtual)
@@ -299,7 +375,10 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
     for (const mapping of mappings) {
       checkSignal(signal)
       const handle = await openRoot(mapping.real)
-      try { await walk(handle, mapping.real, mapping.virtual, 0) } finally { await close(handle) }
+      try {
+        await captureRootManifest(handle, mapping.real, mapping.virtual)
+        await walk(handle, mapping.real, mapping.virtual, 0)
+      } finally { await close(handle) }
     }
     checkSignal(signal)
   } catch (error) {
@@ -345,19 +424,19 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
       const selected = lines.slice(offset - 1, offset - 1 + count)
       let content = '', used = 0
       for (const line of selected) {
-        const next = (used ? '\n' : '') + line
+        // Keep the original line terminator on every page, including CRLF's
+        // retained CR. Concatenating successive pages reproduces the source.
+        const next = line + (offset + used < lines.length || stored.endsWith('\n') ? '\n' : '')
         if (Buffer.byteLength(content) + Buffer.byteLength(next) > bounds.maxOutputBytes) {
           if (!used) throw limited('QUERY_LIMIT')
           break
         }
         content += next; used++
       }
-      let newlineOmitted = false
-      if (used > 0 && offset - 1 + used === lines.length && stored.endsWith('\n')) {
-        if (Buffer.byteLength(content) + 1 <= bounds.maxOutputBytes) content += '\n'
-        else newlineOmitted = true
-      }
-      return { file_path: name, offset, total_lines: lines.length, content, truncated: offset - 1 + used < lines.length || newlineOmitted }
+      const nextOffset = offset - 1 + used < lines.length ? offset + used : null
+      // A requested page is complete even when more pages remain. Only a
+      // byte limit cutting the requested range is a truncated query.
+      return { file_path: name, offset, total_lines: lines.length, content, next_offset: nextOffset, truncated: used < selected.length }
     },
     grep(args) {
       active()
@@ -377,7 +456,7 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
           matches.push({ file_path: name, line_number: i + 1, line: lines[i] }); outputBytes += size
         }
       }
-      return { matches, truncated }
+      return { matches, truncated: scopeLimited(resolve(args.path ?? '/project')) }
     },
     glob(args) {
       active()
@@ -391,10 +470,11 @@ export async function createReviewCorpus({ root, additionalRoots = [], protected
         }
         paths.push(name); outputBytes += size
       }
-      return { paths, truncated }
+      return { paths, truncated: scopeLimited(resolve(args.path ?? '/project')) }
     },
-    publicInfo() { active(); return { fileCount: files.size, byteCount: bytes, roots: mappings.map(m => m.virtual), truncated } },
+    publicInfo() { active(); return { fileCount: files.size, byteCount: bytes, roots: mappings.map(m => m.virtual), truncated, ...(focusedPaths.size ? { focusedPaths: [...focusedPaths] } : {}) } },
+    directoryManifests() { active(); return structuredClone(rootManifests) },
     rewritePaths(text) { active(); if (typeof text !== 'string' || text.length > bounds.maxBytes) throw limited('INVALID_QUERY'); return rewriteOwned(text) },
-    dispose() { files.clear(); directories.clear(); mappings = []; redactions = []; bytes = 0; disposed = true },
+    dispose() { files.clear(); directories.clear(); limitedScopes.clear(); focusedPaths.clear(); rootManifests.length = 0; mappings = []; redactions = []; focusText = ''; bytes = 0; disposed = true },
   })
 }

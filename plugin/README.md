@@ -2,12 +2,30 @@
 
 A planning advisor and annotation reviewer for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). The main model explores first and calls `ask_advisor` for ideas. A user can then request a two-stage restricted review of an assistant reply and decide what to do with its annotations.
 
-Current release: **[0.19.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.19.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.19.0) · [Changelog](https://github.com/higekibaka/dsh-ciel/blob/main/CHANGELOG.md). The current compatibility and CI target is **DSH 0.1.6-alpha.2**.
+Current release: **[0.20.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.20.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.20.0) · [Changelog](https://github.com/higekibaka/dsh-ciel/blob/main/CHANGELOG.md). Local release checks target **DSH 0.2.0-rc.2**; CI includes pinned 0.1.6, 0.1.7 and 0.2.0 targets.
+
+This release includes **DSH 0.1.7-alpha.1** configuration and session compatibility. Read the [settings migration and validation notes](https://github.com/higekibaka/dsh-ciel/blob/main/docs/compatibility-017.md) before upgrading.
+
+Review changes in 0.20.0: every nominated suspicion gets an independent restricted investigator (up to eight concurrent), sharing the original deadline and snapshot. Per-item results include observed query/request counts and reasons for unresolved findings; one item's failure cannot erase successful siblings. This increases model usage, not access permissions. Partial coverage is never displayed as an overall pass. Existing records are not rerun or given invented historical traces.
+
+The reviewer also receives allowlisted historical Host facts (model route, logged policy values, declared tool names), bounded historical tool-output receipts, and a separate shallow root-directory inventory. Facts retain their time/provenance; current defaults never fill missing history. Global snapshot truncation is disclosed without automatically invalidating unrelated, fully grounded claims. When enabled, Jev may check these cited evidence types too; credentials, raw headers/schemas and full history are not exported. Host restart is required for this update.
+
+## UI revision (integrated in 0.20.0)
+
+The settings page now groups concise summaries and expandable details, with pinned Save/Discard actions. Numeric values are validated as integers; provider changes update the related model/effort together and clear conflicting staged resets. File verification gates the Jev evidence switch without clearing its saved preference; advisor Jev remains independent.
+
+Unsaved settings survive section navigation and closing the Settings window within the current page. The header shows an unsaved Ciel notice, and browser exit warns before losing a draft. DSH 0.2.0-rc.2 does not expose a settings-close guard to sections, so this plugin does not intercept the host's close button or imitate the prototype's close-confirmation flow.
+
+Existing composer content now opens the host's native confirmation dialog: append, cancel, or explicitly confirm replacement. Both the conversation entry and the review sidebar use the same revision-fenced insertion. Changing the session or draft during preparation/confirmation prevents insertion. No action sends a message automatically. The current-session check accepts DSH's retained-main-view selection as well as its older direct-current field.
+
+Review details prioritize the conclusion and annotation; model, time and coverage metadata are expandable. Evidence opens in the existing identity-keyed sidebar tabs and can return to the originating annotation. Known historical path lists are rendered readably alongside the original JSON; withheld, limited, unknown and unrecognized records retain their existing handling. No current file is inferred from a historical path.
+
+This UI revision was verified with DSH 0.2.0-rc.2 Web. It does not migrate settings, rewrite reviews, change models, or claim Windows Desktop verification. UI source remains in `src/`; `client.js` is the bundled package artifact.
 
 ## Install and use
 
 ```sh
-dsh plugin --profile web add dsh-ciel@0.19.0
+dsh plugin --profile web add dsh-ciel@0.20.0
 ```
 
 Install or update in your intended profile, restart DSH and refresh the browser. In **Settings → 夏尔 Ciel**, select advisor and critic models already configured in DSH, then save. Default route names do not register providers or credentials for you.
@@ -38,14 +56,14 @@ flowchart TD
 
 The planning reminder and consultation gate share the same consultation state. Rejected admission does not consume a consultation slot. Reviews are user-triggered; history loading and progress recovery do not start model calls.
 
-## What's new in 0.19.0
+## What's new in 0.20.0
 
-- A current-session inbox with independent intent records, pagination, refresh and concurrent-edit conflict reporting.
-- DSH 0.1.6-alpha.2 Remote, shared dependency and session-state compatibility; distinct protocol, readiness, capability and execution errors.
-- Fixes for forked sessions sharing message IDs and for accepting cancellation before a normal result was committed.
-- Human-input selection bounded by the target reply, including compaction, goal continuation, forks and historical command provenance. Incomplete context is disclosed.
-- Bounded progress retries, explicit retry, protection against late replies after unload, coalesced refreshes and bounded inactive-session caching.
-- Separate review coordination, repository, protocol, advisor-state and client-state modules, with documented capacity and recovery decisions.
+- Independent opt-in Jev evidence and advisor-context checks, with a shared secret API key, HTTPS endpoint and model configuration.
+- Up to eight independent restricted investigators sharing one deadline, with per-item outcomes, blocked reasons and request counts.
+- Bounded historical Host facts, original tool-output receipts and shallow directory evidence with explicit provenance.
+- Native settings/review/evidence UI and confirmation-based draft insertion, retaining session and revision fencing.
+- Original reads separated from evidence archival; pagination and coverage fixes, plus progress identity/cancellation repairs.
+- Profile-backed settings, Session V4 compatibility and a pre-upgrade settings migration tool.
 
 ## Inbox, drafts and history
 
@@ -67,7 +85,7 @@ Zero annotations do not certify every claim. Unchecked items, truncated input, u
 
 ## Configuration
 
-The dedicated **夏尔 Ciel** settings page uses the `ciel` namespace. Save applies changes; navigating settings retains drafts, while refreshing does not save them. Revision checks prevent overwriting changes made elsewhere.
+The dedicated **夏尔 Ciel** settings page edits the `advisor` Profile entry on modern DSH (the legacy namespace is `ciel`). Save applies changes; navigating settings retains drafts, while refreshing does not save them. Revision checks prevent overwriting changes made elsewhere.
 
 | Field | Default | Description |
 |---|---|---|
@@ -86,6 +104,11 @@ The dedicated **夏尔 Ciel** settings page uses the `ciel` namespace. Save appl
 | `enabled` | `true` | Allow Ciel model calls and feedback; turning off cancels its in-flight consultations/reviews |
 | `advisorTimeoutSeconds` | `180` | Total deadline per `ask_advisor` consultation, 10–600 seconds |
 | `criticExploreEnabled` | `true` | Separate nomination and read-only verification phases |
+| `jevApiKey` | unset | Secret field; official endpoint may fall back to `TYPESAFE_API_KEY` |
+| `jevEndpoint` | `https://api.typesafe.ai/v1/systemone` | Complete HTTPS endpoint, not an OpenAI base URL |
+| `jevModel` | `jev-1.13.0` | Shared Jev model ID |
+| `jevEnabled` | `false` | Optional Jev evidence check; sends claims and cited source text to TypeSafe and reports disagreements without changing the main verdict |
+| `advisorJevEnabled` | `false` | Independent advisor suggestion check against the supplied context, returned alongside the original advice |
 | `criticTimeoutSeconds` | `180` | Sole review execution budget: one deadline for capture, nomination and verification, 10–600 seconds |
 | `criticMaxTokens` | `16384` | Per-response size protection, 256–32768; nomination capped at 4096, not a request-count limit |
 
@@ -93,7 +116,15 @@ The advanced `criticAdditionalRoots` setting defaults to `[]` and allows explici
 
 ## Compatibility and data
 
-- This release was verified against **DSH 0.1.6-alpha.2**. Native interfaces start at 0.1.5-alpha.2; older versions were not all retested. Recheck compatibility after a DSH upgrade.
+Enable **Settings → 夏尔 Ciel → 常用设置 → 启用 Jev 证据检查 → Save** to use Jev. It is off by default. Use **Jev API 配置** to save an API key, complete HTTPS endpoint and model ID. A blank password input preserves the saved key; explicit clearing removes the profile override and re-inherits deployment settings. Only the default official endpoint falls back to `TYPESAFE_API_KEY`; custom endpoints require an explicitly configured key. Keys are stored in the local DSH configuration, not an encrypted vault, and are redacted on reads. Restart the Host once after updating the code and refresh the browser; later configuration saves apply to the next check without another restart. Keep file verification enabled. New review details show supports/contradicts/insufficient, disagreements, evidence links and API usage. Never put credentials in a model name or endpoint URL; use only the dedicated password field.
+
+Enabling this sends exact draft claims and their cited source text to the configured service (TypeSafe by default) and incurs additional API usage. Each review makes at most one batch request with 8 claims and 24 KiB of state, capped at 10 seconds within the existing review deadline, with no retries. Oversized or unavailable evidence is skipped explicitly. Missing keys, API errors and timeouts preserve the main review. Saving the toggle off cancels pending Jev checks; historical reviews are not rerun.
+
+Advisor checks have a separate, default-off switch: **常用设置 → 启用顾问建议检查（Jev） → Save**. After `ask_advisor` responds, Jev compares the original suggestions with the supplied question and context. The main model receives both the unchanged advice and the labeled results; saved advice details show them too. This checks consistency with unverified context, not independent factual accuracy. Insufficient support does not make a novel idea false.
+
+This shares the Jev API configuration and sends the question, context and complete suggestion sections to the configured service (TypeSafe by default), with additional API usage. Each consultation allows one batch, up to 6 suggestions and 24 KiB of state, capped at 10 seconds within its existing deadline. Oversized or unstructured advice is explicitly skipped instead of clipped. Missing keys, API errors and check timeouts preserve the advisor answer. Saving this switch off cancels only the advisor Jev check; historical advice is never rerun.
+
+- Local release checks use **DSH 0.2.0-rc.2**, with pinned CI targets for 0.1.6-alpha.2, 0.1.7-alpha.1 and 0.2.0-rc.2. Old hosts without secret metadata disable API editing; the official endpoint can still use an environment key.
 - Node.js `^22.19.0` or `>=24.0.0`. Restricted file capture currently requires Linux and accessible procfs APIs; this does not restrict the browser UI to Linux.
 - DSH supplies shared Cordis, Typert, `dsh-subagent`, `dsh-llm` and `dsh-tools` modules. Ciel is not a standalone Host. See [linked-development compatibility](https://github.com/higekibaka/dsh-ciel/blob/main/docs/compatibility-alpha2.md).
 - Ciel uses DSH semantic theme variables. Isolated Web checks covered default and Endfield Glass light/dark modes, leaving the theme and unloading the plugin.
@@ -118,7 +149,9 @@ DSH_CHECKOUT=/path/to/deepseek-harness CIEL_VERIFY_NATIVE_PEERS=1 node scripts/v
 DSH_CHECKOUT=/path/to/deepseek-harness node scripts/verify-protocol.mjs
 ```
 
-For 0.19.0, **605 unit tests, 52 actual DSH restricted-runtime scenarios and 21 native-sidebar checks passed**. Both [CI](https://github.com/higekibaka/dsh-ciel/actions/runs/35447737250) and [publication](https://github.com/higekibaka/dsh-ciel/actions/runs/35448102257) succeeded. The npm package carries provenance; all 24 published files matched the release candidate.
+For 0.20.0, **703 unit tests and 57 actual DSH offline-runtime scenarios pass**, alongside native settings, protocol, Profile persistence/secret redaction/removal and migration checks. Daily-GUI online acceptance of the new API fields remains unverified; the daily Host was not restarted and no paid model request was made.
+
+Historically, for 0.19.0, **605 unit tests, 52 actual DSH restricted-runtime scenarios and 21 native-sidebar checks passed**. Both [CI](https://github.com/higekibaka/dsh-ciel/actions/runs/35447737250) and [publication](https://github.com/higekibaka/dsh-ciel/actions/runs/35448102257) succeeded. The npm package carries provenance; all 24 published files matched the release candidate.
 
 Runtime scenarios use scripted models with zero network requests. An isolated real Web profile covered review, inbox, forks, refresh, protocol failures, themes and unload. This does not establish real-provider quality, costs or long-running capacity. Web tests must give the server a separate `DSH_HOME`: changing only the port or profile does not isolate sessions. Do not use daily profiles as fixtures.
 

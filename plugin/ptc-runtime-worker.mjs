@@ -122,11 +122,15 @@ class OutputLedger {
   }
   log(text) {
     if (typeof text !== 'string' || this.overflowed) return
-    const capped = text.length > this.maxLogBytes ? text.slice(0, this.maxLogBytes) : text
-    const entryBytes = Buffer.byteLength(JSON.stringify(capped), 'utf8')
+    if (Buffer.byteLength(text, 'utf8') > this.maxLogBytes) {
+      this.overflowed = true
+      this.limitMessage = 'log entry exceeded ' + this.maxLogBytes + ' bytes; return the result or print smaller source pages'
+      return
+    }
+    const entryBytes = Buffer.byteLength(JSON.stringify(text), 'utf8')
     if (this.bytes + entryBytes + 1 > this.maxOutputBytes) { this.overflowed = true; return }
     this.bytes += entryBytes + 1
-    this.logs.push(capped)
+    this.logs.push(text)
   }
   success(value) {
     const encoded = value === undefined ? undefined : JSON.stringify(value)
@@ -138,7 +142,7 @@ class OutputLedger {
     return { logs: this.logs, error }
   }
   limit() {
-    const message = 'combined logs/value output exceeded ' + this.maxOutputBytes + ' bytes'
+    const message = this.limitMessage || 'combined logs/value output exceeded ' + this.maxOutputBytes + ' bytes'
     const retained = []
     let bytes = 2
     for (const text of this.logs) {

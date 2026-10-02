@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 // Host-side resource RPC tests: readReview/readEvidence/readAdvice over the
 // REAL record-store with a temporary DSH_HOME. No filesystem mocks: valid
 // fixtures go through the production store (persistReview/persistAdvice), and
@@ -29,7 +30,7 @@ after(async () => {
 })
 
 const ctx = new Context()
-const service = new AdvisorReviewService(ctx, new Set(), () => Config({}), new Set(), {})
+const service = new AdvisorReviewService(ctx, new Set(), () => resolvedConfig({}), new Set(), {})
 
 const sha = (text) => createHash('sha256').update(text).digest('hex')
 const hashName = (id) => createHash('sha256').update(id, 'utf8').digest('base64url') + '.json'

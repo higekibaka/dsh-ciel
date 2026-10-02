@@ -16,6 +16,7 @@ const packages = {
   '@deepseek-ai/dsh-llm': 'packages/llm/llm',
   '@deepseek-ai/dsh-tools': 'packages/core/tools',
   '@deepseek-ai/cordis': 'vendor/cordis',
+  '@deepseek-ai/schemastery': 'vendor/schemastery',
   '@deepseek-ai/dsh-typert-protocol': 'packages/typert/protocol',
 }
 const links = []
@@ -23,7 +24,7 @@ for (const [name, relative] of Object.entries(packages)) {
   const target = resolve(checkout, relative)
   const manifest = JSON.parse(await readFile(join(target, 'package.json'), 'utf8'))
   if (manifest.name !== name) throw new Error('Unexpected package: ' + target)
-  await lstat(join(target, 'lib/index.js'))
+  await lstat(join(target, manifest.module || 'lib/index.js'))
   const path = join(plugin, 'node_modules', name)
   const stat = await lstat(path).catch(error => { if (error.code === 'ENOENT') return undefined; throw error })
   if (stat && !stat.isSymbolicLink()) throw new Error('Refusing to replace a non-symlink: ' + path)

@@ -175,6 +175,19 @@ test('strict lossless JSON rejects lossy binding results and completion values',
   assert.equal(bigint.error?.kind, 'invalid-output')
 })
 
+test('oversized UTF-8 log entries report truncation instead of silently losing the original text', async () => {
+  const runtime = runtimeWith({ maxLogBytes: 8 })
+  try {
+    const result = await execute(runtime, 'console.log("你你你"); return "done"')
+    assert.equal(result.error?.kind, 'output-limit')
+    assert.match(result.error.message, /log entry exceeded 8 bytes/)
+    assert.equal(result.value, undefined)
+    const original = await execute(runtime, 'return "你你你"')
+    assert.equal(original.error, undefined)
+    assert.equal(original.value, '你你你')
+  } finally { await runtime.dispose() }
+})
+
 test('combined output cap and log flood fail closed with retained logs', async () => {
   const flood = await execute(runtimeWith({ maxOutputBytes: 2048, maxLogBytes: 256 }), 'for (let i = 0; i < 500; i++) console.log("x".repeat(200)); return "done"')
   assert.equal(flood.error?.kind, 'output-limit')

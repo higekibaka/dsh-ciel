@@ -60,8 +60,8 @@ try {
     feedback: async () => { modelCalls++; throw new Error('Automatic feedback must not run') },
   }
   const ctx = {
-    settingsScope: { bind(spec) { assert.equal(spec.namespace, 'ciel'); return {
-      getSnapshot: () => ({ status: 'ready', mode: 'host', writable: true, value, user, revision }),
+    configForms: { describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }] } }) }), get(entryId) { assert.equal(entryId, 'advisor'); return {
+      getSnapshot: () => ({ status: 'ready', mode: 'host', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision }),
       subscribe(fn) { scopeListeners.add(fn); return () => scopeListeners.delete(fn) },
       async mutate(ops, expected) {
         assert.equal(expected, revision)
@@ -93,15 +93,22 @@ try {
   assert.ok(section)
   assert.ok(!registrations.some(r => r.def.name === 'settings.plugin.item'))
   const rows = [{ id: 'general', label: '通用设置', order: 0 }, { id: 'models', label: '模型', order: 10 }, { id: 'plugins', label: '插件', order: 15 }, { id: 'agent-presets', label: 'Agent 预设', order: 20 }, { id: section.def.id, label: section.def.label(), order: section.def.order }].sort((a, b) => a.order - b.order)
+  let shellState = { open: false, activeId: undefined }
+  const shellListeners = new Set()
+  const setShell = patch => { shellState = { ...shellState, ...patch }; for (const fn of shellListeners) fn() }
   const shellProps = {
+    useStore: select => select(React.useSyncExternalStore(fn => { shellListeners.add(fn); return () => shellListeners.delete(fn) }, () => shellState)),
+    useShortcuts: select => select([]),
+    actions: { select: activeId => setShell({ activeId }), open: () => setShell({ open: true }), close: () => setShell({ open: false }), openSection: activeId => setShell({ activeId, open: true }) },
     wide: true, reconnect() {}, t: key => key,
     useSections: select => select(rows), useConnectionState: select => select('connected'), useOnboardingSteps: select => select([]),
-    useSessions: select => select({ phase: 'ready', current: 'fixture', byId: { fixture: { blank: false } } }),
+    useDesktopUpdate: select => select({ failed: false, opening: false }), openDesktopUpdate() {},
+    useSessions: select => select({ phase: 'ready', current: 'fixture', byId: { fixture: { blank: false, retainedBy: { mainView: 1 } } } }),
     renderSlot(name, owner, options) {
       if (name === 'settings.trigger' || name === 'settings.header') return '设置'
       if (name === 'settings.close') return '关闭设置'
       if (name === 'settings.section') return options.only === 'ciel' ? h(section.component, owner) : h('h2', null, rows.find(r => r.id === options.only)?.label)
-      return null
+      return options?.fallback ?? null
     },
   }
   const root = createRoot(doc.getElementById('settings-fixture')); roots.push(root)
@@ -115,6 +122,10 @@ try {
   const sw = () => doc.querySelector('button[role="switch"][aria-label="启用 Ciel"]')
   assert.equal(sw().getAttribute('aria-checked'), 'true')
   assert.equal(dom.window.getComputedStyle(sw()).width, '36px', 'real native Switch stylesheet is active')
+  const jevSwitch = () => doc.querySelector('button[role="switch"][aria-label="启用 Jev 证据检查"]')
+  assert.equal(jevSwitch().getAttribute('aria-checked'), 'false', 'Jev is opt-in in the native settings page')
+  const advisorJevSwitch = () => doc.querySelector('button[role="switch"][aria-label="启用顾问建议检查（Jev）"]')
+  assert.equal(advisorJevSwitch().getAttribute('aria-checked'), 'false')
   await click(sw())
   assert.equal(sw().getAttribute('aria-checked'), 'false')
   assert.equal(value.enabled, true, 'toggle is staged, not persisted')
@@ -127,10 +138,14 @@ try {
   assert.equal(sw().getAttribute('aria-checked'), 'false', 'draft survives section remount')
   await click(button('放弃'))
   assert.equal(sw().getAttribute('aria-checked'), 'true')
+  await click(jevSwitch())
+  assert.equal(value.jevEnabled, false, 'Jev remains off until Save')
   await click(sw())
   await click(button('保存'))
   assert.equal(writes.length, 1)
   assert.equal(value.enabled, false)
+  assert.equal(value.jevEnabled, true)
+  assert.equal(value.advisorJevEnabled, false, 'review toggle leaves advisor Jev off')
   assert.equal(value.criticExploreBudget, 20)
   assert.equal(value.criticMaxRequests, 32, 'retired user settings are preserved but never edited')
   assert.equal(doc.querySelector('[aria-label="每次评审最多几次工具查询"]'), null)
@@ -138,17 +153,52 @@ try {
   assert.match(doc.body.textContent, /只按总时间控制评审/)
   assert.match(doc.body.textContent, /当前已停用/)
   assert.equal(button('保存').disabled, true)
+  await click(jevSwitch())
+  await click(button('保存'))
+  assert.equal(value.jevEnabled, false, 'native Switch can disconnect Jev again')
+  assert.equal(writes.length, 2)
+  await click(advisorJevSwitch())
+  assert.equal(value.advisorJevEnabled, false, 'advisor Jev is staged until Save')
+  await click(button('保存'))
+  assert.equal(value.advisorJevEnabled, true)
+  assert.equal(value.jevEnabled, false)
+  await click(advisorJevSwitch())
+  await click(button('保存'))
+  assert.equal(value.advisorJevEnabled, false)
+  assert.equal(writes.length, 4)
+  const keyInput = () => doc.querySelector('input[aria-label="Jev API Key"]')
+  assert.equal(keyInput().type, 'password')
+  assert.equal(keyInput().disabled, false, 'secret metadata comes from the native describe mirror')
+  const change = async (node, next) => { await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(node, next)
+    node.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  }) }
+  await change(keyInput(), 'native-fixture-secret')
+  await change(doc.querySelector('input[aria-label="Jev 模型 ID"]'), 'jev-native')
+  await click(button('保存'))
+  assert.equal(value.jevApiKey, 'native-fixture-secret')
+  assert.equal(value.jevModel, 'jev-native')
+  assert.equal(keyInput().value, '', 'saved key is not reflected back into the input')
+  assert.match(doc.body.textContent, /已配置密钥/)
+  assert.ok(!doc.body.innerHTML.includes('native-fixture-secret'))
+  await change(doc.querySelector('input[aria-label="Jev 接口地址"]'), 'http://invalid.test')
+  assert.equal(button('保存').disabled, true)
+  await click(button('放弃'))
+  await click(button('清除密钥覆盖'))
+  await click(button('保存'))
+  assert.equal(value.jevApiKey, '')
   await click([...doc.querySelectorAll('button')].find(n => n.textContent === '关闭设置'))
   assert.equal(scopeListeners.size, 0)
 
   const rt = plugin.__test.runtime
   const reviewRoot = createRoot(doc.getElementById('review-fixture')); roots.push(reviewRoot)
   const baseEntry = { reviewId: 'native-review', messageId: 'native-message', status: 'incomplete', verdict: 'pass', coverage: 'partial', createdAt: 1, annotations: [], summary: '4 项疑点，4 项排除', stats: { checked: 4, confirmed: 0, excluded: 4, unchecked: 0 }, privacy: { mode: 'restricted-snapshot' }, coverageNote: '资料读取范围受限' }
+  baseEntry.sessionId = 'fixture'
   rt.absorb(baseEntry)
   await act(async () => reviewRoot.render(h('div', null, h('p', null, '这是一份超过两百字的隔离测试草稿。'.repeat(20)), h(rt.ReviewButton, { sessionId: 'fixture', messageId: 'native-message' }))))
   const card = () => doc.querySelector('.dsr-tail')
   assert.ok(card())
-  assert.equal(card().querySelector('[data-tone="warning"]').textContent, '◇ 部分核实')
+  assert.equal(card().querySelector('[data-tone="warning"]').textContent, '◇ 已核查 · 证据受限')
   assert.ok(!card().querySelector('[data-tone="success"]'), 'incomplete zero annotations must not look verified')
   assert.equal(card().querySelectorAll('.ciel-native-tag-mount').length, card().querySelectorAll('[data-tone]').length)
   await click(card().querySelector('.dsr-vtoggle'))
@@ -165,7 +215,7 @@ try {
   assert.equal(network, 0)
   assert.equal(modelCalls, 0)
   assert.deepEqual(warnings, [])
-  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), nativeSwitchCss: true, draftSurvivesNavigation: true, atomicSave: true, nativeTags: true, collapseSurvivesRepaint: true, portalCleanup: true, network, modelCalls }))
+  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), nativeSwitchCss: true, jevToggle: true, draftSurvivesNavigation: true, atomicSave: true, nativeTags: true, collapseSurvivesRepaint: true, portalCleanup: true, network, modelCalls }))
 } finally {
   if (act) await act(async () => { for (const root of roots) root.unmount(); for (const off of cleanups.reverse()) off() })
   globalThis.fetch = originalFetch

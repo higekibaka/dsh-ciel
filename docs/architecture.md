@@ -16,6 +16,7 @@
 | `review-content.js` | 阶段提示词、证据输入整理、Markdown 块与评审结果解析、只读子代理观察 | 不调用模型或保存记录 |
 | `model-usage.js` | 请求路由和实际执行来源的有界投影 | 不把配置值冒充实际用模 |
 | `review-coordinator.js` | 唯一的评审运行 owner：准入、两个阶段、私有 child、进度、取消、终态与清理 | 不实现文件系统协议，不持有 UI 状态 |
+| `jev-review.js` | 可选旁路：主张逐字匹配、引用原文投影、有界批量调用与响应验证 | 不读取额外文件或会话，不修改主评审裁决；密钥只来自宿主环境 |
 | `review-repository.js` | 评审/证据/顾问/回传记录访问；证据先写、summary 提交；可注入 store/home | 不判定模型结论，不修改全局 fs 以提供测试缝隙 |
 | `review-service.js` | Typert Remote 入口、读取投影、批注草稿准备、收件箱转发；start/progress/cancel 委托 Coordinator | 不运行 critic 阶段；旧 feedback 只返回停用说明 |
 | `review-protocol.js` | 13 个方法的统一 descriptor、请求/返回形状与关联身份检查 | 不依赖 DSH、Node、DOM 或第二份 schema 库实例 |
@@ -43,6 +44,8 @@ flowchart TD
     Q --> CORPUS[review-corpus：冻结只读资料]
     CORPUS --> E[review-evidence：宿主回执]
     COORD --> E
+    COORD --> JEV[jev-review：默认关闭的证据关系检查]
+    JEV --> REPO
     COORD --> REPO[review-repository]
     RPC --> REPO
     REPO --> STORE[record-store：有界读写 / 原子发布]

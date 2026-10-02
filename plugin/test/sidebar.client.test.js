@@ -594,11 +594,80 @@ test('the review body renders the entry, its annotations, and their evidence ref
   assert.match(tree.text, /锚点一/)
   assert.match(tree.text, /评论一/)
   assert.match(tree.text, /标题二/)
-  assert.match(tree.text, /排查 2 · 证伪 1 · 排除 1 · 未查 0/)
+  assert.match(tree.text, /疑点 2 · 确认问题 1 · 排除 1 · 未核实 0/)
   assert.match(tree.text, /p\/m/)
   assert.equal(tree.all((element) => element.props['data-ciel-annotation'] !== undefined).length, 2)
   assert.equal(tree.all((element) => element.props['data-ciel-evidence-ref'] !== undefined).length, 2)
   assert.equal(tree.find((element) => element.props['data-ciel-review-status'] !== undefined).props['data-ciel-review-status'], '发现问题')
+})
+
+test('partial and failed reviews never present a raw pass as overall approval', () => {
+  for (const status of ['incomplete', 'unverified', 'cancelled', 'error']) {
+    const harness = createRenderer(), sidebar = createSidebar(harness), mock = createMockContext()
+    sidebar.install(mock.ctx, { call: async () => ({ ok: true, review: {} }) })
+    const review = { ...reviewEntry(), status, verdict: 'pass', coverage: 'partial',
+      summary: '复核记录：6 项疑点，0 项确认问题，1 项排除，5 项未查。',
+      stats: { checked: 6, confirmed: 0, excluded: 1, unchecked: 5 }, annotations: [] }
+    const { tree } = mountBody(harness, mock, CIEL_REVIEW, { snapshot: live(reviewAddress('s1', 'r1'), { sessionId: 's1', reviewId: 'r1', review }) })
+    assert.match(tree.text, /尚不能判定通过/)
+    assert.doesNotMatch(tree.text, /裁决 pass|5 项未查/)
+    assert.match(tree.text, /5 项未核实/)
+    assert.match(tree.text, /不等于完全未尝试.*历史记录未保存逐项调查过程/)
+    assert.equal(tree.all(e => e.props['data-ciel-investigation'] !== undefined).length, 0)
+  }
+})
+
+test('independent investigation details preserve every result and link its own evidence', () => {
+  const harness = createRenderer(), sidebar = createSidebar(harness), mock = createMockContext()
+  sidebar.install(mock.ctx, { call: async () => ({ ok: true, review: {} }) })
+  const review = { ...reviewEntry(), status: 'incomplete', verdict: 'pass', coverage: 'partial', annotations: [],
+    investigations: [
+      { id: 's1', suspect: '文件行数', status: 'settled', outcome: 'cleared', reason: '读取完整文件，行数一致。', toolCalls: 1, modelRequests: 2, elapsedMs: 1000, evidenceRefs: ['e1'] },
+      { id: 's2', suspect: '运行时模型', status: 'unresolved', outcome: 'unchecked', reason: '已核对范围说明；缺少当时的宿主模型记录。', toolCalls: 0, modelRequests: 1, elapsedMs: 2000, evidenceRefs: [] },
+      { id: 's3', suspect: '依赖版本', status: 'failed', outcome: 'unchecked', reason: 'provider failed', toolCalls: 0, modelRequests: 1, elapsedMs: 3000, evidenceRefs: [] },
+    ] }
+  const { tree } = mountBody(harness, mock, CIEL_REVIEW, { snapshot: live(reviewAddress('s1', 'r1'), { sessionId: 's1', reviewId: 'r1', review }) })
+  assert.equal(tree.all(e => e.props['data-ciel-investigation'] !== undefined).length, 3)
+  assert.match(tree.text, /逐项调查 · 3 项/)
+  assert.match(tree.text, /s1 · 已排除.*读取完整文件/)
+  assert.match(tree.text, /s2 · 未能核实.*缺少当时的宿主模型记录.*查询 0 次/)
+  assert.match(tree.text, /s3 · 核查失败.*provider failed/)
+  assert.doesNotMatch(tree.text, /此历史记录未保存/)
+  tree.find(e => e.props['data-ciel-investigation-ref'] === 'e1').props.onClick()
+  assert.equal(mock.sidebarCalls[0].address, evidenceAddress('s1', 'r1', 'e1'))
+})
+
+test('Jev detail renders the original claim, disagreement, usage and evidence links', () => {
+  const harness = createRenderer(), sidebar = createSidebar(harness), mock = createMockContext()
+  sidebar.install(mock.ctx, { call: async () => ({ ok: true, review: {} }) })
+  const review = { ...reviewEntry(), jev: {
+    status: 'partial', model: 'jev-1.13.0', requestCount: 1, elapsedMs: 345, omittedChecks: 1,
+    usage: { inputTokens: 200, outputTokens: 20 }, checks: [
+      { suspectId: 's1', claim: '原始主张', status: 'completed', relation: 'insufficient', confidence: 0.8, disagreement: true, evidenceRefs: ['e1'] },
+      { suspectId: 's2', status: 'skipped', reason: 'no-exact-claim', evidenceRefs: [] },
+    ],
+  } }
+  const { tree } = mountBody(harness, mock, CIEL_REVIEW, { snapshot: live(reviewAddress('s1', 'r1'), { sessionId: 's1', reviewId: 'r1', review }) })
+  assert.match(tree.text, /Jev 证据检查 · 部分完成/)
+  assert.match(tree.text, /原始主张.*证据不足.*与主评审有分歧/)
+  assert.match(tree.text, /不代表正确率/)
+  assert.match(tree.text, /输入 200 \/ 输出 20 tokens/)
+  assert.match(tree.text, /另有 1 项未交给 Jev/)
+  assert.match(tree.text, /未取得可逐字匹配的主张/)
+  assert.equal(tree.all(e => e.props['data-ciel-annotation'] !== undefined).length, 2)
+  assert.equal(tree.all(e => e.props['data-ciel-jev-ref'] !== undefined).length, 1)
+  tree.find(e => e.props['data-ciel-jev-ref'] === 'e1').props.onClick()
+  assert.equal(mock.sidebarCalls[0].address, evidenceAddress('s1', 'r1', 'e1'))
+})
+
+test('missing Jev key is explained in review details', () => {
+  const harness = createRenderer(), sidebar = createSidebar(harness), mock = createMockContext()
+  sidebar.install(mock.ctx, { call: async () => ({ ok: true, review: {} }) })
+  const review = { ...reviewEntry(), jev: { status: 'skipped', reason: 'missing-key', requestedModel: 'jev-1.13.0', requestCount: 0, elapsedMs: 0, checks: [] } }
+  const { tree } = mountBody(harness, mock, CIEL_REVIEW, { snapshot: live(reviewAddress('s1', 'r1'), { sessionId: 's1', reviewId: 'r1', review }) })
+  assert.match(tree.text, /Jev API 配置中填写密钥/)
+  assert.match(tree.text, /TYPESAFE_API_KEY/)
+  assert.match(tree.text, /0 次请求/)
 })
 
 test('time-only review details show query count and total seconds without a count ceiling', () => {
@@ -865,7 +934,7 @@ test('the optional native Button receives variant/size; the fallback stays a pla
   for (const props of refProps) {
     assert.equal(props.variant, 'toolbar', 'evidence references have a visible native filled surface')
     assert.equal(props.size, 'md')
-    assert.equal(props.children, '查看证据 ' + props['data-ciel-evidence-ref'])
+    assert.ok(mounted.tree.text.includes('查看证据 ' + props['data-ciel-evidence-ref']), 'the native evidence row retains its visible reference label')
     assert.equal(props.icon.props['aria-hidden'], true, 'the decorative arrow does not change the accessible name')
   }
 
@@ -1158,6 +1227,26 @@ test('the compare button splits the pane and lands the file beside it; no split 
   }])
 })
 
+test('new evidence kinds show provenance and observation time without opening current files', () => {
+  for (const [kind, origin, expected] of [
+    ['host-fact', 'session-metadata', /目标回复当时的宿主历史元数据/],
+    ['tool-output', 'session-tool', /不是评审者独立重跑/],
+    ['directory', 'snapshot-metadata', /不代表旧回复当时的目录状态/],
+  ]) {
+    const harness = createRenderer(), sidebar = createSidebar(harness), mock = createMockContext()
+    sidebar.install(mock.ctx, { call: async () => ({ ok: true, review: {} }) })
+    const evidence = { ...evidenceEntry(), kind, origin, observedAt: 1234, content: 'recorded original fact', path: undefined, currentPath: undefined, startLine: undefined, endLine: undefined }
+    const { tree } = mountBody(harness, mock, CIEL_EVIDENCE, {
+      snapshot: live(evidenceAddress('s1', 'r1', 'e1'), { sessionId: 's1', reviewId: 'r1', evidenceId: 'e1', evidence }),
+    })
+    assert.match(tree.text, expected)
+    assert.match(tree.text, /事实记录时间/)
+    assert.match(tree.text, /recorded original fact/)
+    assert.doesNotMatch(tree.text, /宿主未另行保存内容/)
+    assert.equal(tree.find(element => element.props['data-ciel-open-current'] !== undefined), undefined)
+  }
+})
+
 test('reported author-tool evidence explains it is not an independent read', () => {
   const harness = createRenderer()
   const sidebar = createSidebar(harness)
@@ -1222,6 +1311,31 @@ test('the advice body shows the reply, the parsed ideas, and the not-verificatio
   assert.equal(tree.all((element) => element.props['data-ciel-advice-item'] !== undefined).length, 1)
   assert.ok(tree.find((element) => element.type === 'details' && element.props['data-ciel-advice-raw'] !== undefined), 'the raw reply sits behind one collapsed disclosure')
   assert.equal(tree.all((element) => element.props['data-ciel-advice-text'] !== undefined).length, 1, 'the raw reply appears once')
+})
+
+test('saved advisor Jev results display context limits, relations and usage without rechecking', () => {
+  const harness = createRenderer()
+  const sidebar = createSidebar(harness)
+  const mock = createMockContext()
+  sidebar.install(mock.ctx, { call: async () => assert.fail('history rendering must not request a check') })
+  const advice = { callId: 'c1', text: '完整原始建议', items: [], issues: [], createdAt: 0,
+    jev: { mode: 'shadow', scope: 'provided-context', requestedModel: 'jev-1.13.0', status: 'partial',
+      requestCount: 1, elapsedMs: 25, omittedChecks: 1, usage: { inputTokens: 30, outputTokens: 4 },
+      checks: [
+        { id: 'a1', status: 'completed', relation: 'contradicts', confidence: 0.8,
+          probabilities: { supports: 0.1, contradicts: 0.8, insufficient: 0.1 } },
+        { id: 'a2', status: 'skipped', reason: 'input-too-large' },
+      ] } }
+  const { tree } = mountBody(harness, mock, CIEL_ADVICE, {
+    snapshot: live(adviceAddress('s1', 'c1'), { sessionId: 's1', callId: 'c1', advice }),
+  })
+  assert.match(tree.text, /完整原始建议/)
+  assert.match(tree.text, /仅对照本次传入的背景/)
+  assert.match(tree.text, /建议 1：背景冲突/)
+  assert.match(tree.text, /建议 2：未检查.*大小限制/)
+  assert.match(tree.text, /另有 1 条建议未检查/)
+  assert.match(tree.text, /输入 30 \/ 输出 4 tokens/)
+  assert.equal(tree.find(element => element.props['data-ciel-advisor-jev']).props['data-ciel-advisor-jev'], 'partial')
 })
 
 test('advice without parsed items shows its reply directly, with no disclosure', () => {

@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 import { requestFixtures, resultFixtures } from './review-protocol.fixtures.js'
 // Apply-level Typert declaration and production instance wiring for the inbox
 // RPC (advisorReview.inboxList / inboxSetIntent). No server is started.
@@ -40,7 +41,7 @@ test('apply registers strict inbox invocations with the live typert registry', a
   await provider.await()
   const owner = ctx.plugin({
     name: 'ciel-under-test',
-    apply(c) { apply(c, Config({})) },
+    apply(c) { apply(c, resolvedConfig({})) },
   })
   await owner.await()
   // ctx.inject callbacks run once the dependency is live; flush in case the
@@ -93,7 +94,7 @@ test('apply registers strict inbox invocations with the live typert registry', a
 })
 
 test('the production service instance carries the Remote markers and routes inbox methods', async () => {
-  const service = new AdvisorReviewService(new Context(), new Set(), () => Config({}), new Set(), { inboxHome: home })
+  const service = new AdvisorReviewService(new Context(), new Set(), () => resolvedConfig({}), new Set(), { inboxHome: home })
   assert.equal(service.name, 'advisorReview')
   assert.equal(service.typertRemote.namespace, 'advisorReview')
   assert.equal(service.typertRemote.serviceKey, 'advisorReview')

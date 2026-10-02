@@ -452,6 +452,30 @@
   background: var(--dsw-alias-interactive-bg-active);
 }
 
+/* Per-suspect investigation rows belong in the existing scrolling body. */
+[data-ciel-investigations] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-ciel-investigation] {
+  padding: 8px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
+  background: var(--ciel-surface-1);
+}
+
+[data-ciel-investigation] p,
+[data-ciel-investigations] > p,
+[data-ciel-investigations-legacy] {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--ciel-text-2);
+}
+
 /* ── advice ─────────────────────────────────────────────────────────────── */
 
 [data-ciel-advice] {
@@ -542,6 +566,28 @@
   cursor: pointer;
 }
 
+[data-ciel-jev],
+[data-ciel-advisor-jev] {
+  flex-shrink: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--ciel-border-soft);
+  border-radius: var(--ciel-radius-md);
+  background: var(--ciel-surface-2);
+}
+[data-ciel-jev-check] + [data-ciel-jev-check] {
+  border-top: 1px solid var(--ciel-border-soft);
+  margin-top: 8px;
+}
+[data-ciel-jev] blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--ciel-border);
+  white-space: pre-wrap;
+}
+
 /* ── narrow Ciel container (320px safe, no sideways scroll) ─────────────── */
 
 /* Spacing/target changes only: no font is shrunk to fit. */
@@ -600,3 +646,60 @@
     transition: none;
   }
 }
+/* Refined Ciel review and evidence hierarchy, scoped to plugin-owned bodies. */
+[data-ciel-review],[data-ciel-evidence]{font-size:14px;line-height:1.65;padding:16px 18px 10px;background:var(--dsw-alias-bg-base,var(--ciel-surface-1))}
+[data-ciel-review-titlebar],[data-ciel-evidence-titlebar]{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 14px}
+[data-ciel-review-titlebar] h2,[data-ciel-evidence-titlebar] h2{font-size:21px;line-height:1.4;margin:0;font-weight:600}
+[data-ciel-locate-review],[data-ciel-evidence-back]{background:none!important;color:var(--dsw-alias-state-business-primary)!important;min-height:30px!important;height:auto!important;padding:4px 0!important;text-align:left;justify-content:flex-start!important}
+[data-ciel-review-conclusion]{font-size:20px;line-height:1.5;margin:10px 0;font-weight:600}
+[data-ciel-review-brief]{font-size:14px;color:var(--ciel-text-2);margin:6px 0}
+[data-ciel-review-scope-notice]{font-size:13px;color:var(--ciel-text-2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
+[data-ciel-review-details],[data-ciel-evidence-metadata],[data-ciel-review-secondary],[data-ciel-listing-raw]{border:1px solid var(--ciel-border-soft);border-radius:7px;padding:0 12px;margin-top:12px;background:var(--ciel-surface-1);min-width:0}
+[data-ciel-review-details]>summary,[data-ciel-evidence-metadata]>summary,[data-ciel-review-secondary]>summary,[data-ciel-listing-raw]>summary{font-size:13px;line-height:1.5;padding:11px 0;cursor:pointer;color:var(--ciel-text-1)}
+[data-ciel-review-details] p{font-size:12px;line-height:1.7;margin:8px 0;color:var(--ciel-text-2)}
+[data-ciel-review-hint]{font-size:12px;line-height:1.6;margin:10px 0;color:var(--ciel-text-3)}
+[data-ciel-review-annotations]{padding-top:4px}
+[data-ciel-annotation]{padding:13px;border:1px solid var(--ciel-border-soft);border-radius:8px;margin-bottom:12px;background:var(--dsw-alias-bg-module-platform,var(--ciel-surface-1))}
+[data-ciel-pick]{font-size:13px;min-height:30px}
+[data-ciel-annotation-heading]{display:flex;align-items:flex-start;gap:10px;margin:14px 0 16px}
+[data-ciel-annotation-title]{font-size:17px!important;font-weight:600!important;line-height:1.55!important;margin:0}
+[data-ciel-annotation-section]{margin:16px 0}
+[data-ciel-annotation-section] h4,[data-ciel-annotation-refs] h4{font-size:13px;font-weight:400;color:var(--ciel-text-2);margin:0 0 8px}
+[data-ciel-annotation-anchor]{padding:9px 11px!important;border-left:2px solid var(--ciel-border)!important;background:var(--ciel-surface-2);border-radius:4px;color:var(--ciel-text-1)!important;line-height:1.65}
+[data-ciel-annotation-comment]{font-size:14px;line-height:1.8}
+[data-ciel-annotation-refs]{display:flex;flex-direction:column;align-items:stretch!important;gap:6px;margin-top:14px}
+[data-ciel-annotation-refs]>[data-ciel-action]{justify-content:flex-start!important;padding:9px 12px!important;min-height:48px!important;text-align:left;gap:10px}
+[data-ciel-evidence-link-label]{display:flex;flex-direction:column;align-items:flex-start;min-width:0;gap:3px}
+[data-ciel-evidence-link-label] strong{font-size:13px;font-weight:500}
+[data-ciel-evidence-link-label] small{font-size:11px;color:var(--ciel-text-3);font-weight:400}
+[data-ciel-review-actions]{padding-top:12px!important;padding-bottom:2px;gap:10px!important;background:var(--dsw-alias-bg-base,var(--ciel-surface-1))}
+[data-ciel-review-actions] [data-ciel-submit]{min-height:36px}
+[data-ciel-review-secondary]{margin-bottom:12px}
+[data-ciel-review-secondary] [data-ciel-jev]{border:0;padding:0;margin:0 0 12px;background:none}
+[data-ciel-evidence-subject]{font-size:13px;line-height:1.6;color:var(--ciel-text-2);margin:8px 0}
+[data-ciel-evidence-metadata]{margin:10px 0}
+[data-ciel-evidence-metadata] [data-ciel-evidence-head]{padding:0 0 12px;gap:8px;font-size:12px}
+[data-ciel-evidence-readable=listing]{overflow:auto}
+[data-ciel-listing]{display:flex;flex-direction:column;gap:16px;flex:1;min-height:0;margin:10px 0 16px}
+[data-ciel-listing] h3{font-size:14px;font-weight:500;margin:0 0 9px}
+[data-ciel-listing-pattern]{display:block;font-family:var(--dsw-font-mono,monospace);font-size:13px;padding:10px 12px;border:1px solid var(--ciel-border-soft);border-radius:6px;background:var(--dsw-alias-markdown-code-block);overflow-wrap:anywhere}
+[data-ciel-listing] ul{margin:0;padding:0;list-style:none;border:1px solid var(--ciel-border-soft);border-radius:7px;background:var(--ciel-surface-1);overflow:hidden}
+[data-ciel-listing] li{padding:12px;border-bottom:1px solid var(--ciel-border-soft);overflow-wrap:anywhere;font-size:13px;line-height:1.6}
+[data-ciel-listing] li:last-child{border-bottom:0}
+[data-ciel-listing-limit]{font-size:13px;line-height:1.75;background:var(--ciel-surface-2);padding:12px;border-radius:6px;margin:0;color:var(--ciel-text-2)}
+[data-ciel-listing-raw]{margin:0}
+[data-ciel-listing-raw] [data-ciel-evidence-body]{max-height:280px;min-height:70px;margin-bottom:12px}
+[data-ciel-evidence-current]{margin-top:auto;padding:12px 0 0;flex-shrink:0}
+[data-ciel-evidence-hint]{line-height:1.7}
+@container ciel-surface (max-width:420px){[data-ciel-review],[data-ciel-evidence]{padding:12px 10px 8px}[data-ciel-review-conclusion]{font-size:18px}[data-ciel-annotation-title]{font-size:16px!important}[data-ciel-review-titlebar]{align-items:flex-start;flex-wrap:wrap}}
+
+[data-ciel-review-head]{gap:0!important;padding:0!important}
+[data-ciel-review-titlebar]{margin-bottom:10px}
+[data-ciel-review-status]{margin:0}
+[data-ciel-review-conclusion]{margin:8px 0!important}
+[data-ciel-review-brief]{margin:4px 0 8px!important}
+[data-ciel-review-scope-notice]{margin:4px 0!important}
+[data-ciel-review-details]{margin:8px 0 4px!important}
+[data-ciel-annotation]{gap:2px}
+[data-ciel-annotation-heading]{margin:8px 0}
+[data-ciel-annotation-section]{margin:7px 0}

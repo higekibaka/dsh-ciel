@@ -252,7 +252,7 @@ test('identity strings are preserved verbatim, never trimmed or truncated', () =
 
 test('statusLabel covers the real completed status', () => {
   assert.equal(statusLabel('completed'), '已完成')
-  assert.equal(statusLabel('sound'), '整体成立')
+  assert.equal(statusLabel('sound'), '已核实 · 无阻断')
   assert.equal(statusLabel('incomplete'), '未检查完')
   assert.equal(statusLabel('nonsense'), '状态未知')
 })

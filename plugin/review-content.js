@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { detectSensitiveText } from './review-corpus.js'
 import { projectReviewRequest } from './review-input.js'
 import { evidenceRefs } from './review-evidence.js'
+import { BROWSER_EVIDENCE_TOOLS, EPHEMERAL_EVIDENCE_TOOLS } from './review-evidence-policy.js'
 
 function outputText(blocks) {
   if (!Array.isArray(blocks)) return ''
@@ -198,7 +199,7 @@ const VERIFICATION_LEDGER_CONTRACT =
   '## dossier\n' +
   '- result: s1 | outcome: cleared | evidence: <host evidence IDs, e.g. e1>\n' +
   '- result: s2 | outcome: defect | evidence: <host evidence IDs, e.g. e2>\n' +
-  '- result: s3 | outcome: unchecked | evidence: none\n\n' +
+  '- result: s3 | outcome: unchecked | evidence: none | reason: <what you checked, why it could not settle the claim, and the specific missing evidence>\n\n' +
   '## verdict: pass|changes\n' +
   'summary: <one sentence>\n\n' +
   '### [blocker] title\n' +
@@ -212,6 +213,7 @@ const VERIFICATION_LEDGER_CONTRACT =
   'defect. Unchecked means evidence did not settle the suspicion; it ' +
   'MUST NOT become a conditional risk, warning, suggestion or nit. ' +
   'Never relabel an unchecked/withheld claim with another suspect id. ' +
+  'Cite the smallest sufficient set of decisive receipts. Prefer complete receipts over clipped duplicates; a log excerpt cannot prove an exhaustive absence of errors. ' +
   'Settled outcomes require comma-separated HOST evidence IDs (e1,e2 or a1), not free-form paths or invented quotes. read/grep/glob results are JSON strings: JSON.parse them and cite only the returned evidence_refs, quoting the original relevant snippet with its path and line span and surfacing any truncated/limited flag instead of inventing content. Explain the inference in the annotation comment, not the evidence field. Severity and ' +
   'evidence are separate: every annotation includes its proof. Output ' +
   'the two sections even when no issues survive; never a SOUND-only reply.'
@@ -220,12 +222,21 @@ const CRITIC_VERIFY_CONTRACT =
   '\n\nVERIFY CONTRACT: verify ONLY the ordered selected suspects, cheapest ' +
   'first, within the review deadline. A provided verbatim tool quote ' +
   'may settle a suspicion without another read; cite its host a-prefixed reference and identify the decisive fact in your explanation. ' +
+  'Explicitly supplied historical Host fact receipts are valid evidence for the recorded model route, policy values and declared tools at the target reply. Do not reject those receipts merely because filesystem readers cannot query live runtime state. A directory receipt is instead observed at review start; preserve that time distinction. Do not turn tool declarations into a claim that external calls succeeded. ' +
   'NEVER investigate your own instructions or this review contract. ' +
   'There is NO tool-call or model-request count quota. Reach the snapshot only ' +
   'through a `run_code` program and JSON.parse each nested read/grep/glob result. ' +
   'Read as needed within the remaining time; parsed results carry host-owned ' +
   'review_time metadata (remaining_ms, tool_calls, model_requests). Finish the dossier and verdict ' +
   'before remaining_ms reaches zero; the host stops all work at the deadline. ' +
+  'Investigate EVERY assigned suspect; never skip an id or treat an unknown as a pass. ' +
+  'For each unchecked result, the reason field is mandatory: state the actual check attempted, ' +
+  'what it returned, why this is insufficient, and exactly which evidence is missing. ' +
+  'Do not merely say "not verified". Inspect a promising available source rather than stopping ' +
+  'at a broad search-hit count. A manifest-confirmed inaccessible runtime fact can be ' +
+  'reported as unavailable without pointless reads; never bypass the boundary. ' +
+  'A global snapshot truncation flag does not invalidate a complete focused source read or a scoped search with truncated:false. Judge the actual cited scope. ' +
+  'The snapshot is immutable: retrying an unavailable file through an equivalent absolute or virtual alias cannot reveal more data. Use other relevant supplied evidence, or state the concrete missing evidence. ' +
   'Leave unresolved claims unchecked instead of rushing to certify them. ' +
   'After settling a suspect and BEFORE another tool call, emit a visible ' +
   '## dossier section with its cited result row as a checkpoint; do not ' +
@@ -235,14 +246,20 @@ const CRITIC_VERIFY_CONTRACT =
   VERIFICATION_LEDGER_CONTRACT
 
 const CRITIC_VERIFY_PROMPT_SUFFIX =
-  '\n\nVerify the suspects in order by calling `run_code` with read/grep/glob ' +
-  'programs before the deadline, then emit the dossier and verdict sections as ' +
-  'your visible reply.'
+  '\n\nVerify the assigned suspect against the supplied citable receipts first. ' +
+  'When evidence is still missing, use `run_code` with read/grep/glob programs ' +
+  'within the remaining deadline. Do not perform unrelated filesystem searches ' +
+  'merely to repeat an already recorded Host fact. Emit the dossier and verdict ' +
+  'sections as your visible reply.'
 
 function criticExploreToolsClause(timeoutSeconds) {
   return 'You reach the READ-ONLY snapshot only through `run_code`: a direct read/grep/glob call fails. ' +
     'Inside the program call the declared tools and JSON.parse their JSON string result, e.g. ' +
     '`const r = JSON.parse(await tools.read({ file_path: "/project/a.js" }))`; grep takes a literal substring, glob matches paths. ' +
+    'Search with capture_evidence:false, then read the original context around each relevant hit; a grep line is not the full source. ' +
+    'Use read with capture_evidence:false to inspect full source pages without consuming the citation archive. Follow next_offset until null when the claim requires the entire file. ' +
+    'Return the parsed page from run_code (for example, `return r`) so the model sees original content; a program-computed summary alone is not the source. Print only small pages because console.log has a per-entry byte cap. ' +
+    'Once decisive lines are located, read a focused range with capture_evidence:true (the default). References cover only evidence_spans content, which can be smaller than the original content. evidence_limited reports archive limits separately from source pagination. ' +
     'Emit for the model the original relevant snippet with its path and 1-based line span, plus each result\'s host evidence_refs (e1, e2, …) and any truncated/limited flag; never invent content the snapshot did not return. ' +
     'There are no writes, no shell and no session history. The ENTIRE review has a shared ' + timeoutSeconds +
     '-second deadline, including source capture and nomination; this stage does not reset it. ' +
@@ -269,7 +286,7 @@ function draftText(event) {
  * 由 `snapshotEvents()` 方法（frozen 快照）接任；旧运行时回退原属性。
  * 只读消费，快照与原数组同等对待。
  */
-/** Read-only adapter for the native and V3 PTC tool event vocabularies.
+/** Read-only adapter for V3/V4 native and PTC tool event vocabularies.
  * This never appends synthetic events to the session or guesses model identity.
  * A PTC result is accepted only after its exact matching dispatch start.
  */
@@ -280,6 +297,14 @@ function toolEventView(events) {
   return events.map(event => {
     if (event?.type === 'turn/start') turn = event.data?.turn
     if (event?.type === 'step/start') step = event.data?.step
+    if (event?.type === 'tool/result' && event.data?.message?.role === 'tool'
+      && typeof event.data.message.toolCallId === 'string'
+      && !event.data.message.content?.some(block => block.type === 'tool-result')) {
+      const message = event.data.message
+      return { ...event, data: { ...event.data, message: { ...message, content: [{
+        type: 'tool-result', toolCallId: message.toolCallId, content: message.content, isError: message.isError,
+      }] } } }
+    }
     if (event?.type === 'tool/ptc-dispatch-start' && typeof event.data?.subCallId === 'string') {
       const data = event.data
       starts.set(data.subCallId, data)
@@ -457,12 +482,13 @@ function parseSuspectList(text) {
   const re = /^- suspect:[ \t]*(.*)$/gm
   let m
   while ((m = re.exec(text)) !== null) {
-    const parts = m[1].split(/\s*\|\s*(?=(?:block|bearing|falsify):)/).map((p) => p.trim())
+    const parts = m[1].split(/\s*\|\s*(?=(?:block|bearing|falsify|claim):)/).map((p) => p.trim())
     const suspect = (parts[0] || '').trim()
     if (suspect === '') continue
     let block
     let bearing = 'low'
     let falsify = ''
+    let claim
     for (const part of parts.slice(1)) {
       const b = /^block:[ \t]*(b\d+)$/.exec(part)
       if (b) { block = b[1]; continue }
@@ -470,8 +496,10 @@ function parseSuspectList(text) {
       if (g) { bearing = g[1].toLowerCase(); continue }
       const f = /^falsify:[ \t]*(.*)$/.exec(part)
       if (f) falsify = f[1].trim()
+      const c = /^claim:[ \t]*(.*)$/.exec(part)
+      if (c && c[1].length > 0 && c[1].length <= 1000) claim = c[1]
     }
-    out.push({ suspect: suspect.slice(0, 240), bearing, falsify: falsify.slice(0, 240), ...(block === undefined ? {} : { block }) })
+    out.push({ suspect: suspect.slice(0, 240), bearing, falsify: falsify.slice(0, 240), ...(block === undefined ? {} : { block }), ...(claim === undefined ? {} : { claim }) })
   }
   return out.slice(0, 8)
 }
@@ -502,9 +530,9 @@ function parseOutcomeRows(text) {
   if (!/^## dossier[ \t]*$/m.test(prefix)) issues.push('缺少逐项调查结果')
   for (const line of prefix.split('\n')) {
     if (!/^-\s*result:/i.test(line)) continue
-    const match = /^-\s*result:\s*(s\d+)\s*\|\s*outcome:\s*(defect|cleared|unchecked)\s*\|\s*evidence:\s*(.*)$/i.exec(line)
+    const match = /^-\s*result:\s*(s\d+)\s*\|\s*outcome:\s*(defect|cleared|unchecked)\s*\|\s*evidence:\s*(.*?)(?:\s*\|\s*reason:\s*(.*))?$/i.exec(line)
     if (!match) { issues.push('无法解析逐项结果'); continue }
-    rows.push({ id: match[1].toLowerCase(), outcome: match[2].toLowerCase(), evidence: match[3].trim().slice(0, 400) })
+    rows.push({ id: match[1].toLowerCase(), outcome: match[2].toLowerCase(), evidence: match[3].trim().slice(0, 400), ...(match[4]?.trim() ? { reason: match[4].trim().slice(0, 1200) } : {}) })
   }
   return { rows, issues }
 }
@@ -819,17 +847,67 @@ function advisorTargets(events, target) {
  * diversity the second model exists for evaporates). Slicing by seq range
  * stays correct even for event payloads that carry no turn field.
  *
- * 0.14.1 起按可复现性分级（「做没做」靠摘要存在性核对，「当时看到了什么」
- * 只有世界无法再生产同样字节的证据才值得全文引用）：read/grep/glob 保持
- * 摘要行（批评者自己就能拿到更新鲜的同一份）；bash/web_search/web_fetch
- * 的回显逐条全文引用（verbatim quote），单条 1600 字符、总量 8000 封顶，
- * 超出截断并落标记。
+ * Source reads remain digest-only so the investigator reads the current frozen
+ * source. Terminal/web and explicitly supported recorded Playwright text may
+ * be quoted after full-input privacy screening. An 8000-character total budget
+ * keeps recent observations from both browser and terminal/web categories;
+ * receipts retain event identity, errors and clipping, never image pixels.
  */
-const EPHEMERAL_EVIDENCE_TOOLS = new Set(['bash', 'web_search', 'web_fetch'])
-const EVIDENCE_QUOTE_MAX = 1600
+// Keep the total disclosure bound, but let one short diagnostic/listing use
+// it instead of arbitrarily losing its tail at 1600 characters.
+const EVIDENCE_QUOTE_MAX = 8000
 const EVIDENCE_QUOTES_BUDGET = 8000
 
+// Keep recent observations rather than exhausting the budget on setup chatter.
+// Browser and terminal/web evidence share the SAME total disclosure allowance;
+// reserve each an equal share when both exist, then redistribute unused space.
+function selectEvidenceQuotes(candidates) {
+  const groups = new Map()
+  candidates.forEach((quote, order) => {
+    const group = BROWSER_EVIDENCE_TOOLS.has(quote.name) ? 'browser' : 'other'
+    if (!groups.has(group)) groups.set(group, { rows: [], total: 0, budget: 0 })
+    const lane = groups.get(group)
+    lane.rows.push({ quote, order })
+    lane.total += Math.min(quote.text.length, EVIDENCE_QUOTE_MAX)
+  })
+  const lanes = [...groups.values()]
+  let remaining = EVIDENCE_QUOTES_BUDGET
+  for (const lane of lanes) {
+    lane.budget = Math.min(lane.total, Math.floor(EVIDENCE_QUOTES_BUDGET / lanes.length))
+    remaining -= lane.budget
+  }
+  for (const lane of lanes) {
+    const extra = Math.min(remaining, lane.total - lane.budget)
+    lane.budget += extra
+    remaining -= extra
+  }
+  const chosen = [], marker = '\n…[truncated]'
+  for (const lane of lanes) {
+    let room = lane.budget
+    const recent = lane.rows.reverse()
+    let completeRecords = 0
+    for (const { quote, order } of recent) {
+      if (room <= 0) break
+      if (quote.text.length > Math.min(room, EVIDENCE_QUOTE_MAX)) continue
+      room -= quote.text.length
+      completeRecords++
+      chosen.push({ order, quote })
+    }
+    // A spare budget tail is not a reason to manufacture a clipped older log.
+    // Keep a marked excerpt only when no whole record from this category fits.
+    if (completeRecords === 0 && recent.length && room > marker.length) {
+      const { quote, order } = recent[0]
+      const capacity = Math.min(room, EVIDENCE_QUOTE_MAX)
+      chosen.push({ order, quote: { ...quote, text: quote.text.slice(0, capacity - marker.length) + marker, truncated: true } })
+    }
+  }
+  return chosen.sort((a, b) => a.order - b.order).map(item => item.quote)
+}
+
 function privateEvidenceReference(value) {
+  if (value && typeof value === 'object') {
+    try { value = JSON.stringify(value) } catch { return true }
+  }
   if (typeof value !== 'string') return false
   const stateRoot = process.env.DSH_HOME || join(homedir(), '.dsh')
   if (value.includes(stateRoot)) return true
@@ -849,8 +927,8 @@ function turnEvidence(events, target, { protectInputs = false } = {}) {
   const request = projectReviewRequest(events, target)
   const calls = new Map()
   const results = []
-  const quotes = []
-  let quotesSpent = 0
+  const candidates = []
+  let omittedTools = 0
   let withheld = false
   for (const event of events) {
     if (!event || event.seq < startSeq || event.seq >= target.seq) continue
@@ -872,21 +950,26 @@ function turnEvidence(events, target, { protectInputs = false } = {}) {
         fullText = texts.join('\n')
         if (fullText !== '') snippet = fullText.replace(/\s+/g, ' ').trim().slice(0, 240)
       }
-      if (protectInputs && (call?.privateSource || !['read', 'grep', 'glob', 'write', 'edit', 'run_code', ...EPHEMERAL_EVIDENCE_TOOLS].includes(name) || detectSensitiveText(fullText) || privateEvidenceReference(fullText))) {
+      if (protectInputs && (call?.privateSource || detectSensitiveText(fullText) || privateEvidenceReference(fullText))) {
         withheld = true
         results.push('- tool result withheld for privacy; it cannot substantiate draft claims')
         continue
       }
+      if (protectInputs && !['read', 'grep', 'glob', 'write', 'edit', 'run_code', ...EPHEMERAL_EVIDENCE_TOOLS].includes(name)) {
+        omittedTools++
+        continue
+      }
       results.push('- ' + name + ': ' + ((block && block.isError) ? 'ERROR' : 'ok') + (protectInputs || snippet === '' ? '' : ' — "' + snippet + '"'))
-      if (EPHEMERAL_EVIDENCE_TOOLS.has(name) && fullText !== '' && quotesSpent < EVIDENCE_QUOTES_BUDGET) {
-        const room = Math.min(EVIDENCE_QUOTE_MAX, EVIDENCE_QUOTES_BUDGET - quotesSpent)
-        const truncated = fullText.length > room
-        const text = truncated ? fullText.slice(0, room) + '\n…[truncated]' : fullText
-        quotesSpent += text.length
-        quotes.push({ name, isError: !!(block && block.isError), text })
+      if (EPHEMERAL_EVIDENCE_TOOLS.has(name) && fullText !== '') {
+        candidates.push({ name, isError: !!(block && block.isError), text: fullText,
+          truncated: /\[(?:output |content |line )?truncated\b|…\[truncated\]|\(line truncated/i.test(fullText),
+          ...(Number.isSafeInteger(event.seq) ? { sourceSeq: event.seq } : {}),
+          ...(Number.isFinite(event.time) ? { observedAt: event.time } : {}),
+        })
       }
     }
   }
+  const quotes = selectEvidenceQuotes(candidates)
   const MAX_TOOLS = 15
   return {
     request: request.text,
@@ -895,7 +978,7 @@ function turnEvidence(events, target, { protectInputs = false } = {}) {
       ? 'No tool results are included for this turn. This is a turn-local, incomplete view, NOT evidence that work or tests did not happen. Earlier turns and background work may be absent; leave unresolvable claims unchecked.'
       : results.slice(0, MAX_TOOLS).join('\n') + (results.length > MAX_TOOLS ? '\n… +' + (results.length - MAX_TOOLS) + ' more' : ''),
     quotes,
-    ...(protectInputs ? { withheld, sensitiveInput: request.texts.some(text => detectSensitiveText(text)) } : {}),
+    ...(protectInputs ? { withheld, omittedTools, sensitiveInput: request.texts.some(text => detectSensitiveText(text)) } : {}),
   }
 }
 

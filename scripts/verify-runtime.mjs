@@ -25,6 +25,7 @@ if (!checkout) throw new Error('DSH_CHECKOUT must point to a built DSH checkout'
 // TARGET's Cordis and Typert, never a second copy from the plugin workspace.
 const targetRequire = createRequire(join(checkout, 'packages/core/tools/package.json'))
 const targetCordis = targetRequire.resolve('@deepseek-ai/cordis')
+const targetSchema = targetRequire.resolve('@deepseek-ai/schemastery')
 const targetTypert = join(checkout, 'packages/typert/protocol/lib/index.js')
 const runnerUrl = new URL('../plugin/review-runner.js', import.meta.url).href
 const resolutionHook = registerHooks({ resolve(specifier, context, nextResolve) {
@@ -32,6 +33,7 @@ const resolutionHook = registerHooks({ resolve(specifier, context, nextResolve) 
   const paths = { '@deepseek-ai/dsh-subagent': 'packages/subagent/subagent', '@deepseek-ai/dsh-llm': 'packages/llm/llm', '@deepseek-ai/dsh-tools': 'packages/core/tools' }
   if (context.parentURL === runnerUrl && paths[specifier]) return { url: pathToFileURL(join(checkout, paths[specifier], 'lib/index.js')).href, shortCircuit: true }
   if (specifier === '@deepseek-ai/cordis') return { url: pathToFileURL(targetCordis).href, shortCircuit: true }
+  if (specifier === '@deepseek-ai/schemastery') return { url: pathToFileURL(targetSchema).href, shortCircuit: true }
   if (specifier === '@deepseek-ai/dsh-typert-protocol') return { url: pathToFileURL(targetTypert).href, shortCircuit: true }
   return nextResolve(specifier, context)
 } })
@@ -82,7 +84,7 @@ let networkRequests = 0
 globalThis.fetch = async (url, options) => {
   if (!live) throw new Error('Network forbidden in offline replay')
   const parsed = new URL(typeof url === 'string' ? url : url.url || String(url))
-  if (parsed.origin !== 'https://api.deepseek.com' || parsed.pathname !== '/chat/completions') throw new Error('Unexpected verification endpoint')
+  if (parsed.origin !== 'https://api.deepseek.com' || !['/chat/completions', '/v1/messages'].includes(parsed.pathname)) throw new Error('Unexpected verification endpoint')
   if (++networkRequests > 32) throw new Error('Verification batch request limit reached')
   try { return await originalFetch(url, options) } catch (error) {
     console.error('DeepSeek transport diagnostic:', { name: error.name, code: error.code, causeCode: error.cause?.code })
@@ -207,7 +209,13 @@ class ScriptedAdapter extends LlmAdapter {
     const leaves = []
     const timeSamples = []
     for (const message of options.messages || []) for (const block of message.content || []) {
-      if (block.type === 'text') leaves.push(block.text)
+      if (block.type === 'text') {
+        leaves.push(block.text)
+        if (message.role === 'tool') {
+          this.lastToolResult = block.text
+          collectToolEvidence(block.text, this.refs, timeSamples)
+        }
+      }
       if (block.type === 'tool-result') for (const part of block.content || []) if (part.type === 'text') {
         leaves.push(part.text)
         this.lastToolResult = part.text
@@ -228,7 +236,7 @@ class ScriptedAdapter extends LlmAdapter {
       })
       return
     }
-    const chunks = typeof item === 'function' ? item(this) : item
+    const chunks = typeof item === 'function' ? item(this, options) : item
     const ref = this.refs.at(-1) ?? '%REF%'
     for (const chunk of chunks) { options.signal.throwIfAborted(); yield withEvidenceRef(chunk, ref) }
   }
@@ -527,7 +535,7 @@ async function runCase(name, script, options = {}) {
     if (live) {
       if (!process.env.DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY is required; never put it in source or argv')
       const ds = await load('packages/llm/llm-deepseek')
-      const connection = ds.resolveAdapterOptions(ds.Config({ maxTokens: 4096, reasoningEffort: 'low', retryPolicy: { mode: 'normal', maxRetries: 0 } }))
+      const connection = ds.resolveAdapterOptions({ maxTokens: 4096, reasoningEffort: 'low', retryPolicy: { mode: 'normal', maxRetries: 0 } })
       const remote = new ds.DeepSeekAdapter({
         options: () => connection,
         resolveApiKey: async () => process.env.DEEPSEEK_API_KEY,
@@ -551,11 +559,13 @@ async function runCase(name, script, options = {}) {
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'Synthetic plan saved.',
     })
     plugin = ctx.plugin(ciel, {
-      ...ciel.Config({}), provider: 'fixture', model: 'fixed', criticProvider: live ? 'deepseek-official' : 'fixture',
+      ...ciel.configValues(ciel.Config({})), provider: 'fixture', model: 'fixed', criticProvider: live ? 'deepseek-official' : 'fixture',
       criticModel: live ? model : 'fixed', criticEffort: live ? 'low' : 'provider',
       criticExploreBudget: options.legacyQueries, criticMaxTokens: 4096, criticMaxRequests: options.legacyRequests,
       criticTimeoutSeconds: options.timeoutSeconds ?? 180,
       guidanceEnabled: false, planReminderEnabled: Boolean(options.planning),
+      jevEnabled: options.jevEnabled === true,
+      advisorJevEnabled: options.advisorJevEnabled === true,
       ...(options.advisor ? { requireExploration: false, enforceFollowupGap: false } : {}),
     })
     await plugin.await()
@@ -630,10 +640,11 @@ async function runCase(name, script, options = {}) {
         agent: parent, callId: 'advice-' + i, name: 'ask_advisor', signal: new AbortController().signal,
         arguments: { question: 'What should be verified?', context: 'Fixed offline fixture inspected.' },
       })))
-      assert.equal(results.filter((r) => !r.isError).length, 1, 'only one simultaneous consultation may execute')
+      assert.equal(results.filter((r) => !r.isError).length, 1, 'only one simultaneous consultation may execute: ' + JSON.stringify(results))
       const accepted = results.find((r) => !r.isError)
       assert.deepEqual(accepted.value.modelUsage, { requested: { provider: 'fixture', model: 'fixed' }, used: [{ provider: 'fixture', model: 'fixed' }] }, 'advisor captures actual response source')
       assert.deepEqual(accepted.meta.modelUsage, accepted.value.modelUsage, 'durable tool presentation stores the same provenance')
+      await options.expectAdvisor?.(accepted, service, parent)
       const deniedUsage = await service.callModelUsage({ sessionId: parent.id, kind: 'tool', id: 'advice-1' })
       assert.deepEqual(deniedUsage.modelUsage.used, [], 'a rejected parallel call does not claim model execution')
       assert.equal(adapter.requests.length, 2, 'fixture draft plus exactly one advisor request')
@@ -797,6 +808,129 @@ try {
       expect: (result) => { assert.equal(result.ok, false); assert.equal(result.review.status, 'error'); assert.equal(result.review.explore?.salvaged ?? false, false) },
     })
     await runCase('scripted-accurate', [textResponse(suspects), toolResponse(['read']), textResponse(pass)], { expect: (r, tools) => { assert.equal(r.review.status, 'sound'); assert.equal(r.review.modelRequests, 3); assert.equal(tools.length, 1) } })
+    await runCase('scripted-historical-host-facts', [
+      textResponse('## suspects\n- suspect: actual model route | block: b1 | bearing: high | falsify: historical host fact | claim: The active model route is fixture / fixed.'),
+      (_adapter, options) => {
+        const prompt = (options.messages || []).flatMap(message => (message.content || []).filter(block => block.type === 'text').map(block => block.text)).join('\n')
+        const ref = /Host historical fact receipt (e\d+) \(model-route, available\)/.exec(prompt)?.[1]
+        assert.ok(ref)
+        assert.match(prompt, /"sandboxMode": "read-only"/)
+        assert.match(prompt, /"approvalPolicy": "ask"/)
+        return textResponse(pass.replace('%REF%', ref))
+      },
+    ], {
+      draft: 'The active model route is fixture / fixed.', jevEnabled: true,
+      setupParent: async ({ parent }) => {
+        parent.session.append('sandbox/mode', { mode: 'read-only' })
+        parent.session.append('approval/policy', { policy: 'ask' })
+      },
+      prepareReview: async ({ ctx, parent }) => {
+        // Later settings cannot rewrite the old reply's authorization history.
+        parent.session.append('sandbox/mode', { mode: 'danger-full-access' })
+        parent.session.append('approval/policy', { policy: 'never' })
+        const { checkReviewWithJev, JEV_MODEL } = await import('../plugin/jev-review.js')
+        ctx.get('advisorReview').coordinator.checkJev = options => checkReviewWithJev({ ...options, apiKey: 'fixture-key', fetchImpl: async (_url, init) => {
+          const item = JSON.parse(init.body).state.items.s1
+          assert.equal(item.evidence[0].kind, 'host-fact')
+          assert.equal(item.evidence[0].temporal, 'target-reply-history')
+          assert.match(item.evidence[0].content, /"responseRoute"/)
+          assert.doesNotMatch(init.body, /fixture-key|apiKey|replayState/)
+          return Response.json({ model: JEV_MODEL, answers: { s1: { type: 'choice', choice: 'supports', confidence: 0.8,
+            probabilities: { supports: 0.8, contradicts: 0.1, insufficient: 0.1 } } }, usage: { input_tokens: 150, output_tokens: 10 } })
+        } })
+      },
+      expect: async (r, tools, _requests, context) => {
+        assert.equal(r.review.status, 'sound')
+        assert.equal(r.review.modelRequests, 3)
+        assert.equal(tools.length, 0)
+        assert.equal(r.review.jev.status, 'completed')
+        const evidence = await context.service.readEvidence({ sessionId: context.parent.id, reviewId: r.review.reviewId, evidenceId: r.review.evidenceIds[0] })
+        assert.equal(evidence.evidence.kind, 'host-fact')
+        assert.equal(JSON.parse(evidence.evidence.content).responseRoute.model, 'fixed')
+      },
+    })
+
+    const independentReply = (_adapter, options) => {
+      const texts = (options.messages || []).flatMap(message => (message.content || []).filter(block => block.type === 'text').map(block => block.text))
+      const assignment = texts.find(text => text.includes('Independent investigation:')) || ''
+      const id = /\n(s[12])\. \[b1\]/.exec(assignment)?.[1]
+      assert.ok(id, 'every native child receives exactly one assigned suspect')
+      assert.equal((assignment.match(/\ns[12]\. \[b1\]/g) || []).length, 1)
+      const refs = []
+      for (const message of options.messages || []) if (message.role === 'tool') {
+        for (const block of message.content || []) if (block.type === 'text') collectToolEvidence(block.text, refs, [])
+      }
+      return refs.length
+        ? textResponse(pass.replace('result: s1', 'result: ' + id).replace('%REF%', refs.at(-1)))
+        : toolResponse(['read'], '', id === 's1' ? fixture : secondFixture)
+    }
+    await runCase('scripted-independent-suspects', [
+      textResponse(suspects + '\n- suspect: 第二个文件行数 | block: b1 | bearing: low | falsify: read ' + secondFixture),
+      independentReply, independentReply, independentReply, independentReply,
+    ], { expect: async (r, tools, _requests, context) => {
+      assert.equal(r.ok, true)
+      assert.equal(r.review.status, 'sound')
+      assert.equal(r.review.modelRequests, 5)
+      assert.equal(tools.length, 2)
+      assert.deepEqual(r.review.stats, { checked: 2, confirmed: 0, excluded: 2, unchecked: 0 })
+      assert.deepEqual(r.review.investigations.map(row => [row.id, row.toolCalls, row.modelRequests, row.status]), [
+        ['s1', 1, 2, 'settled'], ['s2', 1, 2, 'settled'],
+      ])
+      for (const row of r.review.investigations) {
+        const result = await context.service.readEvidence({ sessionId: context.parent.id, reviewId: r.review.reviewId, evidenceId: row.evidenceRefs[0] })
+        assert.equal(result.evidence.path, row.id === 's1' ? '/project/fixture.txt' : '/project/fixture-two.txt')
+      }
+    } })
+
+    await runCase('scripted-jev-shadow', [textResponse(suspects + ' | claim: The fixture has 3 lines.'), toolResponse(['read']), textResponse(pass)], {
+      draft: 'The fixture has 3 lines.', jevEnabled: true,
+      prepareReview: async ({ ctx }) => {
+        const { checkReviewWithJev, JEV_MODEL } = await import('../plugin/jev-review.js')
+        ctx.get('advisorReview').coordinator.checkJev = options => checkReviewWithJev({ ...options, apiKey: 'fixture-key', fetchImpl: async (url, init) => {
+          assert.equal(url, 'https://api.typesafe.ai/v1/systemone')
+          const input = JSON.parse(init.body)
+          assert.equal(input.state.items.s1.claim, 'The fixture has 3 lines.')
+          assert.equal(input.state.items.s1.evidence[0].content, 'alpha\nbeta\ngamma\n')
+          assert.equal(input.state.items.s1.evidence[0].path, '/project/fixture.txt')
+          assert.doesNotMatch(init.body, /criticOutcome|cleared|ciel-assembled-/)
+          return Response.json({ model: JEV_MODEL, answers: { s1: { type: 'choice', choice: 'supports', confidence: 0.8,
+            probabilities: { supports: 0.8, contradicts: 0.1, insufficient: 0.1 } } }, usage: { input_tokens: 150, output_tokens: 10 } })
+        } })
+      },
+      expect: (r, tools) => {
+        assert.equal(r.review.status, 'sound')
+        assert.equal(r.review.modelRequests, 4)
+        assert.equal(tools.length, 1)
+        assert.equal(r.review.jev.status, 'completed')
+        assert.equal(r.review.jev.checks[0].disagreement, false)
+        assert.equal(r.review.jev.requestCount, 1)
+      },
+    })
+    const originalPages = Array.from({ length: 2500 }, (_, i) => 'original line ' + (i + 1) + ' ' + 'x'.repeat(120) + '\n').join('')
+    await runCase('scripted-full-original-pages', [textResponse(suspects), ptcRawResponse(`
+      const pages = [];
+      let offset = 1;
+      while (offset !== null) {
+        const page = JSON.parse(await tools.read({ file_path: '/project/paged-original.txt', offset, limit: 1000, capture_evidence: false }));
+        pages.push(page);
+        offset = page.next_offset;
+      }
+      const original = pages.map(p => p.content).join('');
+      if (original.length !== ${originalPages.length} || !original.endsWith(${JSON.stringify(originalPages.split('\n').at(-2) + '\n')})) throw new Error('original text was truncated');
+      const citation = JSON.parse(await tools.read({ file_path: '/project/paged-original.txt', offset: 2499, limit: 1 }));
+      return { pages, citation };
+    `), textResponse(pass)], {
+      prepareReview: async () => { await writeFile(join(home, 'paged-original.txt'), originalPages) },
+      expect: async (result, _tools, requests, context) => {
+        assert.equal(result.review.coverage, 'complete', 'fully read pages and a complete focused citation must not leave sticky partial coverage')
+        assert.equal(result.review.privacy.dataLimited, false)
+        const modelInput = requests.at(-1).lastToolResult
+        for (const line of [1, 1000, 1001, 2000, 2001, 2500]) assert.ok(modelInput.includes('original line ' + line + ' '), 'original page content must reach the next model request: ' + line)
+        const evidence = await context.service.readEvidence({ sessionId: context.parent.id, reviewId: result.review.reviewId, evidenceId: result.review.evidenceIds[0] })
+        assert.equal(evidence.evidence.content, originalPages.split('\n')[2498] + '\n')
+        await rm(join(home, 'paged-original.txt'))
+      },
+    })
     await runCase('scripted-placeholder-token-draft', [textResponse(suspects), toolResponse(['read']), textResponse(pass)], {
       draft: '启动网址示例 http://127.0.0.1:3080/?token=… 只是占位符，不是真实凭据。',
       expect: (r) => { assert.equal(r.ok, true) },
@@ -855,7 +989,7 @@ try {
         assert.equal(r.review.status, 'sound')
         assert.equal(tools.length, 1)
         assert.equal(await readFile(changingFixture, 'utf8'), 'mutated-after-capture\n', 'the live file changed after capture')
-        const stored = await context.service.readEvidence({ sessionId: context.parent.id, reviewId: r.review.reviewId, evidenceId: 'e1' })
+        const stored = await context.service.readEvidence({ sessionId: context.parent.id, reviewId: r.review.reviewId, evidenceId: r.review.evidenceIds[0] })
         assert.equal(stored.ok, true)
         assert.equal(stored.evidence.content, changingContent, 'readEvidence keeps the captured bytes, never the live file')
         assert.equal(stored.evidence.contentSha256, createHash('sha256').update(changingContent).digest('hex'))
@@ -877,6 +1011,41 @@ try {
     })
     await runCase('scripted-cancel', ['hang'], { cancel: true, expect: (r) => { assert.equal(r.review.status, 'cancelled'); assert.equal(r.review.modelRequests, 1) } })
     await runCase('scripted-advisor-concurrency', [textResponse('## [high] Boundary\nframing: fixed fixture\npitfalls: concurrency\nverification_target: one request')], { advisor: true })
+    {
+      const savedFetch = globalThis.fetch, savedKey = process.env.TYPESAFE_API_KEY
+      const originalAdvice = '## [high] Queue\nframing: Use the in-process queue.\npitfalls: memory pressure\nverification_target: measure queue bounds'
+      let jevCalls = 0
+      try {
+        await runCase('scripted-advisor-jev', [textResponse(originalAdvice)], {
+          advisor: true, advisorJevEnabled: true,
+          setupParent() {
+            process.env.TYPESAFE_API_KEY = 'fixture-key'
+            globalThis.fetch = async (url, init) => {
+              assert.equal(url, 'https://api.typesafe.ai/v1/systemone')
+              jevCalls++
+              const request = JSON.parse(init.body)
+              assert.equal(request.state.items.a1.advice, originalAdvice)
+              assert.equal(request.state.context, 'Fixed offline fixture inspected.')
+              return Response.json({ model: 'jev-1.13.0', answers: { a1: { type: 'choice', choice: 'insufficient', confidence: 0.8,
+                probabilities: { supports: 0.1, contradicts: 0.1, insufficient: 0.8 } } }, usage: { input_tokens: 80, output_tokens: 5 } })
+            }
+          },
+          async expectAdvisor(accepted, service, parent) {
+            assert.equal(jevCalls, 1)
+            assert.equal(accepted.value.text, originalAdvice)
+            assert.equal(accepted.value.jev.checks[0].relation, 'insufficient')
+            assert.deepEqual(accepted.meta.jev, accepted.value.jev)
+            const saved = await service.readAdvice({ sessionId: parent.id, callId: 'tool:advice-0' })
+            assert.equal(saved.ok, true)
+            assert.equal(saved.advice.text, originalAdvice)
+            assert.deepEqual(saved.advice.jev, accepted.value.jev)
+          },
+        })
+      } finally {
+        globalThis.fetch = savedFetch
+        if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = savedKey
+      }
+    }
     await runCase('scripted-advise-removed', [], { removedCommand: true })
     await runCase('scripted-sensitive-advisor-input', [], { privateAdvisor: true })
     for (const [name, path] of [['dotenv', secretFixture], ['author-record', processFixture], ['symlink', processLink], ['invalid-query', null]]) {

@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { toolEventView } from '../review-content.js'
 import { projectReviewRequest } from '../review-input.js'
 import { gateFacts, reminderTextFor, turnEvidence } from '../index.js'
 
@@ -213,4 +214,38 @@ test('non-text input cannot silently claim a complete textual task review', () =
   const projected = projectReviewRequest([turn(0, 1), image], target(2, 1))
   assert.equal(projected.text, 'Compare the attached image')
   assert.ok(projected.context.reasons.includes('non-text-input'))
+})
+
+
+test('V4 tool messages preserve verdict evidence, quota semantics and read-only idempotence', () => {
+  const events = [turn(0, 1), call(1, 'ask_advisor', 'a'), {
+    seq: 2, type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'a', isError: true,
+      content: [{ type: 'text', text: 'Error: context is required:' }] } },
+  }]
+  const before = JSON.stringify(events)
+  const normalized = toolEventView(events)
+  assert.deepEqual(toolEventView(normalized), normalized)
+  assert.equal(JSON.stringify(events), before)
+  assert.equal(gateFacts(agent(events)).settledThisTurn, 0)
+  events[2].data.message.content[0].text = 'Provider request failed'
+  assert.equal(gateFacts(agent(events)).settledThisTurn, 1)
+})
+
+test('V4 native runtime snapshots spend the reminder only with matching attribution', () => {
+  const events = [turn(0, 1), call(1, 'todo_write')]
+  events.push(human(2, '[advisor:plan-reminder]', { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'other' }] }))
+  assert.ok(reminder(events))
+  events.push(human(3, '[advisor:plan-reminder]', { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'advisor:plan-reminder' }] }))
+  assert.equal(reminder(events), '')
+})
+
+test('V4 compact checkpoints recover human originals across developer surface nodes', () => {
+  const events = [turn(0, 1), human(1, 'ORIGINAL'), {
+    seq: 2, type: 'developer/message', surfaceOp: 'append', data: { content: [{ type: 'text', text: 'DEVELOPER_CONTEXT' }] },
+  }]
+  const seq = compact(events, [1, 2])
+  events.at(-1).data.source = { kind: 'compact-checkpoint', compactionId: events.at(-1).data.source.compactionId }
+  assert.deepEqual(projectReviewRequest(events, target(seq + 1, 1)).texts, ['ORIGINAL'])
+  events.at(-1).sourceEventSeqs = [1, 2]
+  assert.equal(projectReviewRequest(events, target(seq + 1, 1)).text, '')
 })

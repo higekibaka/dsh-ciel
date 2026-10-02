@@ -30,9 +30,9 @@ const DEFAULTS = {
   requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true,
   reasoningEffort: 'provider', guidanceEnabled: true, criticProvider: 'google',
   criticModel: 'gemini-3.8-flash', criticEffort: 'medium', criticExploreEnabled: true,
-  enabled: true, criticTimeoutSeconds: 180,
+  enabled: true, jevEnabled: false, advisorJevEnabled: false, criticTimeoutSeconds: 180,
   criticMaxTokens: 16384, advisorTimeoutSeconds: 180,
-  criticAdditionalRoots: [],
+  criticAdditionalRoots: [], jevApiKey: '', jevEndpoint: 'https://api.typesafe.ai/v1/systemone', jevModel: 'jev-1.13.0',
 }
 
 // ── 1. host configuration schema ────────────────────────────────────────────
@@ -40,7 +40,7 @@ test('host Config declares no uiAppearance field', async () => {
   const host = await import(new URL('../index.js', import.meta.url).href)
   assert.ok(host.Config && (typeof host.Config === 'object' || typeof host.Config === 'function'), 'plugin/index.js must export the Config schema')
   assert.ok(host.Config.dict && typeof host.Config.dict === 'object', 'the Config schema must expose its field dictionary')
-  assert.equal(typeof host.Config({}).enabled, 'boolean', 'the schema must remain callable to resolve defaults')
+  assert.equal(typeof host.configValues(host.Config({})).enabled, 'boolean', 'the schema must remain callable to resolve defaults')
   assert.equal('uiAppearance' in host.Config.dict, false, 'the host schema must not declare uiAppearance')
   for (const key of Object.keys(host.Config.dict)) {
     assert.doesNotMatch(key, /appearance/i, 'no host schema key may look like the removed feature: ' + key)
@@ -48,7 +48,7 @@ test('host Config declares no uiAppearance field', async () => {
   // A known retained field proves the schema itself is intact and non-vacuous.
   assert.ok('enabled' in host.Config.dict, 'the schema must still declare the retained enabled field')
   assert.ok('criticAdditionalRoots' in host.Config.dict, 'the schema must still declare criticAdditionalRoots')
-  const resolved = host.Config({})
+  const resolved = host.configValues(host.Config({}))
   assert.equal(typeof resolved.enabled, 'boolean')
   assert.equal(resolved.uiAppearance, undefined, 'a resolved config must not invent an appearance value')
 })

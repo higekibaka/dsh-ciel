@@ -1,9 +1,10 @@
+import { reviewConclusion, listingPresentation, hasSettledReviewItems } from './presentation.js'
 /**
  * Ciel's native right-Sidebar half: the review, evidence, and advice resources
  * and the tab bodies that show them.
  *
  * Three `dsh-resource://` protocols, one tab type each, one body each. The
- * module is pure ESM with no imports: React, the native `Tag`, and the
+ * module is pure ESM: React, the native `Tag`, and the
  * Workspace-path helper arrive as factory parameters, and the Host RPC arrives
  * as the `call` dependency of `install`. The parent plugin owns the Remote
  * method declarations and the chat-entry wiring; this module owns the native
@@ -52,6 +53,8 @@
  */
 
 /** The review resource protocol and tab kind. */
+import { advisorJevPanel } from './advisor-jev.js'
+
 export const CIEL_REVIEW = 'ciel-review'
 /** The evidence resource protocol and tab kind. */
 export const CIEL_EVIDENCE = 'ciel-evidence'
@@ -265,6 +268,15 @@ function issueText(issue) {
   return String(issue)
 }
 
+/** Severity-only legacy `pass` is not an overall completeness decision. */
+function reviewVerdictText(entry) {
+  if (entry.verdict === 'changes') return '已确认项需修改'
+  if (entry.verdict !== 'pass') return ''
+  if (entry.coverage !== 'complete' && hasSettledReviewItems(entry)) return '疑点已排除，证据仍受限'
+  return entry.coverage === 'complete' && !(entry.stats?.unchecked > 0) && !['incomplete', 'unverified', 'cancelled', 'error'].includes(entry.status)
+    ? '已核实范围内无阻断' : '尚不能判定通过'
+}
+
 /** The display tone of a status Tag. */
 function reviewTone(entry) {
   switch (entry.status) {
@@ -278,9 +290,9 @@ function reviewTone(entry) {
 /** The display text of a review's status. */
 function reviewStatusText(entry) {
   switch (entry.status) {
-    case 'sound': return '整体成立'
+    case 'sound': return '已核实 · 无阻断'
     case 'completed': return '发现问题'
-    case 'incomplete': return '部分核实'
+    case 'incomplete': return hasSettledReviewItems(entry) ? '已核查 · 证据受限' : '部分核实'
     case 'unverified': return '未核实'
     case 'cancelled': return '已取消'
     case 'error': return '评审失败'
@@ -298,6 +310,9 @@ function evidenceKindText(kind) {
     case 'search': return '检索'
     case 'listing': return '目录'
     case 'reported': return '作者报告'
+    case 'host-fact': return '历史宿主事实'
+    case 'tool-output': return '历史工具输出'
+    case 'directory': return '评审时目录清单'
     default: return typeof kind === 'string' && kind !== '' ? kind : '证据'
   }
 }
@@ -598,6 +613,10 @@ export function createCielSidebar(dependencies) {
     const prepareFeedback = props.prepareFeedback
     const onTriage = props.onTriage
     const openEvidence = props.openEvidence
+    const [, setConfigurationTick] = React.useState(0)
+    React.useEffect(() => typeof props.subscribeConfiguration === 'function' ? props.subscribeConfiguration(() => setConfigurationTick(n => n + 1)) : undefined, [props.subscribeConfiguration])
+    const feedbackEnabled = typeof props.canPrepareFeedback !== 'function' || props.canPrepareFeedback()
+    const detailsRef = React.useRef(null)
     const info = useTabInfo()
     const tab = info.tab
     const parsed = parseCielAddress(tab.contentId)
@@ -688,7 +707,7 @@ export function createCielSidebar(dependencies) {
     }
     const submit = () => {
       const items = [...selected].sort((left, right) => left - right).map((index) => ({ index }))
-      if (items.length === 0) return undefined
+      if (items.length === 0 || !feedbackEnabled || phase === 'sending') return undefined
       if (typeof prepareFeedback !== 'function') {
         setPhase('error')
         setNote('输入框回传未接线。')
@@ -708,15 +727,16 @@ export function createCielSidebar(dependencies) {
           setNote(errorText(result))
           return
         }
+        if (result?.cancelled) { setPhase('idle'); setNote('已取消，输入框保持不变。'); return }
         setPhase('sent')
-        setNote('已填入输入框；请核对后手动发送。')
+        setNote(result?.duplicate ? '这条批注已在草稿中，没有重复添加。' : '已填入输入框；请核对后手动发送。')
       }, (error) => {
         setPhase('error')
         setNote(errorText(error))
       })
     }
-    const openRef = (evidenceId) => {
-      if (typeof openEvidence === 'function') openEvidence(parsed.sessionId, parsed.recordId, evidenceId)
+    const openRef = (evidenceId, annotationIndex, annotation) => {
+      if (typeof openEvidence === 'function') openEvidence(parsed.sessionId, parsed.recordId, evidenceId, annotation ? { annotationIndex, annotationTitle: String(annotation.title || '').slice(0,200), annotationAnchor: String(annotation.anchor || '').slice(0,1000) } : undefined)
     }
 
     const stats = review.stats !== null && typeof review.stats === 'object' ? review.stats : undefined
@@ -726,9 +746,9 @@ export function createCielSidebar(dependencies) {
     const head = [
       h('div', { key: 'status', 'data-ciel-review-status': reviewStatusText(review) },
         chip(reviewTone(review), reviewStatusText(review), 'status'),
-        typeof review.verdict === 'string' && review.verdict !== '' ? h('span', { key: 'verdict' }, ' · 裁决 ' + review.verdict) : null,
+        reviewVerdictText(review) ? h('span', { key: 'verdict' }, ' · ' + reviewVerdictText(review)) : null,
         review.sound === true ? h('span', { key: 'sound' }, ' · 宿主判定无阻断') : null),
-      review.summary === undefined ? null : h('p', { key: 'summary', 'data-ciel-review-summary': '' }, String(review.summary)),
+      review.summary === undefined ? null : h('p', { key: 'summary', 'data-ciel-review-summary': '' }, String(review.summary).replace(/(\d+) 项未查/g, '$1 项未核实')),
       h('p', { key: 'meta', 'data-ciel-review-meta': '' },
         '评审 ' + parsed.recordId + ' · 消息 ' + String(review.messageId === undefined ? '—' : review.messageId) +
         (formatTime(review.createdAt) === '' ? '' : ' · ' + formatTime(review.createdAt))),
@@ -736,10 +756,10 @@ export function createCielSidebar(dependencies) {
         '覆盖：' + String(review.coverage === undefined ? '未标注' : review.coverage) +
         (typeof review.coverageNote === 'string' && review.coverageNote !== '' ? ' · ' + review.coverageNote : '')),
       stats === undefined ? null : h('p', { key: 'stats', 'data-ciel-review-stats': '' },
-        '排查 ' + String(stats.checked === undefined ? '—' : stats.checked) +
-        ' · 证伪 ' + String(stats.confirmed === undefined ? '—' : stats.confirmed) +
+        '疑点 ' + String(stats.checked === undefined ? '—' : stats.checked) +
+        ' · 确认问题 ' + String(stats.confirmed === undefined ? '—' : stats.confirmed) +
         ' · 排除 ' + String(stats.excluded === undefined ? '—' : stats.excluded) +
-        ' · 未查 ' + String(stats.unchecked === undefined ? '—' : stats.unchecked)),
+        ' · 未核实 ' + String(stats.unchecked === undefined ? '—' : stats.unchecked)),
       explore === undefined ? null : h('p', { key: 'explore', 'data-ciel-review-explore': '' },
         '已查询 ' + String(explore.toolCalls === undefined ? '—' : explore.toolCalls) +
         (Number.isFinite(explore.budget) ? '/' + explore.budget : ' 次') +
@@ -751,6 +771,49 @@ export function createCielSidebar(dependencies) {
         : h('p', { key: 'privacy', 'data-ciel-review-privacy': '' },
           [privacy.dataLimited === true ? '资料读取受范围或大小限制' : '', privacy.evidenceWithheld === true ? '部分作者工具输出未提供' : ''].filter(Boolean).join('；')),
     ].filter((node) => node !== null)
+
+    const investigations = Array.isArray(review.investigations) ? review.investigations : []
+    const investigationPanel = investigations.length ? h('section', {
+      key: 'investigations', 'data-ciel-investigations': '', 'aria-label': '逐项调查',
+    },
+      h('strong', {}, '逐项调查 · ' + investigations.length + ' 项'),
+      h('p', {}, '次数与耗时由宿主记录；调查说明来自模型或执行错误，不代表独立证明。'),
+      ...investigations.map(row => h('article', { key: row.id, 'data-ciel-investigation': row.id },
+        h('strong', {}, row.id + ' · ' + (row.status === 'failed' ? '核查失败' : row.status === 'not-started' ? '未启动'
+          : row.outcome === 'defect' ? '确认问题' : row.outcome === 'cleared' ? '已排除' : '未能核实')),
+        h('p', {}, String(row.suspect || '（疑点未记录）')),
+        h('p', { 'data-ciel-investigation-reason': '' }, String(row.reason || '未记录具体原因。')),
+        h('p', {}, '查询 ' + row.toolCalls + ' 次 · 模型请求 ' + row.modelRequests + ' 次 · ' + Math.round(row.elapsedMs / 1000) + ' 秒'),
+        ...(row.evidenceRefs || []).map(ref => actionButton({ key: ref, variant: 'toolbar', 'data-ciel-investigation-ref': ref, onClick: () => openRef(ref) }, '查看证据 ' + ref)),
+      )),
+    ) : stats?.unchecked > 0 ? h('p', { key: 'investigations-legacy', 'data-ciel-investigations-legacy': '' },
+      '“未核实”表示没有足够证据得出结论，不等于完全未尝试。此历史记录未保存逐项调查过程与受阻原因；不会补写推测或自动重跑。') : null
+
+    const jev = review.jev
+    const jevReasons = {
+      disabled: '接入已关闭', 'no-eligible-claims': '没有可检查的主张', 'missing-key': '请在设置 → 夏尔 Ciel → Jev API 配置中填写密钥；官方接口也可使用 TYPESAFE_API_KEY',
+      'invalid-config': 'Jev API 配置无效，请检查 HTTPS 地址、模型 ID 和密钥格式',
+      'time-unavailable': '评审剩余时间不足', cancelled: '检查已取消', timeout: '接口超时', 'http-error': '接口返回错误，请检查密钥及账户状态',
+      'invalid-response': '接口返回格式异常', 'transport-error': '接口连接失败', 'no-exact-claim': '未取得可逐字匹配的主张',
+      'sensitive-input': '输入包含敏感内容', 'no-source-evidence': '缺少已引用的原文证据', 'limited-evidence': '引用证据不完整', 'input-too-large': '原文超过单次检查大小限制',
+    }
+    const jevPanel = !jev ? null : h('section', { key: 'jev', 'data-ciel-jev': jev.status, 'aria-label': 'Jev 证据检查' },
+      h('strong', {}, 'Jev 证据检查 · ' + ({ completed: '已完成', partial: '部分完成', skipped: '已跳过', error: '不可用', cancelled: '已取消' }[jev.status] || jev.status)),
+      h('p', {}, '旁路结果供参考，不改变主评审裁决。'),
+      jev.reason ? h('p', {}, jevReasons[jev.reason] || jev.reason) : null,
+      jev.omittedChecks > 0 ? h('p', {}, '单次最多检查 8 项；另有 ' + jev.omittedChecks + ' 项未交给 Jev。') : null,
+      h('p', {}, (jev.model || jev.requestedModel) + ' · ' + jev.requestCount + ' 次请求 · ' + jev.elapsedMs + ' ms' +
+        (jev.usage ? ' · 输入 ' + jev.usage.inputTokens + ' / 输出 ' + jev.usage.outputTokens + ' tokens' : '')),
+      ...(jev.checks || []).map(check => h('div', { key: check.suspectId, 'data-ciel-jev-check': check.suspectId },
+        check.claim ? h('blockquote', {}, check.claim) : null,
+        h('p', {}, check.suspectId + ' · ' + (check.status === 'completed'
+          ? ({ supports: '证据支持', contradicts: '证据矛盾', insufficient: '证据不足' }[check.relation] || check.relation)
+            + (check.disagreement === true ? ' · 与主评审有分歧' : check.disagreement === false ? ' · 与主评审一致' : ' · 主评审未核实')
+          : '已跳过：' + (jevReasons[check.reason] || check.reason))),
+        check.status === 'completed' ? h('p', {}, '分布置信度 ' + Math.round(check.confidence * 100) + '%（不代表正确率）') : null,
+        ...(check.evidenceRefs || []).map(ref => actionButton({ key: ref, variant: 'toolbar', 'data-ciel-jev-ref': ref, onClick: () => openRef(ref) }, '查看证据 ' + ref)),
+      )),
+    )
 
     const rows = annotations.map((annotation, index) => {
       const item = annotation !== null && typeof annotation === 'object' ? annotation : {}
@@ -772,20 +835,22 @@ export function createCielSidebar(dependencies) {
             'aria-label': '选择批注 ' + (index + 1),
             onChange: (event) => { toggle(index, event.target.checked === true) },
           }),
-          chip(severity === 'blocker' ? 'danger' : 'warning', severity === 'blocker' ? 'blocker' : 'nit', 'sev'),
-          h('span', { key: 'title', 'data-ciel-annotation-title': '' }, String(item.title === undefined || item.title === '' ? '（无标题）' : item.title))),
-        item.anchor === undefined || item.anchor === '' ? null : h('blockquote', { key: 'anchor', 'data-ciel-annotation-anchor': '' }, String(item.anchor)),
-        item.comment === undefined || item.comment === '' ? null : h('p', { key: 'comment', 'data-ciel-annotation-comment': '' }, String(item.comment)),
+          h('span', {}, '选择此批注')),
+        h('div', { 'data-ciel-annotation-heading': '' },
+          chip(severity === 'blocker' ? 'danger' : 'warning', severity === 'blocker' ? '阻断' : '建议', 'sev'),
+          h('h3', { key: 'title', 'data-ciel-annotation-title': '' }, String(item.title === undefined || item.title === '' ? '（无标题）' : item.title))),
+        item.anchor === undefined || item.anchor === '' ? null : h('div', { key: 'anchor-group', 'data-ciel-annotation-section': '' }, h('h4', {}, '回复原文'), h('blockquote', { key: 'anchor', 'data-ciel-annotation-anchor': '' }, String(item.anchor))),
+        item.comment === undefined || item.comment === '' ? null : h('div', { key: 'comment-group', 'data-ciel-annotation-section': '' }, h('h4', {}, '核查说明'), h('p', { key: 'comment', 'data-ciel-annotation-comment': '' }, String(item.comment))),
         item.evidence === undefined || item.evidence === '' ? null : h('p', { key: 'evidence', 'data-ciel-annotation-evidence-text': '' }, '证据引用：' + String(item.evidence)),
-        refs.length === 0 ? null : h('p', { key: 'refs', 'data-ciel-annotation-refs': '' },
-          '证据：',
+        refs.length === 0 ? null : h('div', { key: 'refs', 'data-ciel-annotation-refs': '' },
+          h('h4', {}, '相关证据'),
           refs.map((id) => actionButton({
             key: id,
             variant: 'toolbar',
             icon: h('span', { 'aria-hidden': true }, '→'),
             'data-ciel-evidence-ref': id,
-            onClick: () => { openRef(id) },
-          }, '查看证据 ' + shortId(id)))))
+            onClick: () => { openRef(id, index, item) },
+          }, h('span', { 'data-ciel-evidence-link-label': '' }, h('strong', {}, '查看证据 ' + shortId(id)), h('small', {}, '历史只读记录 · 在标签页查看'))))))
     })
 
     return h('div', {
@@ -793,23 +858,32 @@ export function createCielSidebar(dependencies) {
       'data-ciel-revision': String(revision),
       ...(focusIndex === undefined ? {} : { 'data-ciel-focus-index': String(focusIndex) }),
     },
-      h('div', { key: 'head', 'data-ciel-review-head': '' }, ...head),
+      h('div', { key: 'head', 'data-ciel-review-head': '' },
+        h('div', { 'data-ciel-review-titlebar': '' }, h('h2', {}, '批注评审'),
+          typeof props.locateReview === 'function' ? actionButton({ variant: 'ghost', 'data-ciel-locate-review': '', onClick: () => { const requestKey = key; Promise.resolve(props.locateReview(parsed.sessionId, parsed.recordId)).then(result => { if (keyRef.current !== requestKey) return; setNote(result?.ok ? '已定位原回复。' : errorText(result)); }, error => { if (keyRef.current === requestKey) setNote(errorText(error)) }) } }, '定位原回复') : null),
+        head[0],
+        h('h3', { 'data-ciel-review-conclusion': '' }, reviewConclusion(review)),
+        stats ? h('p', { 'data-ciel-review-brief': '' }, '疑点 ' + (stats.checked ?? '—') + ' · 确认问题 ' + (stats.confirmed ?? '—') + ' · 排除 ' + (stats.excluded ?? '—') + (stats.unchecked > 0 ? ' · 未核实 ' + stats.unchecked : '')) : null,
+        review.coverage !== 'complete' || privacy?.dataLimited || privacy?.evidenceWithheld
+          ? h('p', { 'data-ciel-review-scope-notice': '' }, '部分资料受限，不能据此判断未核查内容。 ', actionButton({ variant: 'ghost', onClick: () => { if (detailsRef.current) detailsRef.current.open = true } }, '查看范围')) : null,
+        h('details', { ref: detailsRef, 'data-ciel-review-details': '' }, h('summary', {}, '评审信息与核查范围'), ...head.slice(1))),
       h('p', { key: 'hint', 'data-ciel-review-hint': '' }, '证据引用只是宿主记录的历史读取；内容需点开证据查看，不能替代当前文件核对。'),
-      rows.length === 0
-        ? h('p', { key: 'empty', 'data-ciel-review-empty': '' }, '本评审没有批注。')
-        : h('div', { key: 'rows', 'data-ciel-review-annotations': '' }, ...rows),
+      h('div', { key: 'rows', 'data-ciel-review-annotations': '' },
+        ...(rows.length === 0 ? [h('p', { key: 'empty', 'data-ciel-review-empty': '' }, '本评审没有批注。')] : rows),
+        investigationPanel ? h('details', { 'data-ciel-review-secondary': '' }, h('summary', {}, '逐项核查过程'), investigationPanel) : null,
+        jevPanel ? h('details', { 'data-ciel-review-secondary': '' }, h('summary', {}, 'Jev 证据检查' + (jev.checks?.some(check => check.disagreement === true) ? ' · 存在分歧' : ' · ' + ({completed:'已完成',partial:'部分完成',skipped:'已跳过',error:'不可用',cancelled:'已取消'}[jev.status] || jev.status))), jevPanel) : null),
       h('div', { key: 'actions', 'data-ciel-review-actions': '' },
         h('span', { key: 'count', 'data-ciel-selected-count': String(selected.size) }, '已选 ' + selected.size + ' 条'),
         actionButton({
           key: 'submit',
           variant: 'primary',
           'data-ciel-submit': '',
-          disabled: selected.size === 0 || phase === 'sending' || typeof prepareFeedback !== 'function',
+          disabled: !feedbackEnabled || selected.size === 0 || phase === 'sending' || typeof prepareFeedback !== 'function',
           onClick: () => submit(),
         }, phase === 'sending' ? '正在准备…' : '填入输入框'),
         note === '' ? null : h('span', { key: 'note', 'data-ciel-note': phase }, note),
         noteText === '' ? null : h('span', { key: 'triage-note', 'data-ciel-triage-note': 'error' }, '分诊保存失败：' + noteText),
-        h('span', { key: 'triage-hint', 'data-ciel-triage-hint': '' }, '勾选只用于回传，不代表问题成立。'),
+        h('span', { key: 'triage-hint', 'data-ciel-triage-hint': '' }, feedbackEnabled ? '仅生成草稿，由你确认发送。勾选只用于回传，不代表问题成立。' : 'Ciel 已停用；已有结果仍可查看，重新启用后可回传。'),
         typeof prepareFeedback === 'function' ? null : h('span', { key: 'unwired', 'data-ciel-unwired': '' }, '输入框回传未接线')))
   }
 
@@ -862,6 +936,9 @@ export function createCielSidebar(dependencies) {
     // so wherever it appears and never stands in for independent verification.
     const reported = evidence.kind === 'reported' || origin === 'author-tool'
     const lines = showContent ? splitLines(evidence.content, startLine) : []
+    const listing = showContent && !reported ? listingPresentation(evidence) : null
+    const annotationTitle = typeof params.annotationTitle === 'string' ? params.annotationTitle : ''
+    const annotationAnchor = typeof params.annotationAnchor === 'string' ? params.annotationAnchor : ''
     // The explicit gesture: build the live-file address, ask the native sidebar
     // to split the pane this tab is in, and land the file beside it. No split
     // (full, narrow, or no face) falls back to one column — the file opens as a
@@ -907,7 +984,8 @@ export function createCielSidebar(dependencies) {
       range === '' ? null : h('span', { key: 'range', 'data-ciel-evidence-range': range }, '行 ' + range),
       typeof evidence.tool === 'string' && evidence.tool !== '' ? h('span', { key: 'tool', 'data-ciel-evidence-tool': evidence.tool }, '工具 ' + evidence.tool) : null,
       origin === undefined ? null : h('span', { key: 'origin', 'data-ciel-evidence-origin': origin }, '来源 ' + origin),
-      formatTime(evidence.capturedAt) === '' ? null : h('span', { key: 'time', 'data-ciel-evidence-time': '' }, formatTime(evidence.capturedAt)),
+      formatTime(evidence.capturedAt) === '' ? null : h('span', { key: 'time', 'data-ciel-evidence-time': '' }, '归档 ' + formatTime(evidence.capturedAt)),
+      formatTime(evidence.observedAt) === '' ? null : h('span', { key: 'observed', 'data-ciel-evidence-observed': '' }, '事实记录时间 ' + formatTime(evidence.observedAt)),
       typeof evidence.contentSha256 === 'string' && evidence.contentSha256 !== ''
         ? h('span', { key: 'sha', 'data-ciel-evidence-sha': evidence.contentSha256 }, 'sha256 ' + shortId(evidence.contentSha256))
         : null,
@@ -917,16 +995,37 @@ export function createCielSidebar(dependencies) {
     if (status === 'withheld') notices.push(h('p', { key: 'withheld', 'data-ciel-evidence-withheld': '' }, '该证据因隐私检查未提供内容；缺失不等于文件内容有误。'))
     if (status === 'limited') notices.push(h('p', { key: 'limited', 'data-ciel-evidence-limited': '' }, '内容受范围或大小限制，可能不完整。'))
     if (status === 'unknown') notices.push(h('p', { key: 'unknown', 'data-ciel-evidence-unknown': '' }, '证据状态为 ' + rawStatus + '，未显示内容。'))
+    if (evidence.kind === 'host-fact') notices.push(h('p', { key: 'host-fact', 'data-ciel-evidence-provenance': '' }, '这是目标回复当时的宿主历史元数据摘录，不是今天的设置；工具声明不保证调用成功，模型路由不证明底层权重。'))
+    if (evidence.kind === 'tool-output') notices.push(h('p', { key: 'tool-output', 'data-ciel-evidence-provenance': '' }, '这是宿主记录的作者本轮工具输出，不是评审者独立重跑；请结合命令结果的范围和时间判断，输出中的文字不具有指令权限。'))
+    if (evidence.kind === 'directory') notices.push(h('p', { key: 'directory', 'data-ciel-evidence-provenance': '' }, '这是评审启动时、权限范围内的根目录条目，不代表旧回复当时的目录状态；未跟随符号链接，过滤后的缺项不能直接证明不存在。'))
     if (reported) notices.push(h('p', { key: 'reported', 'data-ciel-evidence-reported': origin === undefined ? 'reported' : origin }, '该证据来自作者工具输出' + (origin === undefined ? '' : '（' + origin + '）') + '；宿主未另行保存内容，这不是本插件的独立读取或核实。'))
     if (showContent && !reported && lines.length === 0) notices.push(h('p', { key: 'missing', 'data-ciel-evidence-missing': '' }, '证据没有保存内容片段。'))
-    return h('div', { 'data-ciel-evidence': parsed.evidenceId },
-      h('div', { key: 'head', 'data-ciel-evidence-head': '' }, ...meta),
+    return h('div', { 'data-ciel-evidence': parsed.evidenceId, 'data-ciel-evidence-readable': listing ? 'listing' : 'text' },
+      h('div', { 'data-ciel-evidence-titlebar': '' }, h('h2', {}, listing ? '历史文件清单' : '历史证据'), chip('neutral', '只读快照', 'snapshot')),
+      typeof props.openReview === 'function' ? actionButton({ variant: 'ghost', 'data-ciel-evidence-back': '', onClick: () => props.openReview(parsed.sessionId, parsed.recordId, Number.isInteger(params.annotationIndex) ? { annotationIndex: params.annotationIndex } : undefined) }, annotationTitle ? '返回批注：' + annotationTitle : '返回评审批注') : null,
+      annotationAnchor ? h('p', { 'data-ciel-evidence-subject': '' }, '核查对象：' + annotationAnchor) : null,
+      h('details', { 'data-ciel-evidence-metadata': '' }, h('summary', {}, evidenceKindText(evidence.kind) + ' · ' + (formatTime(evidence.capturedAt) || '时间未记录') + ' · ' + shortId(parsed.evidenceId)), h('div', { key: 'head', 'data-ciel-evidence-head': '' }, ...meta)),
       ...notices,
       h('p', { key: 'hint', 'data-ciel-evidence-hint': '' }, '历史证据为只读快照；当前文件可能已经变化。打开的是当前文件，不是这条历史证据。'),
       currentPath !== undefined && startLine !== undefined
         ? h('p', { key: 'line-hint', 'data-ciel-current-line-hint': '' }, '当前文件的源码行定位适用于代码或纯文本视图；Markdown 渲染视图请切换到代码或纯文本后定位。历史行号可能已不对应当前内容。')
         : null,
-      h('div', { key: 'body', 'data-ciel-evidence-body': '' },
+      listing ? h('div', { 'data-ciel-listing': '' },
+        listing.pattern === null ? null : h('section', {}, h('h3', {}, '匹配规则'), h('code', { 'data-ciel-listing-pattern': '' }, listing.pattern)),
+        h('section', {}, h('h3', {}, '快照中记录的路径 · ' + listing.paths.length + ' 项'),
+          listing.paths.length ? h('ul', {}, ...listing.paths.map((path, index) => h('li', { key: index }, h('code', {}, path)))) : h('p', {}, '这份记录未列出匹配路径。')),
+        h('p', { 'data-ciel-listing-limit': '' }, listing.truncated ? '清单已截断，不能作为完整目录使用；未列出的路径不能据此判定不存在。' : '这是一份受限的历史清单；未列出的路径不能据此判定当前文件不存在。'),
+        h('details', { 'data-ciel-listing-raw': '' }, h('summary', {}, '查看原始记录（JSON）'),       h('div', { key: 'body', 'data-ciel-evidence-body': '' },
+        ...lines.map((line) => {
+          const target = targetLine !== undefined && line.number === targetLine
+          return h('div', {
+            key: String(line.number === undefined ? 'x' : line.number) + ':' + line.text.length,
+            'data-ciel-line': line.number === undefined ? '' : String(line.number),
+            ...(target ? { 'data-ciel-line-target': '', ref: targetRef } : {}),
+          },
+            line.number === undefined ? null : h('span', { key: 'n', 'data-ciel-line-number': String(line.number) }, String(line.number) + '  '),
+            h('span', { key: 't', 'data-ciel-line-text': '' }, line.text))
+        })))) :       h('div', { key: 'body', 'data-ciel-evidence-body': '' },
         ...lines.map((line) => {
           const target = targetLine !== undefined && line.number === targetLine
           return h('div', {
@@ -995,6 +1094,7 @@ export function createCielSidebar(dependencies) {
         formatTime(advice.createdAt) === '' ? null : h('span', { key: 'time', 'data-ciel-advice-time': '' }, formatTime(advice.createdAt)),
         usage === '' ? null : h('span', { key: 'usage', 'data-ciel-advice-usage': '' }, '模型：' + usage)),
       h('p', { key: 'disclaimer', 'data-ciel-advice-disclaimer': '' }, '以下是顾问的观点与方向，不是核实过的证据；采用前请自行验证。'),
+      advisorJevPanel(h, advice.jev),
       // Structured ideas when the Host parsed them; the raw reply then lives
       // behind one collapsed disclosure instead of repeating the full text.
       items.length === 0
@@ -1062,6 +1162,9 @@ export function createCielSidebar(dependencies) {
     if (typeof call !== 'function') throw new TypeError('createCielSidebar: install requires call(method, request)')
     const onPrepareFeedback = typeof depsIn.onPrepareFeedback === 'function' ? depsIn.onPrepareFeedback : undefined
     const onTriage = typeof depsIn.onTriage === 'function' ? depsIn.onTriage : undefined
+    const canPrepareFeedback = depsIn.canPrepareFeedback
+    const subscribeConfiguration = depsIn.subscribeConfiguration
+    const locateReview = depsIn.locateReview
 
     const cleanups = []
     const record = { ctx, cleanups, uninstall: undefined }
@@ -1134,6 +1237,9 @@ export function createCielSidebar(dependencies) {
     const face = {
       ...(onPrepareFeedback === undefined ? {} : { prepareFeedback: onPrepareFeedback }),
       ...(onTriage === undefined ? {} : { onTriage }),
+      ...(typeof canPrepareFeedback === 'function' ? { canPrepareFeedback } : {}),
+      ...(typeof subscribeConfiguration === 'function' ? { subscribeConfiguration } : {}),
+      ...(typeof locateReview === 'function' ? { locateReview } : {}),
       splitPane,
       openReview,
       openEvidence,
@@ -1228,6 +1334,9 @@ export function createCielSidebar(dependencies) {
     const source = options === undefined || options === null ? {} : options
     return open(evidenceAddress(sessionId, reviewId, evidenceId), CIEL_EVIDENCE, paramsOf([
       ['line', lineNumber(source.line)],
+      ['annotationIndex', Number.isInteger(source.annotationIndex) ? source.annotationIndex : undefined],
+      ['annotationTitle', typeof source.annotationTitle === 'string' ? source.annotationTitle.slice(0,200) : undefined],
+      ['annotationAnchor', typeof source.annotationAnchor === 'string' ? source.annotationAnchor.slice(0,1000) : undefined],
     ]))
   }
 

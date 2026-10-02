@@ -1,4 +1,4 @@
-import { REVIEW_METHODS, reviewInvocation } from './review-protocol.js'
+import { REVIEW_METHODS, reviewInvocation, ADVISOR_JEV_SCHEMA } from './review-protocol.js'
 // dsh-ciel host half: a pre-planning advisor for DeepSeek Harness agents.
 // (0.11.0 起由 dsh-advisor 更名为 dsh-ciel——大贤者夏尔；settings 命名空间同版
 //  迁移 `advisor` → `ciel`（旧节自动迁入，为 omdsh-dev/dsh-advisor 让名），
@@ -24,6 +24,8 @@ import Schema from '@deepseek-ai/schemastery'
 // copy with its own registry state gets installed beside the app's.
 import { createReviewOperation } from './review-operation.js'
 import { detectSensitiveText } from './review-corpus.js'
+import { prepareAdvisorJev, checkAdvisorWithJev, renderAdvisorJev } from './jev-advisor.js'
+import { JEV_MODEL, JEV_ENDPOINT, JEV_MODEL_PATTERN, JEV_KEY_PATTERN, JEV_ENDPOINT_PATTERN, jevConnection } from './jev-config.js'
 import { userText } from './review-input.js'
 import { listInbox, setInboxIntent } from './inbox-service.js'
 import { AdvisorReviewService } from './review-service.js'
@@ -100,13 +102,19 @@ const GUIDANCE_TEXT =
   'If `ask_advisor` fails or its route is unavailable, plan on your own and ' +
   'note that the advisor was unavailable.'
 
-export const Config = Schema.object({
+// DSH 0.1.7 wraps live fields in stable references. Keep plain snapshots at
+// Ciel's operation boundaries; older DSH installations still pass plain values.
+export function configValues(config) {
+  return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key,
+    value && typeof value.get === 'function' ? value.get() : value]))
+}
+const configFields = {
   enabled: Schema.boolean().default(true)
     .description('允许 Ciel 顾问咨询、评审及准备批注草稿；批注须由用户手动发送。关闭取消本插件在途模型调用，不改变模型配置'),
   advisorTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
     .description('一次 ask_advisor 顾问咨询的总时限，秒；取消或超时不会自动重试'),
   criticTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
-    .description('一次完整评审的总时限（秒，含准备资料、存疑和核实）；查询与模型请求次数只统计，超时停止，不自动重试'),
+    .description('一次完整评审的总时限（秒，含准备资料、存疑和逐项独立核查）；至多 8 项并发共享时限，查询与模型请求次数只统计，超时停止，不自动重试'),
   // Legacy keys remain accepted so existing settings files still load.
   // They are hidden, have no defaults, and never affect a new review.
   criticMaxRequests: Schema.number().hidden()
@@ -141,15 +149,28 @@ export const Config = Schema.object({
     .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.8-flash 仅支持 low/medium/high）'),
   criticExploreEnabled: Schema.boolean().default(true)
     .description('探索型批评者（0.13.0）：评审时对可证伪疑点做只读定点核实（PTC run_code 内调用 read/grep/glob 快照工具，世界可碰、过程不许碰）；关闭后退回纯草稿裁决'),
+  jevApiKey: Schema.string().max(4096).pattern(JEV_KEY_PATTERN).role('secret')
+    .description('Jev API 密钥；保存在本机 DSH 配置，设置读取不回传原值。未配置时回退到 TYPESAFE_API_KEY（仅官方接口），不是加密保险库'),
+  jevEndpoint: Schema.string().max(2048).pattern(JEV_ENDPOINT_PATTERN).default(JEV_ENDPOINT)
+    .description('Jev 完整 HTTPS 接口地址，不追加路径；必须兼容 TypeSafe systemone 协议。自定义地址会收到密钥和检查原文，须另填密钥，不复用环境变量'),
+  jevModel: Schema.string().pattern(JEV_MODEL_PATTERN).default(JEV_MODEL)
+    .description('Jev 模型 ID，顾问与评审检查共用；保存后下次检查使用'),
+  jevEnabled: Schema.boolean().default(false)
+    .description('启用 Jev 证据检查：向 TypeSafe 发送主张原文和已引用证据（源码、历史模型/权限/工具声明、经敏感检查的工具输出及受限目录清单），产生额外 API 用量。结果与分歧显示在评审详情，不自动更改裁决。密钥在 Jev API 配置中设置，官方接口也可使用 TYPESAFE_API_KEY 环境变量；关闭取消在途 Jev 检查'),
+  advisorJevEnabled: Schema.boolean().default(false)
+    .description('顾问回答后用 Jev 对照本次问题和背景检查建议；将这些内容发送给 TypeSafe，产生额外 API 用量。独立开关，默认关闭；仅检查背景一致性，不独立核实事实，不改写建议。关闭取消在途检查'),
   criticExploreBudget: Schema.number().hidden()
     .description('旧版兼容字段，已停用（包括旧值 0）；是否查文件只由 criticExploreEnabled 控制'),
   criticAdditionalRoots: Schema.array(Schema.string()).default([])
     .description('可选：额外允许评审查阅的源码目录，每项为绝对路径；不允许主目录、凭据或会话状态目录。默认仅当前项目。修改只影响后续评审'),
-})
+}
+const LegacyConfig = Schema.object(configFields)
+export const Config = Schema.object(Object.fromEntries(Object.entries(configFields).map(([key, field]) => [key,
+  typeof field.volatile === 'function' ? field.volatile() : field])))
 
 /**
- * ask_advisor canonical output: the caller model receives the raw prose
- * verbatim (render below — byte-identical to the pre-0.6.0 string result),
+ * ask_advisor keeps the raw prose unchanged. When enabled, the caller model
+ * also receives a separately labeled Jev context check before that prose,
  * while the parsed structure rides tool/result.meta via presentationMeta.
  * Parse once in execute(); UI cards (M3-④) and the critic's rubric input
  * (M3-③ 输入三件套之"当时的顾问输出") then read the same items without
@@ -177,12 +198,13 @@ const advisorOutput = {
       },
       issues: { type: 'array', items: { type: 'string' } },
       modelUsage: MODEL_USAGE_SCHEMA,
+      jev: ADVISOR_JEV_SCHEMA,
     },
     required: ['text', 'items', 'issues'],
     additionalProperties: false,
   },
-  render: (_args, value) => [{ type: 'text', text: value.text }],
-  presentationMeta: (_args, value) => ({ v: 1, items: value.items, issues: value.issues, ...(value.modelUsage ? { modelUsage: modelUsageSnapshot(value.modelUsage) } : {}) }),
+  render: (_args, value) => [{ type: 'text', text: (value.jev ? renderAdvisorJev(value.jev) + '\n\n' : '') + value.text }],
+  presentationMeta: (_args, value) => ({ v: 1, items: value.items, issues: value.issues, ...(value.modelUsage ? { modelUsage: modelUsageSnapshot(value.modelUsage) } : {}), ...(value.jev ? { jev: value.jev } : {}) }),
 }
 
 /** Flatten a subagent result's output blocks into one plain-text answer. */
@@ -202,7 +224,7 @@ function settingsUserSection(settings, ns) {
 }
 
 async function migrateLegacyAdvisorSettings(settings, cielScope) {  try {
-    settings.register('advisor', Config)
+    settings.register('advisor', LegacyConfig)
   } catch {
     // Another plugin owns `advisor` (or the stored section is malformed
     // beyond schema repair) — nothing here is ours to move.
@@ -269,7 +291,7 @@ export function apply(ctx, config) {
   // with omdsh-dev/dsh-advisor; the legacy section is migrated below.)
   // Wired through ctx.inject so the plugin still activates when the settings
   // service is absent (the composition config then stands alone).
-  let current = () => config
+  let current = () => configValues(config)
   const beginAdvisorCall = (signal) => {
     const operation = createReviewOperation({ timeoutMs: (current().advisorTimeoutSeconds ?? 180) * 1000, maxRequests: 1 })
     const onAbort = () => operation.cancel('advisor cancelled')
@@ -283,19 +305,30 @@ export function apply(ctx, config) {
     } }
   }
   let resyncGuidance = () => {}
+  let cancelJevChecks = () => {}
+  const advisorJevControllers = new Set()
+  const settingsChanged = () => {
+    resyncGuidance()
+    if (current().enabled === false) for (const operation of activeOperations) operation.cancel('Ciel disabled')
+    if (current().jevEnabled !== true) cancelJevChecks()
+    if (current().advisorJevEnabled !== true) for (const controller of advisorJevControllers) controller.abort()
+  }
+  ctx.on('loader/volatile-update', settingsChanged)
   ctx.inject(['settings'], (sctx) => {
-    const scope = sctx.settings.register('ciel', Config, { base: config })
-    current = () => scope.get()
+    if (typeof sctx.settings.configure === 'function') {
+      if (!Config.dict.jevEnabled.meta.volatile) throw new Error('Ciel settings on DSH 0.1.7 require @deepseek-ai/schemastery >=3.18.3')
+      sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber))
+      return
+    }
+    const scope = sctx.settings.register('ciel', LegacyConfig, { base: configValues(config) })
+    current = () => configValues(scope.get())
     sctx.effect(
       () => () => {
-        current = () => config
+        current = () => configValues(config)
       },
       'dsh-ciel: settings fallback',
     )
-    scope.watch(() => {
-      resyncGuidance()
-      if (current().enabled === false) for (const operation of activeOperations) operation.cancel('Ciel disabled')
-    })
+    scope.watch(settingsChanged)
 
     // ── legacy migration: the temporary `advisor` registration is owned by
     // this throwaway fiber, so disposing it after the copy attempt frees the
@@ -460,6 +493,7 @@ export function apply(ctx, config) {
     )
   })
   const reviewService = new AdvisorReviewService(ctx, liveCriticChildren, () => current(), activeOperations)
+  cancelJevChecks = () => reviewService.coordinator.cancelJevChecks()
   ctx.inject(['tools'], (tctx) => {
     if (typeof tctx.tools.guard !== 'function') return
     tctx.tools.guard((exec) => {
@@ -604,9 +638,25 @@ export function apply(ctx, config) {
           const answer = text === '' ? 'The advisor returned an empty answer.' : text
           const parsed = parseAdvisorItems(answer)
           captureModelUsage(modelUsage, run)
-          try { await persistAdvice(parent.id, 'tool', exec.callId, answer, modelUsage, owned.operation) }
+          let jev
+          if (cfg.advisorJevEnabled === true) {
+            const controller = new AbortController()
+            advisorJevControllers.add(controller)
+            try {
+              jev = await checkAdvisorWithJev({
+                ...jevConnection(current()),
+                prepared: prepareAdvisorJev({ question: args.question, context: args.context, text: answer, items: parsed.items }),
+                enabled: current().advisorJevEnabled === true && current().enabled !== false,
+                signal: AbortSignal.any([owned.operation.signal, controller.signal]),
+                timeoutMs: Math.min(10000, owned.operation.remainingMs() - 1000),
+                beforeRequest: () => owned.operation.check(),
+              })
+            } finally { advisorJevControllers.delete(controller) }
+            owned.operation.check()
+          }
+          try { await persistAdvice(parent.id, 'tool', exec.callId, answer, modelUsage, owned.operation, jev) }
           catch { owned.operation.check(); ctx.logger?.warn('Ciel: advisor sidebar record could not be saved') }
-          return { text: answer, items: parsed.items, issues: parsed.issues, modelUsage: modelUsageSnapshot(modelUsage) }
+          return { text: answer, items: parsed.items, issues: parsed.issues, modelUsage: modelUsageSnapshot(modelUsage), ...(jev ? { jev } : {}) }
         } finally {
           try {
             if (run) { captureModelUsage(modelUsage, run); liveAdvisorChildren.delete(run.id); await run.dispose() }

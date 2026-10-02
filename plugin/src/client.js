@@ -5,9 +5,13 @@ import { REVIEW_REMOTE as ADVISOR_REMOTE } from '../review-protocol.js'
 import { createReviewTransport } from './review-transport.js'
 import { reviewMessageKey } from '../review-identity.js'
 import { createCielSidebar } from './sidebar.js'
+import { advisorJevPanel, advisorJevSummary } from './advisor-jev.js'
+import { JEV_MODEL, JEV_ENDPOINT, validJevEndpoint, validJevModel, validJevKey } from '../jev-config.js'
 import SIDEBAR_CSS from './sidebar.css'
-import { INBOX_PANEL_ID, createCielInbox } from './inbox.js'
+import { INBOX_PANEL_ID, createCielInbox, currentSessionId } from './inbox.js'
 import INBOX_CSS from './inbox.css'
+import SETTINGS_CSS from './settings.css'
+import { createCielDecisionPrompt, hasSettledReviewItems } from './presentation.js'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 // dsh-ciel browser half: a dedicated Settings → 夏尔 Ciel page editing the
@@ -31,7 +35,7 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
     const { createPortal } = require('react-dom')
-    const { Switch, Tag, Button } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { Switch, Tag, Button, Modal } = require('@deepseek-ai/dsh-client-ui-primitives')
     if (typeof Switch !== 'function' || typeof Tag !== 'function' || typeof createPortal !== 'function') {
       throw new Error('Ciel 的原生设置界面需要 DSH 0.1.5-alpha.2 或更新版本；请升级并刷新页面。')
     }
@@ -48,6 +52,7 @@ window.__ModuleLoader__.load({
 
     /** Bound in apply() before the card registers. */
     let scope = null
+    let settingsDescribe = null
     let sidebar = null
     /** Lazy remote readers: a hard inject would park the card's registration. */
     let getSessionRemote = () => undefined
@@ -74,6 +79,11 @@ window.__ModuleLoader__.load({
       criticModel: 'gemini-3.8-flash',
       criticEffort: 'medium',
       criticExploreEnabled: true,
+      jevEnabled: false,
+      advisorJevEnabled: false,
+      jevApiKey: '',
+      jevEndpoint: JEV_ENDPOINT,
+      jevModel: JEV_MODEL,
       enabled: true,
       criticTimeoutSeconds: 180,
       criticMaxTokens: 16384,
@@ -118,9 +128,20 @@ window.__ModuleLoader__.load({
         summarize: (staged) => `文件核查${staged.criticExploreEnabled ? '开' : '关'} · 最多 ${staged.criticTimeoutSeconds} 秒`,
         children: [
           { kind: 'check', key: 'criticExploreEnabled', label: '允许评审时查文件', hint: '需要核对代码或文件依据时开启：批评者可用允许的 read/grep/glob 工具，在允许范围内查阅资料，不修改文件。关闭后仍会调用模型分析，但不做这一步文件核查。' },
+          { kind: 'check', key: 'jevEnabled', label: '启用 Jev 证据检查', hint: '评审后将主张原文和引用证据发给 TypeSafe 检查，产生额外 API 用量。证据可含源码、历史模型名/权限/工具声明、经敏感检查的工具输出及受限目录清单；不发送密钥或完整历史。结果和分歧显示在评审详情，不自动改裁决。需要开启文件核查，在下方 Jev API 配置中填写密钥，或让 DSH 启动进程继承 TYPESAFE_API_KEY。开关保存后生效，关闭会取消在途 Jev 检查。' },
+          { kind: 'check', key: 'advisorJevEnabled', label: '启用顾问建议检查（Jev）', hint: '顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。独立于评审开关，默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥与评审共用下方 Jev API 配置；关闭并保存会取消在途检查。' },
           { kind: 'number', key: 'maxCallsPerTurn', label: '每个代理回合最多咨询几次', min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: '限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。' },
           { kind: 'number', key: 'advisorTimeoutSeconds', label: '顾问最多等多久（秒）', min: 10, max: 600, hint: '一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。' },
-          { kind: 'number', key: 'criticTimeoutSeconds', label: '评审最多等多久（秒）', min: 10, max: 600, hint: '只按总时间控制评审：默认180秒，包含准备资料、分析和核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。' },
+          { kind: 'number', key: 'criticTimeoutSeconds', label: '评审最多等多久（秒）', min: 10, max: 600, hint: '只按总时间控制评审：默认180秒，包含准备资料、分析和核查。每个疑点独立调查，至多8项并发共享总时限，用量高于整批核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。' },
+        ],
+      },
+      {
+        kind: 'group', key: 'jevApi', label: 'Jev API 配置', defaultOpen: true,
+        summarize: staged => staged.jevModel,
+        children: [
+          { kind: 'secret', key: 'jevApiKey', label: 'Jev API Key', hint: '顾问与评审共用。留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。' },
+          { kind: 'text', key: 'jevEndpoint', label: 'Jev 接口地址', fallback: JEV_ENDPOINT, hint: '完整 HTTPS 地址（含 /v1/systemone 或代理对应路径），不会自动追加路径；必须兼容 TypeSafe systemone 协议，不是 OpenAI 接口。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送环境变量密钥。不允许 URL 内凭据、查询参数、片段或重定向。' },
+          { kind: 'text', key: 'jevModel', label: 'Jev 模型 ID', fallback: JEV_MODEL, hint: '默认 jev-1.13.0，可填写接口支持的其他模型 ID；不经过「设置 → 模型」路由。保存后下一次 Jev 检查使用，正在进行的请求不变。' },
         ],
       },
       {
@@ -198,6 +219,7 @@ window.__ModuleLoader__.load({
       }
     }
     let settingsEditor = createSettingsEditor()
+    let draftDecisions = createCielDecisionPrompt({ React, Modal, Button })
     function useSettingsField(key) {
       const editor = settingsEditor
       const [, tick] = useState(0)
@@ -333,7 +355,7 @@ window.__ModuleLoader__.load({
 
     /** Field head row: label plus the override badge and reset link. */
     function FieldHead({ label, overridden, disabled, onReset }) {
-      return h('div', { style: css.head },
+      return h('div', { style: css.head, 'data-ciel-setting-head': '' },
         h('span', { style: css.label }, label),
         overridden
           ? h('span', { style: css.badges },
@@ -341,6 +363,41 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', style: css.reset, disabled, onClick: onReset }, '重置'))
           : null,
       )
+    }
+
+    const SHORT_HINTS = {
+      enabled: '保存后生效；停用时已有结果仍可查看。',
+      criticExploreEnabled: '只读查阅允许范围内的资料，不修改文件。',
+      jevEnabled: '对照主张与引用证据；会产生额外 API 用量。',
+      advisorJevEnabled: '独立检查建议与本次背景是否一致；会产生额外 API 用量。',
+      maxCallsPerTurn: '每个代理回合最多咨询次数，包含追问。',
+      advisorTimeoutSeconds: '等待上限，不是费用上限。',
+      criticTimeoutSeconds: '整次评审时限，不是费用上限。',
+    }
+    function settingHelp(key, hint, brief) {
+      const short = brief || SHORT_HINTS[key]
+      return h('div', { id: 'ciel-setting-hint-' + key, 'data-ciel-setting-help': '' },
+        short ? h('p', { style: css.hint }, short) : null,
+        short ? h('details', {}, h('summary', {}, '详细说明'), h('p', {}, hint)) : h('p', { style: css.hint }, hint))
+    }
+    function hasSettingsDraft() {
+      const draft = settingsEditor.get('drafts')
+      if (!draft) return false
+      const snapshot = scope?.getSnapshot?.()
+      if (snapshot?.status !== 'ready') return true
+      const resets = settingsEditor.get('resets')
+      return FIELD_KEYS.some(key => {
+        if (resets[key]) return true
+        const def = FIELD_DEF_BY_KEY[key], value = snapshot.value?.[key]
+        if (def.kind === 'secret') return Boolean(draft[key])
+        if (def.kind === 'number') return String(draft[key]).trim() === '' || Number(draft[key]) !== value
+        if (def.kind === 'paths') return JSON.stringify(String(draft[key] || '').split('\n').map(p => p.trim()).filter(Boolean)) !== JSON.stringify(value || [])
+        return def.kind === 'check' ? draft[key] !== Boolean(value) : draft[key] !== String(value ?? def.fallback ?? '')
+      })
+    }
+    function SettingsDraftNotice() {
+      useSettingsField('drafts'); useSettingsField('resets')
+      return hasSettingsDraft() ? h(Tag, { tone: 'warning' }, 'Ciel 草稿未保存') : null
     }
 
     function CielSettingsSection() {
@@ -406,6 +463,9 @@ window.__ModuleLoader__.load({
         h('h2', { style: { marginTop: 0 } }, '夏尔 Ciel'),
         h('p', { role: 'status' }, snap.status === 'loading' ? '正在加载 Ciel 设置…' : 'Ciel 设置暂不可用，请检查连接或插件状态。'))
       const value = snap.value || {}
+      const section = settingsDescribe?.getSnapshot?.().view?.namespaces?.find(row => row.ns === 'advisor')
+      const secretSlot = (section?.secrets || snap.secrets)?.find(row => row.path?.length === 1 && row.path[0] === 'jevApiKey')
+      const jevSettingsReady = secretSlot !== undefined && typeof value.jevEndpoint === 'string' && typeof value.jevModel === 'string'
       const user = snap.user && typeof snap.user === 'object' ? snap.user : {}
       const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key)
 
@@ -425,6 +485,11 @@ window.__ModuleLoader__.load({
         criticModel: String(value.criticModel ?? ''),
         criticEffort: String(value.criticEffort ?? 'medium'),
         criticExploreEnabled: Boolean(value.criticExploreEnabled ?? true),
+        jevEnabled: Boolean(value.jevEnabled ?? false),
+        advisorJevEnabled: Boolean(value.advisorJevEnabled ?? false),
+        jevApiKey: '', // Never copy a saved secret (even from a legacy snapshot).
+        jevEndpoint: String(value.jevEndpoint ?? JEV_ENDPOINT),
+        jevModel: String(value.jevModel ?? JEV_MODEL),
         criticExploreBudget: String(value.criticExploreBudget ?? '20'),
         enabled: Boolean(value.enabled ?? true),
         criticTimeoutSeconds: String(value.criticTimeoutSeconds ?? ''),
@@ -439,9 +504,9 @@ window.__ModuleLoader__.load({
 
       /** Parse/validate one number descriptor against the staged draft. */
       const numState = (def) => {
-        const parsed = Math.round(Number(staged[def.key]))
+        const parsed = Number(staged[def.key])
         const invalid = staged[def.key].trim() === ''
-          || !Number.isFinite(parsed)
+          || !Number.isInteger(parsed)
           || parsed < def.min
           || parsed > def.max
         return { parsed, invalid }
@@ -452,25 +517,37 @@ window.__ModuleLoader__.load({
         const invalid = parsed.length > 16 || new Set(parsed).size !== parsed.length || parsed.some((p) => !p.startsWith('/') || p.length > 4096 || /[\\%:\u0000-\u001f]/.test(p) || p.split('/').includes('..'))
         return { parsed, invalid }
       }
+      const textInvalid = key => key === 'jevEndpoint' ? !validJevEndpoint(staged[key])
+        : key === 'jevModel' ? !validJevModel(staged[key])
+          : key === 'jevApiKey' && Boolean(staged[key]) && !validJevKey(staged[key])
       const dirtyKey = (key) => {
         if (resets[key]) return true
         const def = FIELD_DEF_BY_KEY[key]
         if (def && def.kind === 'number') {
           const { parsed, invalid } = numState(def)
-          return !invalid && parsed !== value[key]
+          return invalid ? String(staged[key]) !== String(value[key] ?? '') : parsed !== value[key]
         }
         if (def && def.kind === 'paths') return JSON.stringify(pathsState(key).parsed) !== JSON.stringify(Array.isArray(value[key]) ? value[key] : [])
         if (def && def.kind === 'check') return staged[key] !== Boolean(value[key])
+        if (def && def.kind === 'secret') return Boolean(staged[key])
         return staged[key] !== String(value[key] ?? (def && def.fallback) ?? '')
       }
       const dirty = FIELD_KEYS.some(dirtyKey)
 
       const edit = (key, next) => {
         startDraft()
-        setDrafts({ ...staged, [key]: next })
-        if (resets[key]) {
+        const changes = { [key]: next }
+        if (key === 'provider' || key === 'criticProvider') {
+          const group = catalog.groups?.find(group => group.id === next)
+          if (Array.isArray(group?.models) && group.models.length > 0) {
+            changes[key === 'provider' ? 'model' : 'criticModel'] = group.models[0].id
+            changes[key === 'provider' ? 'reasoningEffort' : 'criticEffort'] = 'provider'
+          }
+        }
+        setDrafts({ ...staged, ...changes })
+        if (Object.keys(changes).some(changed => resets[changed])) {
           const rest = { ...resets }
-          delete rest[key]
+          for (const changed of Object.keys(changes)) delete rest[changed]
           setResets(rest)
         }
         setSaveFailed(false)
@@ -488,8 +565,14 @@ window.__ModuleLoader__.load({
         setResets({})
         setSaveFailed(false)
       }
+      const invalidField = key => {
+        const def = FIELD_DEF_BY_KEY[key]
+        return (def.kind === 'number' && numState(def).invalid)
+          || (def.kind === 'paths' && pathsState(key).invalid) || textInvalid(key)
+          || (['jevApiKey', 'jevEndpoint', 'jevModel'].includes(key) && !jevSettingsReady && dirtyKey(key))
+      }
       const save = async () => {
-        if (editor.get('saving') || !snap.writable) return
+        if (editor.get('saving') || !snap.writable || FIELD_KEYS.some(invalidField)) return
         setSaving(true)
         setSaveFailed(false)
         try {
@@ -507,7 +590,7 @@ window.__ModuleLoader__.load({
           }
           // One explicit Save, one atomic namespace operation; never save on
           // navigation or a Switch click, and never overwrite a newer snapshot.
-          if (ops.length > 0) await scope.mutate(ops, revision)
+          if (ops.length > 0 && await scope.mutate(ops, revision) === false) throw new Error('settings write refused')
           editor.set('revision', undefined)
           setDrafts(null)
           setResets({})
@@ -583,7 +666,7 @@ window.__ModuleLoader__.load({
         const selectOptions = options.some((option) => option.value === staged[key])
           ? options
           : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }]
-        return h('div', { key, style: { ...css.field, ...css.fieldBorder } },
+        return h('div', { key, 'data-ciel-setting': key, 'data-ciel-setting-kind': 'route', style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
             label,
             overridden: overridden(key) && !resets[key],
@@ -628,24 +711,24 @@ window.__ModuleLoader__.load({
       }
 
       const checkField = (key, label, hint) =>
-        h('div', { key, style: { ...css.field, ...(key === 'enabled' ? {} : css.fieldBorder) } },
+        h('div', { key, 'data-ciel-setting': key, 'data-ciel-setting-kind': 'check', style: { ...css.field, ...(key === 'enabled' ? {} : css.fieldBorder) } },
           h(FieldHead, {
             label,
             overridden: overridden(key) && !resets[key],
             disabled,
             onReset: () => resetField(key),
           }),
-          h('div', { style: css.checkRow, role: 'group', 'aria-label': label, 'aria-describedby': 'ciel-setting-hint-' + key },
+          h('div', { style: css.checkRow, 'data-ciel-setting-control': '', role: 'group', 'aria-label': label, 'aria-describedby': 'ciel-setting-hint-' + key },
             h(Switch, {
               label,
               title: hint,
               checked: Boolean(staged[key]),
-              disabled,
+              disabled: disabled || (key === 'jevEnabled' && !staged.criticExploreEnabled),
               onChange: (next) => edit(key, next),
             }),
-            h(Tag, { tone: dirtyKey(key) ? 'warning' : 'neutral' }, (dirtyKey(key) ? '待保存 · ' : '') + (Boolean(staged[key]) ? '已开启' : '已关闭')),
+            dirtyKey(key) ? h(Tag, { tone: 'warning' }, '待保存 · ' + (Boolean(staged[key]) ? '已开启' : '已关闭')) : null,
           ),
-          h('p', { id: 'ciel-setting-hint-' + key, style: css.hint }, hint),
+          settingHelp(key, hint, key === 'jevEnabled' && !staged.criticExploreEnabled ? '文件核查已关闭：此检查暂不运行，原有偏好仍保留。' : undefined),
         )
 
       /** The reasoning-effort dropdown: always a select, options track the model. */
@@ -678,12 +761,31 @@ window.__ModuleLoader__.load({
         )
       }
 
+      const textField = ({ key, label, hint, kind }) => {
+        const secret = kind === 'secret', invalid = textInvalid(key)
+        return h('div', { key, 'data-ciel-setting': key, style: { ...css.field, ...css.fieldBorder } },
+          h(FieldHead, { label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+          h('input', { style: css.input, type: secret ? 'password' : 'text', value: staged[key],
+            'aria-label': label, 'aria-invalid': invalid, 'aria-describedby': 'ciel-setting-hint-' + key,
+            autoComplete: secret ? 'new-password' : 'off', spellCheck: false,
+            placeholder: secret ? '留空保留；输入以替换' : undefined,
+            disabled: disabled || !jevSettingsReady, onChange: event => edit(key, event.target.value) }),
+          secret ? h('p', { role: 'status', style: css.hint }, !jevSettingsReady ? '宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。'
+            : resets[key] ? '待保存：清除密钥覆盖' : staged[key] ? '待保存：替换密钥'
+              : secretSlot.set ? '已配置密钥（原值不回传）' : '未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。') : null,
+          secret ? h('button', { type: 'button', style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key) }, '清除密钥覆盖') : null,
+          !secret && key === 'jevEndpoint' && staged[key] !== JEV_ENDPOINT ? h('p', { role: 'status', style: css.hint }, '自定义服务将收到密钥和原文；请另填该服务的 API Key。') : null,
+          invalid ? h('p', { role: 'alert', style: css.hint }, secret ? '密钥须为 1–4096 个可打印 ASCII 字符，不含空白。'
+            : key === 'jevEndpoint' ? '请输入完整 HTTPS 地址，不含凭据、查询参数或片段。' : '请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。') : null,
+          settingHelp(key, hint))
+      }
+
       /** One validated numeric input, driven by its descriptor. */
       const numberField = (def) => {
         const { invalid } = numState(def)
-        return h('div', { key: def.key, style: { ...css.field, ...css.fieldBorder } },
+        return h('div', { key: def.key, 'data-ciel-setting': def.key, 'data-ciel-setting-kind': 'number', style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
-            label: def.label,
+            label: def.key === 'advisorTimeoutSeconds' ? '顾问时限（秒）' : def.key === 'criticTimeoutSeconds' ? '评审时限（秒）' : def.label,
             overridden: overridden(def.key) && !resets[def.key],
             disabled,
             onReset: () => resetField(def.key),
@@ -699,8 +801,7 @@ window.__ModuleLoader__.load({
             'aria-invalid': invalid || undefined,
             onChange: (event) => edit(def.key, event.target.value),
           }),
-          h('p', { id: 'ciel-setting-hint-' + def.key, style: invalid ? css.invalidText : css.hint },
-            invalid ? `须是 ${def.min}–${def.max} 之间的数字` : def.hint),
+          invalid ? h('p', { id: 'ciel-setting-hint-' + def.key, 'data-ciel-setting-help': '', style: css.invalidText, role: 'alert' }, `须是 ${def.min}–${def.max} 之间的整数`) : settingHelp(def.key, def.hint),
         )
       }
 
@@ -722,64 +823,44 @@ window.__ModuleLoader__.load({
       const renderField = (def, depth) => {
         if (def.kind === 'group') {
           const open = groupClosed[def.key] !== true
-          return h(React.Fragment, { key: def.key },
-            h('div', { style: { ...css.field, ...css.fieldBorder, marginLeft: depth * 14 } },
-              h('button', {
-                type: 'button',
-                style: css.groupHead,
-                'aria-expanded': open,
-                onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open }),
-              },
-                h(Chevron, { open }),
-                h('span', { style: css.groupLabel }, def.label),
-                groupDirty(def) ? h(Tag, { tone: 'warning' }, '未保存') : null,
-                open ? null : h('span', { style: css.groupSummary }, def.summarize(staged)))),
-            open ? def.children.map((child) => renderField(child, depth + 1)) : null)
+          return h('section', { key: def.key, 'data-ciel-settings-group': def.key },
+            h('button', {
+              type: 'button', 'data-ciel-settings-group-head': '', 'aria-expanded': open,
+              onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open }),
+            }, h(Chevron, { open }), h('strong', {}, def.label),
+            groupDirty(def) ? h(Tag, { tone: 'warning' }, '未保存') : null,
+            open ? null : h('span', { 'data-ciel-settings-group-summary': '' }, def.summarize(staged))),
+            open ? h('div', { 'data-ciel-settings-group-body': '' }, ...(def.key === 'common'
+              ? [...def.children.slice(0,4).map(child => renderField(child, depth + 1)), h('div', { key: 'time-limits', 'data-ciel-settings-times': '' }, ...def.children.slice(4).map(child => renderField(child, depth + 1)))]
+              : def.children.map(child => renderField(child, depth + 1)))) : null)
         }
         const el = def.kind === 'route' ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options])
           : def.kind === 'effort' ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback)
             : def.kind === 'check' ? checkField(def.key, def.label, def.hint)
               : def.kind === 'paths' ? pathsField(def)
-                : numberField(def)
-        return depth > 0
-          ? React.cloneElement(el, { style: { ...el.props.style, marginLeft: depth * 14 } })
-          : el
+                : def.kind === 'text' || def.kind === 'secret' ? textField(def)
+                  : numberField(def)
+        return el
       }
 
-      const blocked = !dirty
-        || FIELD_KEYS.some((key) => {
-          const def = FIELD_DEF_BY_KEY[key]
-          return (def.kind === 'number' && numState(def).invalid) || (def.kind === 'paths' && pathsState(key).invalid)
-        })
-        || saving
+      const blocked = !dirty || FIELD_KEYS.some(invalidField) || saving
 
-      return h('section', { 'aria-label': '夏尔 Ciel', style: { color: 'var(--dsw-alias-label-primary)', minWidth: 0 } },
-        h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '10px' } },
-          h('h2', { style: { margin: 0, fontSize: '20px' } }, '夏尔 Ciel'),
-          h(Tag, { tone: value.enabled === false ? 'neutral' : 'success' }, value.enabled === false ? '当前已停用' : '当前已启用'),
-          dirty ? h(Tag, { tone: 'warning' }, '未保存') : null),
-        h('p', { style: { ...css.hint, marginBottom: '16px' } }, '顾问提供思路与提醒，批评者核查回复；选中的批注填入输入框，由你确认后发送。'),
-        h('div', { style: { ...css.card, ...css.body } },
-              !snap.writable ? h('p', { style: css.readOnly, role: 'status' }, '当前设置为只读。') : null,
-              h('p', { style: css.readOnly }, '以下修改均在点击「保存」后生效；「重置」只暂存默认值，「放弃」撤销未保存的修改。'),
-              FIELD_DEFS.map((def) => renderField(def, 0)),
-              h('div', { style: css.footer },
-                saveFailed ? h('p', { style: css.failed, role: 'status' }, '保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。') : null,
-                h('button', {
-                  type: 'button',
-                  style: (!dirty && !saveFailed) || saving ? { ...css.discard, ...css.disabled } : css.discard,
-                  disabled: (!dirty && !saveFailed) || saving,
-                  onClick: discard,
-                }, '放弃'),
-                h('button', {
-                  type: 'button',
-                  style: blocked ? { ...css.save, ...css.disabled } : css.save,
-                  disabled: blocked,
-                  onClick: save,
-                }, saving ? '保存中…' : '保存'),
-              ),
-            ),
-      )
+      return h('section', { 'aria-label': '夏尔 Ciel', 'data-ciel-settings': '' },
+        h('header', { 'data-ciel-settings-header': '' },
+          h('div', {}, h('div', { 'data-ciel-settings-heading': '' }, h('h2', {}, '夏尔 Ciel'),
+            h(Tag, { tone: value.enabled === false ? 'neutral' : 'success' }, value.enabled === false ? '当前已停用' : '当前已启用')),
+            h('p', { 'data-ciel-settings-subtitle': '' }, '顾问提供思路，评审核对依据。')),
+          h('div', { 'data-ciel-settings-enabled': '' }, renderField(FIELD_DEFS[0], 0))),
+        h('p', { 'data-ciel-settings-notice': '' }, !snap.writable ? '当前设置为只读。' : dirty
+          ? '草稿尚未保存。切换设置页或关闭此窗口仍会保留；保存后才生效。'
+          : '以下修改均在点击「保存」后生效；恢复默认值也需要保存。'),
+        h('div', { 'data-ciel-settings-groups': '' }, ...FIELD_DEFS.slice(1).map(def => renderField(def, 0))),
+        h('footer', { 'data-ciel-settings-footer': '' },
+          saveFailed ? h('p', { 'data-ciel-settings-footer-error': '', role: 'status' }, '保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。') : null,
+          h('span', { 'data-ciel-settings-footer-status': '', role: 'status' }, saving ? '正在保存…' : blocked && dirty ? '请先修正无效设置' : dirty ? FIELD_KEYS.filter(dirtyKey).length + ' 项未保存的修改' : '没有未保存的修改'),
+          h(Button || 'button', { type: 'button', ...(Button ? { variant: 'toolbar', size: 'md' } : {}), disabled: (!dirty && !saveFailed) || saving, onClick: discard }, '放弃'),
+          h(Button || 'button', { type: 'button', ...(Button ? { variant: 'primary', size: 'md' } : {}), disabled: blocked || !snap.writable, onClick: save }, saving ? '保存中…' : '保存')))
+
     }
 
     /**
@@ -963,9 +1044,9 @@ window.__ModuleLoader__.load({
     }
 
     function verdictBadgeText(entry) {
-      if (entry?.status === 'incomplete' || deriveCoverage(entry) === 'partial') return '◇ 部分核实'
+      if (entry?.status === 'incomplete' || deriveCoverage(entry) === 'partial') return hasSettledReviewItems(entry) ? '◇ 已核查 · 证据受限' : '◇ 部分核实'
       if (entry?.status === 'unverified' || deriveCoverage(entry) === 'not-verified') return '◇ 未独立核实'
-      if (isSoundEntry(entry)) return '✓ 整体成立'
+      if (isSoundEntry(entry)) return '✓ 已核实 · 无阻断'
       if (entry && entry.verdict === 'changes') return '⚠ 建议修改'
       if (entry && entry.verdict === 'pass') return '◇ 未独立核实'
       return '批注评审'
@@ -974,7 +1055,7 @@ window.__ModuleLoader__.load({
     /** Capture only the addressed composer's edit capability, never a send verb. */
     function feedbackDraftTarget(ctx, sessionId) {
       const sessions = ctx.get('sessions')
-      if (sessions?.list?.getSnapshot?.().current !== sessionId) throw new Error('会话已切换，未填入；请回到原会话重试')
+      if (currentSessionId(sessions?.list?.getSnapshot?.()) !== sessionId) throw new Error('会话已切换，未填入；请回到原会话重试')
       const actx = sessions.scope(sessionId)
       const input = actx && ctx.get('conversation')?.input?.for(actx)
       const state = input?.state?.getSnapshot?.()
@@ -983,7 +1064,8 @@ window.__ModuleLoader__.load({
       return { actx, input, draftRev: state.draftRev }
     }
 
-    function appendFeedbackDraft(ctx, sessionId, text, expected) {
+    function appendFeedbackDraft(ctx, sessionId, text, expected, mode = 'append') {
+      if (!['append', 'replace'].includes(mode)) throw new Error('未知草稿操作，未填入')
       if (typeof text !== 'string' || text.trim() === '') throw new Error('批注草稿为空')
       const target = feedbackDraftTarget(ctx, sessionId)
       if (expected && (target.input !== expected.input || target.draftRev !== expected.draftRev)) throw new Error('输入内容已变化，未填入；请再次点击')
@@ -1003,21 +1085,28 @@ window.__ModuleLoader__.load({
         end -= length - 1
       }
       const applied = target.actx.bail(target.actx, 'slash/input-insert-text', {
-        text: (state.draft === '' ? '' : '\n\n') + text,
-        span: { start: end, end, draftRev: state.draftRev },
+        text: (mode === 'replace' || state.draft === '' ? '' : '\n\n') + text,
+        span: { start: mode === 'replace' ? 0 : end, end, draftRev: state.draftRev },
       })
       if (applied !== true) throw new Error('输入框未接受批注草稿，未发送；请重试')
       return { duplicate: false }
     }
 
-    async function stageFeedbackDraft(ctx, request, call, isCurrent = () => true) {
+    async function stageFeedbackDraft(ctx, request, call, isCurrent = () => true, choose = undefined) {
       const target = feedbackDraftTarget(ctx, request.sessionId)
       // A distinct endpoint prevents an older Host from sending automatically.
       const res = await call('prepareFeedback', request)
       if (!isCurrent()) throw new Error('页面或会话已变化，未填入；请重试')
       if (!res || res.ok !== true) throw new Error(String(res?.error || '无法准备草稿；若刚更新 Ciel，请重载后刷新页面'))
       if (res.sessionId !== request.sessionId || res.reviewId !== request.reviewId || res.messageId !== request.messageId) throw new Error('批注与会话不匹配，未填入')
-      return appendFeedbackDraft(ctx, request.sessionId, res.text, target)
+      const current = feedbackDraftTarget(ctx, request.sessionId)
+      if (current.input !== target.input || current.draftRev !== target.draftRev) throw new Error('输入内容已变化，未填入；请再次点击')
+      const state = current.input.state.getSnapshot()
+      let mode = 'append'
+      if (typeof choose === 'function' && state.draft !== '' && !state.draft.includes(res.text)) mode = await choose(state.draft)
+      if (mode === 'cancel') return { cancelled: true }
+      if (!isCurrent()) throw new Error('页面或会话已变化，未填入；请重试')
+      return appendFeedbackDraft(ctx, request.sessionId, res.text, target, mode)
     }
 
     function isToolBudgetError(entry) {
@@ -1049,7 +1138,7 @@ window.__ModuleLoader__.load({
       if (isSoundEntry(entry)) return '✓ 无阻断 (' + count + ')'
       if (entry.status === 'cancelled') return '已取消 · 重新评审'
       if (entry.status === 'error') return String(entry.error || '').includes('review timeout') ? '已到时限 · 重试' : isToolBudgetError(entry) ? '读取上限 · 重试' : '评审失败 · 重试'
-      if (entry.status === 'incomplete') return '◇ 部分核实 · ' + count + ' 条'
+      if (entry.status === 'incomplete') return (hasSettledReviewItems(entry) ? '◇ 已核查 · 证据受限 · ' : '◇ 部分核实 · ') + count + ' 条'
       if (entry.status === 'unverified') return '◇ 未核实 · ' + count + ' 条'
       if (entry.verdict === 'changes') return '⚠ 批注 ' + count + ' · 复审'
       // A 'sound' status that failed isSoundEntry (partial/not-verified coverage,
@@ -1228,8 +1317,8 @@ window.__ModuleLoader__.load({
     // 未解析回退原文——任何状态都不比通用卡片差。边框/背景走主题 token 自适应
     // 亮暗，rgba 为兜底。
     const ADVISOR_CARD_CSS = [
-      '.adv-card{color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
-      '.adv-head{padding:9px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
+      '.adv-card{--ciel-advisor-inset:14px;color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
+      '.adv-head{padding:9px var(--ciel-advisor-inset);display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
       '.adv-head:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}',
       '.adv-head-icon{flex:none;font-size:13px}',
@@ -1242,7 +1331,12 @@ window.__ModuleLoader__.load({
       '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}',
       '.adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
       '.adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary, #b77700);font-family:ui-monospace,monospace;flex:none}',
-      '.adv-body{padding:4px 14px 12px}',
+      // Summary, Jev and model metadata share the card's content edge. Keep
+      // these selectors card-scoped: review panels/sidebars own their spacing.
+      '.adv-card .adv-head[data-ciel-summary-head]{padding-inline:var(--ciel-advisor-inset)}',
+      '.adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}',
+      '.adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}',
+      '.adv-body{padding:4px var(--ciel-advisor-inset) 12px}',
       '.adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid var(--dsw-alias-border-l2);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
       '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}',
       '.adv-item:first-of-type{border-top:none}',
@@ -1372,6 +1466,7 @@ window.__ModuleLoader__.load({
         if (callId) return h('div', { className: 'adv-card ciel-advice-summary' },
           h('div', { className: 'adv-head', 'data-ciel-summary-head': '' }, h('span', { className: 'adv-head-title' }, headText), chips,
             navigationButton({ onClick: () => sidebar.openAdvice(props.sessionId, callId) }, '在侧栏查看')),
+          meta?.jev ? h('p', { 'data-ciel-advisor-jev-summary': '' }, advisorJevSummary(meta.jev)) : null,
           h('div', { className: 'ciel-model-usage' }, modelLabel))
       }
       return h('div', { className: 'adv-card' },
@@ -1390,6 +1485,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'ciel-model-usage' }, modelLabel),
         open
           ? h('div', { className: 'adv-body' },
+              advisorJevPanel(h, meta?.jev),
               question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
               isError
                 ? h('div', { className: 'adv-err' }, body !== '' ? body : '（无错误详情）')
@@ -1443,11 +1539,23 @@ window.__ModuleLoader__.load({
       return { items, issues }
     }
 
-    function apply(ctx) {
+    function mountClient(ctx, settingsForm) {
       settingsEditor = createSettingsEditor()
+      draftDecisions = createCielDecisionPrompt({ React, Modal, Button })
+      const ownedDecisions = draftDecisions
+      ctx.effect(() => () => ownedDecisions.dispose(), 'Ciel: draft decisions')
+      ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'ciel-draft-decisions' }, ownedDecisions.View))
+      ctx.slots.inject('settings.action', () => ctx.slots.register({ name: 'settings.action', id: 'ciel-draft-status', order: 30 }, SettingsDraftNotice))
+      ctx.effect(() => {
+        const beforeUnload = event => { if (hasSettingsDraft()) { event.preventDefault(); event.returnValue = '' } }
+        if (typeof window.addEventListener !== 'function') return
+        window.addEventListener('beforeunload', beforeUnload)
+        return () => window.removeEventListener('beforeunload', beforeUnload)
+      }, 'Ciel: unsaved browser exit warning')
       const ownedEditor = settingsEditor
       ctx.effect(() => () => ownedEditor.dispose(), 'dsh-ciel: page-local settings draft')
-      scope = ctx.settingsScope.bind({ namespace: 'ciel' })
+      scope = settingsForm
+      settingsDescribe = ctx.configForms?.describe?.() || null
       clientOn = (name, fn) => ctx.on(name, fn)
       getSessionRemote = () => {
         try {
@@ -1479,6 +1587,7 @@ window.__ModuleLoader__.load({
 
       const styleEl = document.createElement('style')
       styleEl.textContent = REVIEW_CSS + '\n' + ADVISOR_CARD_CSS + '\n' + SIDEBAR_CSS + '\n' + INBOX_CSS
+      styleEl.textContent += SETTINGS_CSS
       document.head.appendChild(styleEl)
       ctx.effect(() => () => styleEl.remove(), 'dsh-advisor: review styles')
 
@@ -1539,9 +1648,20 @@ window.__ModuleLoader__.load({
             return result
           },
           onTriage: request => reviewCall('triage', request),
+          canPrepareFeedback: () => scope?.getSnapshot?.().value?.enabled !== false,
+          subscribeConfiguration: listener => scope?.subscribe?.(listener) || (() => {}),
+          locateReview: async (sessionId, reviewId) => {
+            const controller = inbox.getController()
+            if (!controller) return { ok: false, error: '收件箱定位暂不可用' }
+            await controller.ensureLoaded()
+            const snapshot = controller.getSnapshot()
+            if (snapshot.sessionId !== sessionId) return { ok: false, error: '请先回到这条评审所属的会话。' }
+            const record = snapshot.reviews.find(review => review.reviewId === reviewId)
+            return record ? controller.locate(record.key) : { ok: false, error: '该记录不在当前收件箱页；请在收件箱找到对应记录后定位。' }
+          },
           onPrepareFeedback: async (request) => {
-            await stageFeedbackDraft(ctx, request, reviewCall, () => clientActive)
-            return { ok: true }
+            const result = await stageFeedbackDraft(ctx, request, reviewCall, () => clientActive && scope?.getSnapshot?.().value?.enabled !== false, preview => draftDecisions.ask(preview))
+            return { ok: true, ...result }
           },
         })
         sidebar = native
@@ -1691,7 +1811,7 @@ window.__ModuleLoader__.load({
           head.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)))
           const summary = doc.createElement('span')
           summary.setAttribute('data-ciel-summary-copy', '')
-          summary.textContent = entry.status === 'error' ? reviewErrorText(entry) : entry.summary || '评审已完成'
+          summary.textContent = entry.status === 'error' ? reviewErrorText(entry) : String(entry.summary || '评审已完成').replace(/(\d+) 项未查/g, '$1 项未核实')
           head.appendChild(summary)
           const open = doc.createElement('span')
           open.setAttribute('data-ciel-summary-action', '')
@@ -1762,7 +1882,7 @@ window.__ModuleLoader__.load({
           toggle.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)))
           const sum = doc.createElement('span')
           sum.className = 'dsr-vsum'
-          sum.textContent = entry.summary || '批评者批注 · ' + annotations.length + ' 条'
+          sum.textContent = String(entry.summary || '批评者批注 · ' + annotations.length + ' 条').replace(/(\d+) 项未查/g, '$1 项未核实')
           toggle.appendChild(sum)
           const blockers = annotations.filter((a) => a && a.severity === 'blocker').length
           const nits = annotations.length - blockers
@@ -1775,7 +1895,7 @@ window.__ModuleLoader__.load({
           // New records are host-counted; legacy records retain their origin.
           if (entry.stats && typeof entry.stats.checked === 'number') {
             const text = '疑点 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
-              + (typeof entry.stats.unchecked === 'number' && entry.stats.unchecked > 0 ? ' · 未查 ' + entry.stats.unchecked : '')
+              + (typeof entry.stats.unchecked === 'number' && entry.stats.unchecked > 0 ? ' · 未核实 ' + entry.stats.unchecked : '')
             const title = entry.explore ? '工具调用 ' + entry.explore.toolCalls + (Number.isFinite(entry.explore.budget) ? '/' + entry.explore.budget : ' 次') + (entry.outcomes ? '（执行前计数，包含已放行但失败的调用）' : '（旧版事件流采样）') + (entry.explore.salvaged ? '；本卡由熔断后的部分记录恢复' : '') : ''
             chips.appendChild(nativeTag('info', text, title))
           } else if (entry.explore) {
@@ -1790,7 +1910,7 @@ window.__ModuleLoader__.load({
           }
         } else {
           head.textContent = (isSoundEntry(entry)
-            ? '✓ 批评者：草案整体成立'
+            ? '✓ 批评者：已核实范围内无阻断'
             : '批评者批注 · ' + annotations.length + ' 条'
               + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
               + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
@@ -2128,10 +2248,10 @@ window.__ModuleLoader__.load({
                 store.feedback.sending.add(reviewId)
                 bumpTick()
                 stageFeedbackDraft(ctx, { sessionId, reviewId, messageId, items: items.map((item) => ({ index: item.index })) }, reviewCall,
-                  () => aliveRef.current && generation === genRef.current)
+                  () => aliveRef.current && generation === genRef.current && scope?.getSnapshot?.().value?.enabled !== false, preview => draftDecisions.ask(preview))
                   .then((staged) => {
                     if (!clientActive) return
-                    store.feedback.note.set(reviewId, staged.duplicate
+                    store.feedback.note.set(reviewId, staged.cancelled ? '已取消，输入框保持不变。' : staged.duplicate
                       ? '这些批注已在输入框中，尚未自动发送'
                       : '✓ 已填入输入框，请编辑确认后手动发送')
                   })
@@ -2407,7 +2527,6 @@ window.__ModuleLoader__.load({
       }, 'dsh-advisor: review runtime cleanup')
     }
 
-    exports.apply = apply
     // Test hook: the node test harness loads this factory with a stubbed
     // ModuleLoader and asserts splitter parity plus the reviewed-UI pure
     // helpers (coverage/soundness/labels/selection/feedback shaping).
@@ -2422,6 +2541,7 @@ window.__ModuleLoader__.load({
       reviewErrorText,
       feedbackDraftTarget,
       appendFeedbackDraft,
+      getDraftDecisions: () => draftDecisions,
       stageFeedbackDraft,
       inFlightLabel,
       restoreSelection,
@@ -2452,7 +2572,11 @@ window.__ModuleLoader__.load({
       fieldKeys: FIELD_KEYS.slice(),
       hasGroup: (key) => Object.prototype.hasOwnProperty.call(INITIAL_CLOSED_GROUPS, key) && INITIAL_CLOSED_GROUPS[key] === true,
     }
-    exports.inject = ['settingsScope', 'slots', 'resources', 'sidebarRightTabs', 'sidebarRight']
+    exports.apply = (ctx) => {
+      ctx.inject(['configForms'], child => mountClient(child, child.configForms.get('advisor')))
+      ctx.inject(['settingsScope'], child => mountClient(child, child.settingsScope.bind({ namespace: 'ciel' })))
+    }
+    exports.inject = ['slots', 'resources', 'sidebarRightTabs', 'sidebarRight']
     // The module system materializes the factory's RETURN VALUE as the plugin
     // exports — assigning without returning leaves the kernel `undefined`.
     return module.exports

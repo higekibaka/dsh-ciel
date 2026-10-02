@@ -758,8 +758,58 @@
   var recordOf = (value, check) => object(value) && Object.entries(value).every(([key, item]) => key !== "__proto__" && key !== "constructor" && key !== "prototype" && check(item, key));
   var route = (value) => object(value) && string(value.provider, 256) && string(value.model, 256);
   var usage = (value) => object(value) && optional(value.requested, route) && array(value.used, route, 32);
+  var probability = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
+  var relation = enumOf("supports", "contradicts", "insufficient");
+  var jevReason = enumOf("disabled", "no-eligible-claims", "invalid-config", "missing-key", "time-unavailable", "cancelled", "timeout", "http-error", "invalid-response", "transport-error", "no-exact-claim", "sensitive-input", "no-source-evidence", "limited-evidence", "input-too-large");
+  var jevCheck = (value) => object(value) && /^s[1-9][0-9]*$/.test(value.suspectId) && enumOf("cleared", "defect", "unchecked")(value.criticOutcome) && array(value.evidenceRefs, (ref) => typeof ref === "string" && /^[ea][1-9][0-9]*$/.test(ref), 128) && optional(value.claim, (text2) => typeof text2 === "string" && text2.length > 0 && text2.length <= 1e3) && (value.status === "skipped" ? jevReason(value.reason) : value.status === "completed" && typeof value.claim === "string" && relation(value.relation) && probability(value.confidence) && object(value.probabilities) && Object.keys(value.probabilities).length === 3 && ["supports", "contradicts", "insufficient"].every((key) => probability(value.probabilities[key])) && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 1e-3 && (value.disagreement === null || typeof value.disagreement === "boolean"));
+  var jev = (value) => object(value) && value.mode === "shadow" && string(value.requestedModel, 128) && enumOf("completed", "partial", "skipped", "error", "cancelled")(value.status) && integer(value.requestCount, 1) && integer(value.elapsedMs) && array(value.checks, jevCheck, 8) && optional(value.omittedChecks, integer) && optional(value.reason, jevReason) && optional(value.model, (model) => string(model, 128)) && optional(value.usage, (tokens) => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens));
+  var advisorJevCheck = (value) => object(value) && /^a[1-6]$/.test(value.id) && (value.status === "skipped" ? jevReason(value.reason) : value.status === "completed" && relation(value.relation) && probability(value.confidence) && object(value.probabilities) && Object.keys(value.probabilities).length === 3 && ["supports", "contradicts", "insufficient"].every((key) => probability(value.probabilities[key])) && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 1e-3);
+  var isAdvisorJev = (value) => object(value) && value.mode === "shadow" && value.scope === "provided-context" && string(value.requestedModel, 128) && enumOf("completed", "partial", "skipped", "error", "cancelled")(value.status) && integer(value.requestCount, 1) && integer(value.elapsedMs) && integer(value.omittedChecks) && array(value.checks, advisorJevCheck, 6) && new Set(value.checks.map((row) => row.id)).size === value.checks.length && optional(value.reason, jevReason) && optional(value.model, (model) => string(model, 128)) && optional(value.usage, (tokens) => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens));
+  var jevCountSchema = { type: "integer" };
+  var jevProbabilitySchema = { type: "number" };
+  var ADVISOR_JEV_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    required: ["mode", "scope", "requestedModel", "status", "requestCount", "elapsedMs", "omittedChecks", "checks"],
+    properties: {
+      mode: { type: "string", enum: ["shadow"] },
+      scope: { type: "string", enum: ["provided-context"] },
+      requestedModel: { type: "string" },
+      model: { type: "string" },
+      reason: { type: "string" },
+      status: { type: "string", enum: ["completed", "partial", "skipped", "error", "cancelled"] },
+      requestCount: { ...jevCountSchema, enum: [0, 1] },
+      elapsedMs: jevCountSchema,
+      omittedChecks: jevCountSchema,
+      usage: {
+        type: "object",
+        additionalProperties: false,
+        required: ["inputTokens", "outputTokens"],
+        properties: { inputTokens: jevCountSchema, outputTokens: jevCountSchema }
+      },
+      checks: { type: "array", items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "status"],
+        properties: {
+          id: { type: "string", enum: ["a1", "a2", "a3", "a4", "a5", "a6"] },
+          status: { type: "string", enum: ["completed", "skipped"] },
+          reason: { type: "string" },
+          relation: { type: "string", enum: ["supports", "contradicts", "insufficient"] },
+          confidence: jevProbabilitySchema,
+          probabilities: {
+            type: "object",
+            additionalProperties: false,
+            required: ["supports", "contradicts", "insufficient"],
+            properties: { supports: jevProbabilitySchema, contradicts: jevProbabilitySchema, insufficient: jevProbabilitySchema }
+          }
+        }
+      } }
+    }
+  };
   var annotation = (value) => object(value) && enumOf("blocker", "nit")(value.severity) && ["title", "anchor", "comment", "block", "evidence"].every((key) => optional(value[key], (item) => typeof item === "string"));
-  var review = (value) => object(value) && session(value.sessionId) && string(value.reviewId) && string(value.messageId) && string(value.status, 64) && Number.isFinite(value.createdAt) && array(value.annotations, annotation, 64) && optional(value.modelUsage, usage);
+  var investigation = (value) => object(value) && typeof value.id === "string" && /^s[1-8]$/.test(value.id) && ["suspect", "reason"].every((key) => typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 1200) && optional(value.block, (v) => string(v, 64)) && enumOf("settled", "unresolved", "failed", "not-started")(value.status) && enumOf("cleared", "defect", "unchecked")(value.outcome) && (value.status === "settled" ? value.outcome !== "unchecked" : value.outcome === "unchecked") && ["toolCalls", "modelRequests", "elapsedMs"].every((key) => integer(value[key])) && array(value.evidenceRefs, (ref) => typeof ref === "string" && /^[ea][1-9][0-9]*$/.test(ref), 128);
+  var review = (value) => object(value) && session(value.sessionId) && string(value.reviewId) && string(value.messageId) && string(value.status, 64) && Number.isFinite(value.createdAt) && array(value.annotations, annotation, 64) && optional(value.modelUsage, usage) && optional(value.jev, jev) && optional(value.investigations, (rows) => array(rows, investigation, 8) && new Set(rows.map((row) => row.id)).size === rows.length);
   var triage = (value) => recordOf(value, (row) => object(row) && recordOf(row.states, (state, key) => /^(0|[1-9][0-9]*)$/.test(key) && index(Number(key)) && enumOf("accept", "dismiss")(state)) && optional(row.filter, enumOf("all", "blocker")));
   var shapes = {
     list: { sessionId: session, cursor: (value) => optional(value, cursor), limit: (value) => optional(value, (v) => integer(v, 100) && v > 0) },
@@ -821,7 +871,7 @@
         valid = value.ok === true && object(value.evidence) && typeof value.evidence.content === "string" && string(value.evidence.id) && fingerprint(value.evidence.contentSha256);
         break;
       case "readAdvice":
-        valid = value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === "string";
+        valid = value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === "string" && optional(value.advice.jev, isAdvisorJev);
         break;
       case "prepareFeedback":
         valid = value.ok === true && session(value.sessionId) && string(value.reviewId) && string(value.messageId) && typeof value.text === "string" && integer(value.count, 8) && value.count > 0;
@@ -903,12 +953,13 @@
   }
 
   // plugin/src/review-transport.js
+  var remoteIdentity = (remote) => remote?.[/* @__PURE__ */ Symbol.for("cordis.original")] ?? remote;
   function createReviewTransport({ getRemote, getApi, descriptor }) {
     let active = true, mounted = false, pending, disposeMount, mountOwner;
     async function ready() {
       if (!active) return { ok: false, ...reviewErrorDetails("CIEL_REMOTE_DISPOSED") };
       if (pending) return pending;
-      if (mounted && getRemote() === mountOwner) return null;
+      if (mounted && remoteIdentity(getRemote()) === mountOwner) return null;
       pending = (async () => {
         try {
           if (mounted) {
@@ -926,7 +977,7 @@
             return { ok: false, ...reviewErrorDetails("CIEL_REMOTE_DISPOSED") };
           }
           disposeMount = dispose;
-          mountOwner = remote;
+          mountOwner = remoteIdentity(remote);
           mounted = true;
           return null;
         } catch (error) {
@@ -990,6 +1041,145 @@
         await dispose?.();
       }
     };
+  }
+
+  // plugin/src/presentation.js
+  function hasSettledReviewItems(review2) {
+    if (["error", "cancelled", "unverified"].includes(review2?.status)) return false;
+    const s = review2?.stats;
+    return !!s && [s.checked, s.confirmed, s.excluded, s.unchecked].every((n) => Number.isSafeInteger(n) && n >= 0) && s.checked > 0 && s.unchecked === 0 && s.checked === s.confirmed + s.excluded;
+  }
+  function reviewConclusion(review2) {
+    const count = Array.isArray(review2.annotations) ? review2.annotations.length : 0;
+    if (review2.status === "error") return "本次评审失败，未形成完整结论。";
+    if (review2.status === "cancelled") return "评审已取消，已保存内容仅供参考。";
+    const partial = review2.coverage !== "complete" || ["incomplete", "unverified"].includes(review2.status) || review2.stats?.unchecked > 0;
+    if (partial && hasSettledReviewItems(review2)) {
+      return count ? "核查已完成，发现 " + count + " 条批注；部分证据或覆盖范围仍受限。" : "已完成 " + review2.stats.checked + " 项核查，疑点均已排除；部分证据或覆盖范围仍受限。";
+    }
+    if (partial) return count ? `发现 ${count} 条批注，仍不能判定全部通过。` : "核查尚未完成，不能判定通过。";
+    return count ? `发现 ${count} 条需要核对的批注。` : "已核实范围内未发现阻断问题。";
+  }
+  function listingPresentation(evidence) {
+    if (!["listing", "directory"].includes(evidence.kind) || !["available", "limited", void 0].includes(evidence.status)) return null;
+    if (typeof evidence.content !== "string" || evidence.content.length > 262144) return null;
+    let record;
+    try {
+      record = JSON.parse(evidence.content);
+    } catch {
+      return null;
+    }
+    if (!record || typeof record !== "object" || Array.isArray(record) || !Array.isArray(record.paths) || record.paths.length > 500 || !record.paths.every((path) => typeof path === "string")) return null;
+    return { pattern: typeof record.pattern === "string" ? record.pattern : null, paths: record.paths, truncated: evidence.truncated === true || record.truncated === true, raw: evidence.content };
+  }
+  function createCielDecisionPrompt({ React, Modal, Button }) {
+    const h = React.createElement;
+    const listeners = /* @__PURE__ */ new Set();
+    let current = null, active = true;
+    const publish = () => {
+      for (const listener of listeners) listener();
+    };
+    const settle = (choice) => {
+      const pending = current;
+      current = null;
+      publish();
+      pending?.resolve(choice);
+    };
+    function View() {
+      const [, tick] = React.useState(0);
+      React.useEffect(() => {
+        const update = () => tick((n) => n + 1);
+        listeners.add(update);
+        return () => listeners.delete(update);
+      }, []);
+      if (!current) return null;
+      const replacing = current.step === "replace";
+      const button = (label, choice, primary = false) => h(Button || "button", { type: "button", ...Button ? { variant: primary ? "primary" : "toolbar", size: "md" } : {}, onClick: () => settle(choice) }, label);
+      const footer = h(
+        "div",
+        { "data-ciel-draft-confirm-actions": "" },
+        replacing ? button("返回", "back") : h(Button || "button", { type: "button", ...Button ? { variant: "toolbar", size: "md" } : {}, onClick: () => {
+          current = { ...current, step: "replace" };
+          publish();
+        } }, "替换现有草稿"),
+        button("取消", "cancel"),
+        button(replacing ? "确认替换" : "追加到草稿末尾", replacing ? "replace" : "append", true)
+      );
+      const close = () => settle("cancel");
+      const body = h(
+        "div",
+        { "data-ciel-draft-confirm": "" },
+        h("p", {}, replacing ? "现有文字和行内引用将被选中的批注替换；这一步不会发送消息。" : "输入框已有内容。追加会保留现有文字、引用和附件；你仍需确认后手动发送。"),
+        replacing ? null : h("pre", {}, current.preview || "输入框已有内容"),
+        h("p", {}, "如果等待期间会话或输入内容发生变化，本次操作会停止。")
+      );
+      if (typeof Modal !== "function" && (typeof Modal !== "object" || Modal === null)) return h("div", { role: "dialog", "aria-label": "批注草稿确认" }, body, footer);
+      return h(Modal, { open: true, title: replacing ? "替换现有草稿？" : "保留你已有的草稿", closeLabel: "关闭", onClose: close, className: "ciel-draft-modal", footer }, body);
+    }
+    return {
+      View,
+      async ask(preview) {
+        if (!active) return "cancel";
+        if (current) throw new Error("请先处理当前的草稿确认。");
+        if (listeners.size === 0) throw new Error("草稿确认界面尚未就绪，未修改输入框；请稍后重试。");
+        let step = "append";
+        while (active) {
+          const choice = await new Promise((resolve) => {
+            current = { preview: String(preview).slice(0, 4e3), step, resolve };
+            publish();
+          });
+          if (choice !== "back") return choice;
+          step = "append";
+        }
+        return "cancel";
+      },
+      dispose() {
+        active = false;
+        settle("cancel");
+        listeners.clear();
+      }
+    };
+  }
+
+  // plugin/src/advisor-jev.js
+  var statusLabels = { completed: "已完成", partial: "部分完成", skipped: "已跳过", error: "不可用", cancelled: "已取消" };
+  var reasons = {
+    disabled: "开关已关闭",
+    "no-eligible-claims": "没有可检查的结构化建议",
+    "missing-key": "请在设置 → 夏尔 Ciel → Jev API 配置中填写密钥；官方接口也可使用 TYPESAFE_API_KEY",
+    "invalid-config": "Jev API 配置无效，请检查 HTTPS 地址、模型 ID 和密钥格式",
+    "time-unavailable": "咨询剩余时间不足",
+    cancelled: "检查已取消",
+    timeout: "检查超时",
+    "http-error": "服务请求失败",
+    "invalid-response": "服务响应无法解析",
+    "transport-error": "服务连接失败",
+    "no-exact-claim": "建议缺少方向正文",
+    "sensitive-input": "输入包含敏感内容",
+    "input-too-large": "问题、背景和建议超过单次检查大小限制"
+  };
+  function advisorJevSummary(result) {
+    if (!isAdvisorJev(result)) return "Jev 顾问建议检查：结果无法解析";
+    const conflicts = result.checks.filter((row) => row.relation === "contradicts").length;
+    return "Jev 顾问建议检查 · " + statusLabels[result.status] + (conflicts ? " · 背景冲突 " + conflicts + " 项" : "");
+  }
+  function advisorJevPanel(h, result) {
+    if (!result) return null;
+    if (!isAdvisorJev(result)) return h("p", { "data-ciel-advisor-jev": "invalid" }, advisorJevSummary(result));
+    return h(
+      "section",
+      { "data-ciel-advisor-jev": result.status, "aria-label": "Jev 顾问建议检查" },
+      h("strong", {}, advisorJevSummary(result)),
+      h("p", {}, "仅对照本次传入的背景，未独立查证事实。依据不足不代表建议错误，采用前仍需验证。"),
+      result.reason ? h("p", {}, reasons[result.reason] || result.reason) : null,
+      result.omittedChecks ? h("p", {}, "另有 " + result.omittedChecks + " 条建议未检查。") : null,
+      h("p", {}, (result.model || result.requestedModel) + " · " + result.requestCount + " 次请求 · " + result.elapsedMs + " ms" + (result.usage ? " · 输入 " + result.usage.inputTokens + " / 输出 " + result.usage.outputTokens + " tokens" : "")),
+      ...result.checks.map((row) => h(
+        "p",
+        { key: row.id, "data-ciel-advisor-jev-check": row.id },
+        "建议 " + row.id.slice(1) + "：" + (row.status === "completed" ? { supports: "背景支持", contradicts: "背景冲突", insufficient: "依据不足" }[row.relation] : "未检查（" + (reasons[row.reason] || row.reason) + "）")
+      ))
+    );
   }
 
   // plugin/src/sidebar.js
@@ -1126,6 +1316,12 @@
     }
     return String(issue);
   }
+  function reviewVerdictText(entry) {
+    if (entry.verdict === "changes") return "已确认项需修改";
+    if (entry.verdict !== "pass") return "";
+    if (entry.coverage !== "complete" && hasSettledReviewItems(entry)) return "疑点已排除，证据仍受限";
+    return entry.coverage === "complete" && !(entry.stats?.unchecked > 0) && !["incomplete", "unverified", "cancelled", "error"].includes(entry.status) ? "已核实范围内无阻断" : "尚不能判定通过";
+  }
   function reviewTone(entry) {
     switch (entry.status) {
       case "sound":
@@ -1141,11 +1337,11 @@
   function reviewStatusText(entry) {
     switch (entry.status) {
       case "sound":
-        return "整体成立";
+        return "已核实 · 无阻断";
       case "completed":
         return "发现问题";
       case "incomplete":
-        return "部分核实";
+        return hasSettledReviewItems(entry) ? "已核查 · 证据受限" : "部分核实";
       case "unverified":
         return "未核实";
       case "cancelled":
@@ -1169,6 +1365,12 @@
         return "目录";
       case "reported":
         return "作者报告";
+      case "host-fact":
+        return "历史宿主事实";
+      case "tool-output":
+        return "历史工具输出";
+      case "directory":
+        return "评审时目录清单";
       default:
         return typeof kind === "string" && kind !== "" ? kind : "证据";
     }
@@ -1385,6 +1587,10 @@
       const prepareFeedback = props.prepareFeedback;
       const onTriage = props.onTriage;
       const openEvidence2 = props.openEvidence;
+      const [, setConfigurationTick] = React.useState(0);
+      React.useEffect(() => typeof props.subscribeConfiguration === "function" ? props.subscribeConfiguration(() => setConfigurationTick((n) => n + 1)) : void 0, [props.subscribeConfiguration]);
+      const feedbackEnabled = typeof props.canPrepareFeedback !== "function" || props.canPrepareFeedback();
+      const detailsRef = React.useRef(null);
       const info = useTabInfo();
       const tab = info.tab;
       const parsed = parseCielAddress(tab.contentId);
@@ -1457,7 +1663,7 @@
       };
       const submit = () => {
         const items = [...selected].sort((left, right) => left - right).map((index2) => ({ index: index2 }));
-        if (items.length === 0) return void 0;
+        if (items.length === 0 || !feedbackEnabled || phase === "sending") return void 0;
         if (typeof prepareFeedback !== "function") {
           setPhase("error");
           setNote("输入框回传未接线。");
@@ -1477,15 +1683,20 @@
             setNote(errorText(result));
             return;
           }
+          if (result?.cancelled) {
+            setPhase("idle");
+            setNote("已取消，输入框保持不变。");
+            return;
+          }
           setPhase("sent");
-          setNote("已填入输入框；请核对后手动发送。");
+          setNote(result?.duplicate ? "这条批注已在草稿中，没有重复添加。" : "已填入输入框；请核对后手动发送。");
         }, (error) => {
           setPhase("error");
           setNote(errorText(error));
         });
       };
-      const openRef = (evidenceId) => {
-        if (typeof openEvidence2 === "function") openEvidence2(parsed.sessionId, parsed.recordId, evidenceId);
+      const openRef = (evidenceId, annotationIndex, annotation2) => {
+        if (typeof openEvidence2 === "function") openEvidence2(parsed.sessionId, parsed.recordId, evidenceId, annotation2 ? { annotationIndex, annotationTitle: String(annotation2.title || "").slice(0, 200), annotationAnchor: String(annotation2.anchor || "").slice(0, 1e3) } : void 0);
       };
       const stats = review2.stats !== null && typeof review2.stats === "object" ? review2.stats : void 0;
       const explore = review2.explore !== null && typeof review2.explore === "object" ? review2.explore : void 0;
@@ -1496,10 +1707,10 @@
           "div",
           { key: "status", "data-ciel-review-status": reviewStatusText(review2) },
           chip(reviewTone(review2), reviewStatusText(review2), "status"),
-          typeof review2.verdict === "string" && review2.verdict !== "" ? h("span", { key: "verdict" }, " · 裁决 " + review2.verdict) : null,
+          reviewVerdictText(review2) ? h("span", { key: "verdict" }, " · " + reviewVerdictText(review2)) : null,
           review2.sound === true ? h("span", { key: "sound" }, " · 宿主判定无阻断") : null
         ),
-        review2.summary === void 0 ? null : h("p", { key: "summary", "data-ciel-review-summary": "" }, String(review2.summary)),
+        review2.summary === void 0 ? null : h("p", { key: "summary", "data-ciel-review-summary": "" }, String(review2.summary).replace(/(\d+) 项未查/g, "$1 项未核实")),
         h(
           "p",
           { key: "meta", "data-ciel-review-meta": "" },
@@ -1513,7 +1724,7 @@
         stats === void 0 ? null : h(
           "p",
           { key: "stats", "data-ciel-review-stats": "" },
-          "排查 " + String(stats.checked === void 0 ? "—" : stats.checked) + " · 证伪 " + String(stats.confirmed === void 0 ? "—" : stats.confirmed) + " · 排除 " + String(stats.excluded === void 0 ? "—" : stats.excluded) + " · 未查 " + String(stats.unchecked === void 0 ? "—" : stats.unchecked)
+          "疑点 " + String(stats.checked === void 0 ? "—" : stats.checked) + " · 确认问题 " + String(stats.confirmed === void 0 ? "—" : stats.confirmed) + " · 排除 " + String(stats.excluded === void 0 ? "—" : stats.excluded) + " · 未核实 " + String(stats.unchecked === void 0 ? "—" : stats.unchecked)
         ),
         explore === void 0 ? null : h(
           "p",
@@ -1527,6 +1738,65 @@
           [privacy.dataLimited === true ? "资料读取受范围或大小限制" : "", privacy.evidenceWithheld === true ? "部分作者工具输出未提供" : ""].filter(Boolean).join("；")
         )
       ].filter((node) => node !== null);
+      const investigations = Array.isArray(review2.investigations) ? review2.investigations : [];
+      const investigationPanel = investigations.length ? h(
+        "section",
+        {
+          key: "investigations",
+          "data-ciel-investigations": "",
+          "aria-label": "逐项调查"
+        },
+        h("strong", {}, "逐项调查 · " + investigations.length + " 项"),
+        h("p", {}, "次数与耗时由宿主记录；调查说明来自模型或执行错误，不代表独立证明。"),
+        ...investigations.map((row) => h(
+          "article",
+          { key: row.id, "data-ciel-investigation": row.id },
+          h("strong", {}, row.id + " · " + (row.status === "failed" ? "核查失败" : row.status === "not-started" ? "未启动" : row.outcome === "defect" ? "确认问题" : row.outcome === "cleared" ? "已排除" : "未能核实")),
+          h("p", {}, String(row.suspect || "（疑点未记录）")),
+          h("p", { "data-ciel-investigation-reason": "" }, String(row.reason || "未记录具体原因。")),
+          h("p", {}, "查询 " + row.toolCalls + " 次 · 模型请求 " + row.modelRequests + " 次 · " + Math.round(row.elapsedMs / 1e3) + " 秒"),
+          ...(row.evidenceRefs || []).map((ref) => actionButton({ key: ref, variant: "toolbar", "data-ciel-investigation-ref": ref, onClick: () => openRef(ref) }, "查看证据 " + ref))
+        ))
+      ) : stats?.unchecked > 0 ? h(
+        "p",
+        { key: "investigations-legacy", "data-ciel-investigations-legacy": "" },
+        "“未核实”表示没有足够证据得出结论，不等于完全未尝试。此历史记录未保存逐项调查过程与受阻原因；不会补写推测或自动重跑。"
+      ) : null;
+      const jev2 = review2.jev;
+      const jevReasons = {
+        disabled: "接入已关闭",
+        "no-eligible-claims": "没有可检查的主张",
+        "missing-key": "请在设置 → 夏尔 Ciel → Jev API 配置中填写密钥；官方接口也可使用 TYPESAFE_API_KEY",
+        "invalid-config": "Jev API 配置无效，请检查 HTTPS 地址、模型 ID 和密钥格式",
+        "time-unavailable": "评审剩余时间不足",
+        cancelled: "检查已取消",
+        timeout: "接口超时",
+        "http-error": "接口返回错误，请检查密钥及账户状态",
+        "invalid-response": "接口返回格式异常",
+        "transport-error": "接口连接失败",
+        "no-exact-claim": "未取得可逐字匹配的主张",
+        "sensitive-input": "输入包含敏感内容",
+        "no-source-evidence": "缺少已引用的原文证据",
+        "limited-evidence": "引用证据不完整",
+        "input-too-large": "原文超过单次检查大小限制"
+      };
+      const jevPanel = !jev2 ? null : h(
+        "section",
+        { key: "jev", "data-ciel-jev": jev2.status, "aria-label": "Jev 证据检查" },
+        h("strong", {}, "Jev 证据检查 · " + ({ completed: "已完成", partial: "部分完成", skipped: "已跳过", error: "不可用", cancelled: "已取消" }[jev2.status] || jev2.status)),
+        h("p", {}, "旁路结果供参考，不改变主评审裁决。"),
+        jev2.reason ? h("p", {}, jevReasons[jev2.reason] || jev2.reason) : null,
+        jev2.omittedChecks > 0 ? h("p", {}, "单次最多检查 8 项；另有 " + jev2.omittedChecks + " 项未交给 Jev。") : null,
+        h("p", {}, (jev2.model || jev2.requestedModel) + " · " + jev2.requestCount + " 次请求 · " + jev2.elapsedMs + " ms" + (jev2.usage ? " · 输入 " + jev2.usage.inputTokens + " / 输出 " + jev2.usage.outputTokens + " tokens" : "")),
+        ...(jev2.checks || []).map((check) => h(
+          "div",
+          { key: check.suspectId, "data-ciel-jev-check": check.suspectId },
+          check.claim ? h("blockquote", {}, check.claim) : null,
+          h("p", {}, check.suspectId + " · " + (check.status === "completed" ? ({ supports: "证据支持", contradicts: "证据矛盾", insufficient: "证据不足" }[check.relation] || check.relation) + (check.disagreement === true ? " · 与主评审有分歧" : check.disagreement === false ? " · 与主评审一致" : " · 主评审未核实") : "已跳过：" + (jevReasons[check.reason] || check.reason))),
+          check.status === "completed" ? h("p", {}, "分布置信度 " + Math.round(check.confidence * 100) + "%（不代表正确率）") : null,
+          ...(check.evidenceRefs || []).map((ref) => actionButton({ key: ref, variant: "toolbar", "data-ciel-jev-ref": ref, onClick: () => openRef(ref) }, "查看证据 " + ref))
+        ))
+      );
       const rows = annotations.map((annotation2, index2) => {
         const item = annotation2 !== null && typeof annotation2 === "object" ? annotation2 : {};
         const refs = Array.isArray(item.evidenceRefs) ? [...new Set(item.evidenceRefs.filter((id) => typeof id === "string" && id !== ""))] : [];
@@ -1553,25 +1823,30 @@
                 toggle(index2, event.target.checked === true);
               }
             }),
-            chip(severity === "blocker" ? "danger" : "warning", severity === "blocker" ? "blocker" : "nit", "sev"),
-            h("span", { key: "title", "data-ciel-annotation-title": "" }, String(item.title === void 0 || item.title === "" ? "（无标题）" : item.title))
+            h("span", {}, "选择此批注")
           ),
-          item.anchor === void 0 || item.anchor === "" ? null : h("blockquote", { key: "anchor", "data-ciel-annotation-anchor": "" }, String(item.anchor)),
-          item.comment === void 0 || item.comment === "" ? null : h("p", { key: "comment", "data-ciel-annotation-comment": "" }, String(item.comment)),
+          h(
+            "div",
+            { "data-ciel-annotation-heading": "" },
+            chip(severity === "blocker" ? "danger" : "warning", severity === "blocker" ? "阻断" : "建议", "sev"),
+            h("h3", { key: "title", "data-ciel-annotation-title": "" }, String(item.title === void 0 || item.title === "" ? "（无标题）" : item.title))
+          ),
+          item.anchor === void 0 || item.anchor === "" ? null : h("div", { key: "anchor-group", "data-ciel-annotation-section": "" }, h("h4", {}, "回复原文"), h("blockquote", { key: "anchor", "data-ciel-annotation-anchor": "" }, String(item.anchor))),
+          item.comment === void 0 || item.comment === "" ? null : h("div", { key: "comment-group", "data-ciel-annotation-section": "" }, h("h4", {}, "核查说明"), h("p", { key: "comment", "data-ciel-annotation-comment": "" }, String(item.comment))),
           item.evidence === void 0 || item.evidence === "" ? null : h("p", { key: "evidence", "data-ciel-annotation-evidence-text": "" }, "证据引用：" + String(item.evidence)),
           refs.length === 0 ? null : h(
-            "p",
+            "div",
             { key: "refs", "data-ciel-annotation-refs": "" },
-            "证据：",
+            h("h4", {}, "相关证据"),
             refs.map((id) => actionButton({
               key: id,
               variant: "toolbar",
               icon: h("span", { "aria-hidden": true }, "→"),
               "data-ciel-evidence-ref": id,
               onClick: () => {
-                openRef(id);
+                openRef(id, index2, item);
               }
-            }, "查看证据 " + shortId(id)))
+            }, h("span", { "data-ciel-evidence-link-label": "" }, h("strong", {}, "查看证据 " + shortId(id)), h("small", {}, "历史只读记录 · 在标签页查看"))))
           )
         );
       });
@@ -1582,9 +1857,39 @@
           "data-ciel-revision": String(revision),
           ...focusIndex === void 0 ? {} : { "data-ciel-focus-index": String(focusIndex) }
         },
-        h("div", { key: "head", "data-ciel-review-head": "" }, ...head),
+        h(
+          "div",
+          { key: "head", "data-ciel-review-head": "" },
+          h(
+            "div",
+            { "data-ciel-review-titlebar": "" },
+            h("h2", {}, "批注评审"),
+            typeof props.locateReview === "function" ? actionButton({ variant: "ghost", "data-ciel-locate-review": "", onClick: () => {
+              const requestKey = key;
+              Promise.resolve(props.locateReview(parsed.sessionId, parsed.recordId)).then((result) => {
+                if (keyRef.current !== requestKey) return;
+                setNote(result?.ok ? "已定位原回复。" : errorText(result));
+              }, (error) => {
+                if (keyRef.current === requestKey) setNote(errorText(error));
+              });
+            } }, "定位原回复") : null
+          ),
+          head[0],
+          h("h3", { "data-ciel-review-conclusion": "" }, reviewConclusion(review2)),
+          stats ? h("p", { "data-ciel-review-brief": "" }, "疑点 " + (stats.checked ?? "—") + " · 确认问题 " + (stats.confirmed ?? "—") + " · 排除 " + (stats.excluded ?? "—") + (stats.unchecked > 0 ? " · 未核实 " + stats.unchecked : "")) : null,
+          review2.coverage !== "complete" || privacy?.dataLimited || privacy?.evidenceWithheld ? h("p", { "data-ciel-review-scope-notice": "" }, "部分资料受限，不能据此判断未核查内容。 ", actionButton({ variant: "ghost", onClick: () => {
+            if (detailsRef.current) detailsRef.current.open = true;
+          } }, "查看范围")) : null,
+          h("details", { ref: detailsRef, "data-ciel-review-details": "" }, h("summary", {}, "评审信息与核查范围"), ...head.slice(1))
+        ),
         h("p", { key: "hint", "data-ciel-review-hint": "" }, "证据引用只是宿主记录的历史读取；内容需点开证据查看，不能替代当前文件核对。"),
-        rows.length === 0 ? h("p", { key: "empty", "data-ciel-review-empty": "" }, "本评审没有批注。") : h("div", { key: "rows", "data-ciel-review-annotations": "" }, ...rows),
+        h(
+          "div",
+          { key: "rows", "data-ciel-review-annotations": "" },
+          ...rows.length === 0 ? [h("p", { key: "empty", "data-ciel-review-empty": "" }, "本评审没有批注。")] : rows,
+          investigationPanel ? h("details", { "data-ciel-review-secondary": "" }, h("summary", {}, "逐项核查过程"), investigationPanel) : null,
+          jevPanel ? h("details", { "data-ciel-review-secondary": "" }, h("summary", {}, "Jev 证据检查" + (jev2.checks?.some((check) => check.disagreement === true) ? " · 存在分歧" : " · " + ({ completed: "已完成", partial: "部分完成", skipped: "已跳过", error: "不可用", cancelled: "已取消" }[jev2.status] || jev2.status))), jevPanel) : null
+        ),
         h(
           "div",
           { key: "actions", "data-ciel-review-actions": "" },
@@ -1593,12 +1898,12 @@
             key: "submit",
             variant: "primary",
             "data-ciel-submit": "",
-            disabled: selected.size === 0 || phase === "sending" || typeof prepareFeedback !== "function",
+            disabled: !feedbackEnabled || selected.size === 0 || phase === "sending" || typeof prepareFeedback !== "function",
             onClick: () => submit()
           }, phase === "sending" ? "正在准备…" : "填入输入框"),
           note === "" ? null : h("span", { key: "note", "data-ciel-note": phase }, note),
           noteText === "" ? null : h("span", { key: "triage-note", "data-ciel-triage-note": "error" }, "分诊保存失败：" + noteText),
-          h("span", { key: "triage-hint", "data-ciel-triage-hint": "" }, "勾选只用于回传，不代表问题成立。"),
+          h("span", { key: "triage-hint", "data-ciel-triage-hint": "" }, feedbackEnabled ? "仅生成草稿，由你确认发送。勾选只用于回传，不代表问题成立。" : "Ciel 已停用；已有结果仍可查看，重新启用后可回传。"),
           typeof prepareFeedback === "function" ? null : h("span", { key: "unwired", "data-ciel-unwired": "" }, "输入框回传未接线")
         )
       );
@@ -1639,6 +1944,9 @@
       const origin = typeof evidence.origin === "string" && evidence.origin !== "" ? evidence.origin : void 0;
       const reported = evidence.kind === "reported" || origin === "author-tool";
       const lines = showContent ? splitLines(evidence.content, startLine) : [];
+      const listing = showContent && !reported ? listingPresentation(evidence) : null;
+      const annotationTitle = typeof params.annotationTitle === "string" ? params.annotationTitle : "";
+      const annotationAnchor = typeof params.annotationAnchor === "string" ? params.annotationAnchor : "";
       const openFile = (compare) => {
         if (currentPath === void 0) return;
         if (tab.actions === void 0 || tab.actions === null || typeof tab.actions.openResource !== "function") {
@@ -1679,7 +1987,8 @@
         range === "" ? null : h("span", { key: "range", "data-ciel-evidence-range": range }, "行 " + range),
         typeof evidence.tool === "string" && evidence.tool !== "" ? h("span", { key: "tool", "data-ciel-evidence-tool": evidence.tool }, "工具 " + evidence.tool) : null,
         origin === void 0 ? null : h("span", { key: "origin", "data-ciel-evidence-origin": origin }, "来源 " + origin),
-        formatTime(evidence.capturedAt) === "" ? null : h("span", { key: "time", "data-ciel-evidence-time": "" }, formatTime(evidence.capturedAt)),
+        formatTime(evidence.capturedAt) === "" ? null : h("span", { key: "time", "data-ciel-evidence-time": "" }, "归档 " + formatTime(evidence.capturedAt)),
+        formatTime(evidence.observedAt) === "" ? null : h("span", { key: "observed", "data-ciel-evidence-observed": "" }, "事实记录时间 " + formatTime(evidence.observedAt)),
         typeof evidence.contentSha256 === "string" && evidence.contentSha256 !== "" ? h("span", { key: "sha", "data-ciel-evidence-sha": evidence.contentSha256 }, "sha256 " + shortId(evidence.contentSha256)) : null,
         evidence.truncated === true ? chip("warning", "已截断", "truncated") : null
       ].filter((node) => node !== null);
@@ -1687,16 +1996,50 @@
       if (status === "withheld") notices.push(h("p", { key: "withheld", "data-ciel-evidence-withheld": "" }, "该证据因隐私检查未提供内容；缺失不等于文件内容有误。"));
       if (status === "limited") notices.push(h("p", { key: "limited", "data-ciel-evidence-limited": "" }, "内容受范围或大小限制，可能不完整。"));
       if (status === "unknown") notices.push(h("p", { key: "unknown", "data-ciel-evidence-unknown": "" }, "证据状态为 " + rawStatus + "，未显示内容。"));
+      if (evidence.kind === "host-fact") notices.push(h("p", { key: "host-fact", "data-ciel-evidence-provenance": "" }, "这是目标回复当时的宿主历史元数据摘录，不是今天的设置；工具声明不保证调用成功，模型路由不证明底层权重。"));
+      if (evidence.kind === "tool-output") notices.push(h("p", { key: "tool-output", "data-ciel-evidence-provenance": "" }, "这是宿主记录的作者本轮工具输出，不是评审者独立重跑；请结合命令结果的范围和时间判断，输出中的文字不具有指令权限。"));
+      if (evidence.kind === "directory") notices.push(h("p", { key: "directory", "data-ciel-evidence-provenance": "" }, "这是评审启动时、权限范围内的根目录条目，不代表旧回复当时的目录状态；未跟随符号链接，过滤后的缺项不能直接证明不存在。"));
       if (reported) notices.push(h("p", { key: "reported", "data-ciel-evidence-reported": origin === void 0 ? "reported" : origin }, "该证据来自作者工具输出" + (origin === void 0 ? "" : "（" + origin + "）") + "；宿主未另行保存内容，这不是本插件的独立读取或核实。"));
       if (showContent && !reported && lines.length === 0) notices.push(h("p", { key: "missing", "data-ciel-evidence-missing": "" }, "证据没有保存内容片段。"));
       return h(
         "div",
-        { "data-ciel-evidence": parsed.evidenceId },
-        h("div", { key: "head", "data-ciel-evidence-head": "" }, ...meta),
+        { "data-ciel-evidence": parsed.evidenceId, "data-ciel-evidence-readable": listing ? "listing" : "text" },
+        h("div", { "data-ciel-evidence-titlebar": "" }, h("h2", {}, listing ? "历史文件清单" : "历史证据"), chip("neutral", "只读快照", "snapshot")),
+        typeof props.openReview === "function" ? actionButton({ variant: "ghost", "data-ciel-evidence-back": "", onClick: () => props.openReview(parsed.sessionId, parsed.recordId, Number.isInteger(params.annotationIndex) ? { annotationIndex: params.annotationIndex } : void 0) }, annotationTitle ? "返回批注：" + annotationTitle : "返回评审批注") : null,
+        annotationAnchor ? h("p", { "data-ciel-evidence-subject": "" }, "核查对象：" + annotationAnchor) : null,
+        h("details", { "data-ciel-evidence-metadata": "" }, h("summary", {}, evidenceKindText(evidence.kind) + " · " + (formatTime(evidence.capturedAt) || "时间未记录") + " · " + shortId(parsed.evidenceId)), h("div", { key: "head", "data-ciel-evidence-head": "" }, ...meta)),
         ...notices,
         h("p", { key: "hint", "data-ciel-evidence-hint": "" }, "历史证据为只读快照；当前文件可能已经变化。打开的是当前文件，不是这条历史证据。"),
         currentPath !== void 0 && startLine !== void 0 ? h("p", { key: "line-hint", "data-ciel-current-line-hint": "" }, "当前文件的源码行定位适用于代码或纯文本视图；Markdown 渲染视图请切换到代码或纯文本后定位。历史行号可能已不对应当前内容。") : null,
-        h(
+        listing ? h(
+          "div",
+          { "data-ciel-listing": "" },
+          listing.pattern === null ? null : h("section", {}, h("h3", {}, "匹配规则"), h("code", { "data-ciel-listing-pattern": "" }, listing.pattern)),
+          h(
+            "section",
+            {},
+            h("h3", {}, "快照中记录的路径 · " + listing.paths.length + " 项"),
+            listing.paths.length ? h("ul", {}, ...listing.paths.map((path2, index2) => h("li", { key: index2 }, h("code", {}, path2)))) : h("p", {}, "这份记录未列出匹配路径。")
+          ),
+          h("p", { "data-ciel-listing-limit": "" }, listing.truncated ? "清单已截断，不能作为完整目录使用；未列出的路径不能据此判定不存在。" : "这是一份受限的历史清单；未列出的路径不能据此判定当前文件不存在。"),
+          h("details", { "data-ciel-listing-raw": "" }, h("summary", {}, "查看原始记录（JSON）"), h(
+            "div",
+            { key: "body", "data-ciel-evidence-body": "" },
+            ...lines.map((line) => {
+              const target = targetLine !== void 0 && line.number === targetLine;
+              return h(
+                "div",
+                {
+                  key: String(line.number === void 0 ? "x" : line.number) + ":" + line.text.length,
+                  "data-ciel-line": line.number === void 0 ? "" : String(line.number),
+                  ...target ? { "data-ciel-line-target": "", ref: targetRef } : {}
+                },
+                line.number === void 0 ? null : h("span", { key: "n", "data-ciel-line-number": String(line.number) }, String(line.number) + "  "),
+                h("span", { key: "t", "data-ciel-line-text": "" }, line.text)
+              );
+            })
+          ))
+        ) : h(
           "div",
           { key: "body", "data-ciel-evidence-body": "" },
           ...lines.map((line) => {
@@ -1776,6 +2119,7 @@
           usage2 === "" ? null : h("span", { key: "usage", "data-ciel-advice-usage": "" }, "模型：" + usage2)
         ),
         h("p", { key: "disclaimer", "data-ciel-advice-disclaimer": "" }, "以下是顾问的观点与方向，不是核实过的证据；采用前请自行验证。"),
+        advisorJevPanel(h, advice.jev),
         // Structured ideas when the Host parsed them; the raw reply then lives
         // behind one collapsed disclosure instead of repeating the full text.
         items.length === 0 ? typeof advice.text === "string" && advice.text !== "" ? h("pre", { key: "text", "data-ciel-advice-text": "" }, advice.text) : null : h(
@@ -1844,6 +2188,9 @@
       if (typeof call !== "function") throw new TypeError("createCielSidebar: install requires call(method, request)");
       const onPrepareFeedback = typeof depsIn.onPrepareFeedback === "function" ? depsIn.onPrepareFeedback : void 0;
       const onTriage = typeof depsIn.onTriage === "function" ? depsIn.onTriage : void 0;
+      const canPrepareFeedback = depsIn.canPrepareFeedback;
+      const subscribeConfiguration = depsIn.subscribeConfiguration;
+      const locateReview = depsIn.locateReview;
       const cleanups = [];
       const record = { ctx, cleanups, uninstall: void 0 };
       const uninstall = () => {
@@ -1904,6 +2251,9 @@
       const face = {
         ...onPrepareFeedback === void 0 ? {} : { prepareFeedback: onPrepareFeedback },
         ...onTriage === void 0 ? {} : { onTriage },
+        ...typeof canPrepareFeedback === "function" ? { canPrepareFeedback } : {},
+        ...typeof subscribeConfiguration === "function" ? { subscribeConfiguration } : {},
+        ...typeof locateReview === "function" ? { locateReview } : {},
         splitPane,
         openReview,
         openEvidence,
@@ -1972,7 +2322,10 @@
     function openEvidence(sessionId, reviewId, evidenceId, options) {
       const source = options === void 0 || options === null ? {} : options;
       return open(evidenceAddress(sessionId, reviewId, evidenceId), CIEL_EVIDENCE, paramsOf([
-        ["line", lineNumber(source.line)]
+        ["line", lineNumber(source.line)],
+        ["annotationIndex", Number.isInteger(source.annotationIndex) ? source.annotationIndex : void 0],
+        ["annotationTitle", typeof source.annotationTitle === "string" ? source.annotationTitle.slice(0, 200) : void 0],
+        ["annotationAnchor", typeof source.annotationAnchor === "string" ? source.annotationAnchor.slice(0, 1e3) : void 0]
       ]));
     }
     function openAdvice(sessionId, callId, options) {
@@ -2023,8 +2376,26 @@
     };
   }
 
+  // plugin/jev-config.js
+  var JEV_MODEL = "jev-1.13.0";
+  var JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+  var JEV_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/;
+  var JEV_KEY_PATTERN = /^[\x21-\x7e]{1,4096}(?![\s\S])/;
+  var JEV_ENDPOINT_PATTERN = /^https:\/\/[^\s\\@?#]+(?![\s\S])/;
+  function validJevEndpoint(value) {
+    if (typeof value !== "string" || value.length > 2048 || !JEV_ENDPOINT_PATTERN.test(value)) return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !!url.hostname && !url.username && !url.password && !url.search && !url.hash;
+    } catch {
+      return false;
+    }
+  }
+  var validJevModel = (value) => typeof value === "string" && JEV_MODEL_PATTERN.test(value);
+  var validJevKey = (value) => typeof value === "string" && JEV_KEY_PATTERN.test(value);
+
   // plugin/src/sidebar.css
-  var sidebar_default = "/*\n * Ciel sidebar surfaces: the review, evidence, and advice tab bodies.\n *\n * Injected as one stylesheet by the plugin's client half (the module itself\n * imports nothing). Every selector is scoped to this module's own\n * data-ciel-* attributes, so nothing here can leak into the shell or another\n * tab type. Button fill/hover/disabled states stay with the platform\n * primitive; only Ciel action sizing, rhythm and keyboard focus are enhanced.\n *\n * Layout contract: the root fills the pane's body as a column scroller owner\n * (head fixed, inner region scrolls, actions fixed), and no surface may push\n * the pane wider than it is — code lines wrap and every flex child that holds\n * text carries min-width: 0.\n *\n * Visual pass: one local scale (--ciel-*) per surface, an unambiguous hierarchy\n * between the head, the fixed action row and the annotation cards, visible\n * :focus-visible rings, and container-width adaptation down to 320px. The\n * evidence/code block, error text and warning boxes stay opaque with\n * full-opacity text.\n * Action buttons only get size/layout/type/focus here, so a native Button's\n * variant fill and text colour are never overwritten.\n */\n\n/* ── local scale, shared by the three surfaces and their state panels ───── */\n\n[data-ciel-review],\n[data-ciel-evidence],\n[data-ciel-advice],\n[data-ciel-state] {\n  --ciel-font: var(--dsh-content-font-size-secondary, 13px);\n  --ciel-font-xs: 12px;\n  --ciel-radius-sm: 6px;\n  --ciel-radius-md: 8px;\n  --ciel-radius-lg: 10px;\n  --ciel-control-h: 36px;\n  --ciel-surface-1: var(--dsw-alias-bg-layer-1, #ffffff);\n  --ciel-surface-2: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06));\n  --ciel-border-soft: var(--dsw-alias-border-l1, rgba(127, 127, 127, .18));\n  --ciel-border: var(--dsw-alias-border-l2, rgba(127, 127, 127, .3));\n  --ciel-text-1: var(--dsw-alias-label-primary, inherit);\n  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary, inherit));\n  --ciel-text-3: var(--dsw-alias-label-tertiary, rgba(127, 127, 127, .85));\n  --ciel-danger: var(--dsw-alias-state-error-primary, #d24949);\n  --ciel-warn: var(--dsw-alias-state-warn-primary, #d29922);\n  --ciel-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .08));\n}\n\n/* Actions are not status chips: native filled variants, larger hit areas,\n * explicit labels, and a visible keyboard focus ring. Never fade the whole row.\n * Only geometry/type/focus live here — the fill, hover and disabled paints stay\n * with the platform Button variant. */\n[data-ciel-action] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  min-height: var(--ciel-control-h);\n  height: auto;\n  padding-top: 6px;\n  padding-bottom: 6px;\n  font-weight: 600;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n/* A disabled Ciel action reads as disabled; only the cursor changes here, so\n   the platform variant keeps its own disabled opacity and fill. */\n[data-ciel-action]:disabled {\n  cursor: default;\n}\n\n[data-ciel-action]:focus-visible,\n[data-ciel-select]:focus-visible,\n[data-ciel-advice-raw] > summary:focus-visible {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 3px;\n}\n\n/* The whole row is the click target of the checkbox; ring the row and keep a\n   28px minimum target. */\n[data-ciel-pick] {\n  min-height: 28px;\n}\n\n[data-ciel-pick]:focus-within {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 2px;\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-summary-head] {\n  opacity: 1;\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 10px;\n  padding: 10px 12px;\n  cursor: default;\n}\n\n[data-ciel-summary-copy] {\n  flex: 1 1 220px;\n  min-width: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-summary-action] {\n  display: inline-flex;\n  max-width: 100%;\n  margin-left: auto;\n}\n\n/* ── the three surfaces ─────────────────────────────────────────────────── */\n\n[data-ciel-review],\n[data-ciel-evidence],\n[data-ciel-advice] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 10px;\n  overflow: hidden;\n  color: var(--dsw-alias-label-primary);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  /* The opaque reading surface; contrast never depends on what is behind it. */\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n/* The loading / failed / unavailable / malformed panel: centered copy. It is a\n   full-body state, so it stays plain and opaque rather than materialized. */\n[data-ciel-state] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 6px;\n  justify-content: center;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 12px 10px;\n  overflow: auto;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n[data-ciel-state] > p {\n  margin: 0;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-state='failed'] {\n  color: var(--ciel-danger);\n}\n\n/* The failure reason is the headline of that panel. */\n[data-ciel-state='failed'] > p:first-child {\n  font-weight: 600;\n}\n\n/* ── headers ────────────────────────────────────────────────────────────── */\n\n[data-ciel-review-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n\n[data-ciel-review-head] > [data-ciel-review-status] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-review-status] > span {\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-evidence-head],\n[data-ciel-advice-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 6px 10px;\n  align-items: center;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n\n[data-ciel-review-summary] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-size: var(--dsh-content-font-size, 14px);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-review-meta],\n[data-ciel-review-coverage],\n[data-ciel-review-stats],\n[data-ciel-review-usage],\n[data-ciel-review-explore],\n[data-ciel-evidence-kind],\n[data-ciel-evidence-path],\n[data-ciel-evidence-range],\n[data-ciel-evidence-tool],\n[data-ciel-evidence-origin],\n[data-ciel-evidence-time],\n[data-ciel-evidence-sha],\n[data-ciel-advice-id],\n[data-ciel-advice-time],\n[data-ciel-advice-usage] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-evidence-path] {\n  color: var(--ciel-text-2);\n}\n\n/* ── provenance and failure warnings ────────────────────────────────────── */\n\n[data-ciel-review-hint],\n[data-ciel-evidence-hint],\n[data-ciel-current-line-hint] {\n  margin: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-review-privacy],\n[data-ciel-evidence-limited],\n[data-ciel-evidence-unknown],\n[data-ciel-evidence-reported] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-state-warn-tertiary);\n  border: 1px solid var(--dsw-alias-state-warn-primary);\n  border-radius: var(--ciel-radius-sm);\n}\n\n/* Withheld content is a boundary, not a warning about the file: a neutral\n   opaque box, never a translucent wash. */\n[data-ciel-evidence-withheld] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--ciel-surface-2);\n  border: 1px solid var(--ciel-border);\n  border-radius: var(--ciel-radius-sm);\n}\n\n/* A missing snippet is a content state, keep it readable and opaque. */\n[data-ciel-evidence-missing] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n/* ── review annotations ─────────────────────────────────────────────────── */\n\n[data-ciel-review-annotations] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n  min-height: 0;\n  padding-right: 2px;\n  overflow: auto;\n  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);\n  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);\n}\n\n[data-ciel-annotation] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-annotation][data-ciel-focus],\n[data-ciel-advice-item][data-ciel-focus] {\n  background: var(--dsw-alias-state-business-tertiary);\n  border-color: var(--dsw-alias-state-business-primary);\n}\n\n[data-ciel-pick] {\n  display: flex;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n  cursor: pointer;\n}\n\n[data-ciel-annotation-title] {\n  min-width: 0;\n  font-weight: 500;\n  color: var(--ciel-text-1);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-anchor] {\n  margin: 0;\n  padding: 2px 0 2px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  border-left: 2px solid var(--dsw-alias-border-l3);\n}\n\n[data-ciel-annotation-comment] {\n  margin: 0;\n  color: var(--ciel-text-1);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-evidence-text],\n[data-ciel-annotation-refs],\n[data-ciel-review-empty] {\n  margin: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-refs] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n}\n\n/* ── fixed action rows ──────────────────────────────────────────────────── */\n\n[data-ciel-review-actions],\n[data-ciel-evidence-current] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 8px;\n  align-items: center;\n  min-width: 0;\n  padding-top: 8px;\n  border-top: 1px solid var(--ciel-border-soft);\n}\n\n[data-ciel-selected-count],\n[data-ciel-triage-hint],\n[data-ciel-current-none] {\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-note],\n[data-ciel-triage-note] {\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-note='error'],\n[data-ciel-triage-note='error'] {\n  color: var(--ciel-danger);\n}\n\n[data-ciel-note='sent'] {\n  color: var(--dsw-alias-state-success-primary);\n}\n\n/* ── evidence snippet (opaque, full-opacity text) ───────────────────────── */\n\n[data-ciel-evidence-body] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n  padding: 6px 0;\n  overflow: auto;\n  color: var(--ciel-text-1);\n  font-family: var(--dsw-font-mono, ui-monospace, monospace);\n  font-size: var(--ciel-font-xs);\n  line-height: 1.6;\n  background: var(--dsw-alias-markdown-code-block);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);\n  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);\n}\n\n[data-ciel-line] {\n  display: flex;\n  gap: 8px;\n  min-width: 0;\n  padding: 0 8px;\n}\n\n[data-ciel-line-number] {\n  flex: 0 0 auto;\n  min-width: 3ch;\n  color: var(--ciel-text-3);\n  text-align: right;\n  user-select: none;\n}\n\n[data-ciel-line-text] {\n  flex: 1 1 auto;\n  min-width: 0;\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-line-target] {\n  background: var(--dsw-alias-interactive-bg-active);\n}\n\n/* ── advice ─────────────────────────────────────────────────────────────── */\n\n[data-ciel-advice] {\n  overflow: auto;\n}\n\n[data-ciel-advice-disclaimer] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-bg-module-platform);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-advice-text] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-family: var(--dsw-font-mono, ui-monospace, monospace);\n  font-size: var(--ciel-font-xs);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-advice-items] {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n}\n\n[data-ciel-advice-item] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-advice-item-head] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-advice-item-title] {\n  min-width: 0;\n  font-weight: 500;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-item-framing],\n[data-ciel-advice-item-pitfalls],\n[data-ciel-advice-item-verify] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-issues] {\n  margin: 0;\n  padding-left: 18px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-issues] > li {\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-raw] {\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-raw] > summary {\n  cursor: pointer;\n}\n\n/* ── narrow Ciel container (320px safe, no sideways scroll) ─────────────── */\n\n/* Spacing/target changes only: no font is shrunk to fit. */\n@container ciel-surface (max-width: 420px) {\n  [data-ciel-review-actions],\n  [data-ciel-evidence-current],\n  [data-ciel-evidence-head],\n  [data-ciel-advice-head] {\n    gap: 6px;\n  }\n\n  [data-ciel-annotation],\n  [data-ciel-advice-item] {\n    padding: 7px;\n  }\n\n  /* The platform md capsule fixes its own 36px height; at this width the\n     action rows want the compact geometry, so the height is set explicitly. */\n  [data-ciel-action] {\n    height: 32px;\n    min-height: 32px;\n  }\n}\n\n@container ciel-surface (max-width: 340px) {\n  [data-ciel-action] {\n    flex: 1 1 100%;\n  }\n}\n\n/* Viewport fallback for engines without container queries: a narrow window\n   always means a narrow rail, and only spacing changes. */\n@media (max-width: 520px) {\n  [data-ciel-review-actions],\n  [data-ciel-evidence-current],\n  [data-ciel-evidence-head],\n  [data-ciel-advice-head] {\n    gap: 6px;\n  }\n\n  [data-ciel-annotation],\n  [data-ciel-advice-item] {\n    padding: 7px;\n  }\n\n  [data-ciel-action] {\n    height: 32px;\n    min-height: 32px;\n  }\n}\n\n/* No added motion; keep it that way under reduced motion. */\n@media (prefers-reduced-motion: reduce) {\n  [data-ciel-action],\n  [data-ciel-pick] {\n    transition: none;\n  }\n}\n";
+  var sidebar_default = "/*\n * Ciel sidebar surfaces: the review, evidence, and advice tab bodies.\n *\n * Injected as one stylesheet by the plugin's client half (the module itself\n * imports nothing). Every selector is scoped to this module's own\n * data-ciel-* attributes, so nothing here can leak into the shell or another\n * tab type. Button fill/hover/disabled states stay with the platform\n * primitive; only Ciel action sizing, rhythm and keyboard focus are enhanced.\n *\n * Layout contract: the root fills the pane's body as a column scroller owner\n * (head fixed, inner region scrolls, actions fixed), and no surface may push\n * the pane wider than it is — code lines wrap and every flex child that holds\n * text carries min-width: 0.\n *\n * Visual pass: one local scale (--ciel-*) per surface, an unambiguous hierarchy\n * between the head, the fixed action row and the annotation cards, visible\n * :focus-visible rings, and container-width adaptation down to 320px. The\n * evidence/code block, error text and warning boxes stay opaque with\n * full-opacity text.\n * Action buttons only get size/layout/type/focus here, so a native Button's\n * variant fill and text colour are never overwritten.\n */\n\n/* ── local scale, shared by the three surfaces and their state panels ───── */\n\n[data-ciel-review],\n[data-ciel-evidence],\n[data-ciel-advice],\n[data-ciel-state] {\n  --ciel-font: var(--dsh-content-font-size-secondary, 13px);\n  --ciel-font-xs: 12px;\n  --ciel-radius-sm: 6px;\n  --ciel-radius-md: 8px;\n  --ciel-radius-lg: 10px;\n  --ciel-control-h: 36px;\n  --ciel-surface-1: var(--dsw-alias-bg-layer-1, #ffffff);\n  --ciel-surface-2: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06));\n  --ciel-border-soft: var(--dsw-alias-border-l1, rgba(127, 127, 127, .18));\n  --ciel-border: var(--dsw-alias-border-l2, rgba(127, 127, 127, .3));\n  --ciel-text-1: var(--dsw-alias-label-primary, inherit);\n  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary, inherit));\n  --ciel-text-3: var(--dsw-alias-label-tertiary, rgba(127, 127, 127, .85));\n  --ciel-danger: var(--dsw-alias-state-error-primary, #d24949);\n  --ciel-warn: var(--dsw-alias-state-warn-primary, #d29922);\n  --ciel-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .08));\n}\n\n/* Actions are not status chips: native filled variants, larger hit areas,\n * explicit labels, and a visible keyboard focus ring. Never fade the whole row.\n * Only geometry/type/focus live here — the fill, hover and disabled paints stay\n * with the platform Button variant. */\n[data-ciel-action] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  min-height: var(--ciel-control-h);\n  height: auto;\n  padding-top: 6px;\n  padding-bottom: 6px;\n  font-weight: 600;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n/* A disabled Ciel action reads as disabled; only the cursor changes here, so\n   the platform variant keeps its own disabled opacity and fill. */\n[data-ciel-action]:disabled {\n  cursor: default;\n}\n\n[data-ciel-action]:focus-visible,\n[data-ciel-select]:focus-visible,\n[data-ciel-advice-raw] > summary:focus-visible {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 3px;\n}\n\n/* The whole row is the click target of the checkbox; ring the row and keep a\n   28px minimum target. */\n[data-ciel-pick] {\n  min-height: 28px;\n}\n\n[data-ciel-pick]:focus-within {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 2px;\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-summary-head] {\n  opacity: 1;\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 10px;\n  padding: 10px 12px;\n  cursor: default;\n}\n\n[data-ciel-summary-copy] {\n  flex: 1 1 220px;\n  min-width: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-summary-action] {\n  display: inline-flex;\n  max-width: 100%;\n  margin-left: auto;\n}\n\n/* ── the three surfaces ─────────────────────────────────────────────────── */\n\n[data-ciel-review],\n[data-ciel-evidence],\n[data-ciel-advice] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 10px;\n  overflow: hidden;\n  color: var(--dsw-alias-label-primary);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  /* The opaque reading surface; contrast never depends on what is behind it. */\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n/* The loading / failed / unavailable / malformed panel: centered copy. It is a\n   full-body state, so it stays plain and opaque rather than materialized. */\n[data-ciel-state] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 6px;\n  justify-content: center;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 12px 10px;\n  overflow: auto;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n[data-ciel-state] > p {\n  margin: 0;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-state='failed'] {\n  color: var(--ciel-danger);\n}\n\n/* The failure reason is the headline of that panel. */\n[data-ciel-state='failed'] > p:first-child {\n  font-weight: 600;\n}\n\n/* ── headers ────────────────────────────────────────────────────────────── */\n\n[data-ciel-review-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n\n[data-ciel-review-head] > [data-ciel-review-status] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 8px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-review-status] > span {\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-evidence-head],\n[data-ciel-advice-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 6px 10px;\n  align-items: center;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n\n[data-ciel-review-summary] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-size: var(--dsh-content-font-size, 14px);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-review-meta],\n[data-ciel-review-coverage],\n[data-ciel-review-stats],\n[data-ciel-review-usage],\n[data-ciel-review-explore],\n[data-ciel-evidence-kind],\n[data-ciel-evidence-path],\n[data-ciel-evidence-range],\n[data-ciel-evidence-tool],\n[data-ciel-evidence-origin],\n[data-ciel-evidence-time],\n[data-ciel-evidence-sha],\n[data-ciel-advice-id],\n[data-ciel-advice-time],\n[data-ciel-advice-usage] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-evidence-path] {\n  color: var(--ciel-text-2);\n}\n\n/* ── provenance and failure warnings ────────────────────────────────────── */\n\n[data-ciel-review-hint],\n[data-ciel-evidence-hint],\n[data-ciel-current-line-hint] {\n  margin: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-review-privacy],\n[data-ciel-evidence-limited],\n[data-ciel-evidence-unknown],\n[data-ciel-evidence-reported] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-state-warn-tertiary);\n  border: 1px solid var(--dsw-alias-state-warn-primary);\n  border-radius: var(--ciel-radius-sm);\n}\n\n/* Withheld content is a boundary, not a warning about the file: a neutral\n   opaque box, never a translucent wash. */\n[data-ciel-evidence-withheld] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--ciel-surface-2);\n  border: 1px solid var(--ciel-border);\n  border-radius: var(--ciel-radius-sm);\n}\n\n/* A missing snippet is a content state, keep it readable and opaque. */\n[data-ciel-evidence-missing] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n/* ── review annotations ─────────────────────────────────────────────────── */\n\n[data-ciel-review-annotations] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n  min-height: 0;\n  padding-right: 2px;\n  overflow: auto;\n  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);\n  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);\n}\n\n[data-ciel-annotation] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-annotation][data-ciel-focus],\n[data-ciel-advice-item][data-ciel-focus] {\n  background: var(--dsw-alias-state-business-tertiary);\n  border-color: var(--dsw-alias-state-business-primary);\n}\n\n[data-ciel-pick] {\n  display: flex;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n  cursor: pointer;\n}\n\n[data-ciel-annotation-title] {\n  min-width: 0;\n  font-weight: 500;\n  color: var(--ciel-text-1);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-anchor] {\n  margin: 0;\n  padding: 2px 0 2px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  border-left: 2px solid var(--dsw-alias-border-l3);\n}\n\n[data-ciel-annotation-comment] {\n  margin: 0;\n  color: var(--ciel-text-1);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-evidence-text],\n[data-ciel-annotation-refs],\n[data-ciel-review-empty] {\n  margin: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-annotation-refs] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n}\n\n/* ── fixed action rows ──────────────────────────────────────────────────── */\n\n[data-ciel-review-actions],\n[data-ciel-evidence-current] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 8px;\n  align-items: center;\n  min-width: 0;\n  padding-top: 8px;\n  border-top: 1px solid var(--ciel-border-soft);\n}\n\n[data-ciel-selected-count],\n[data-ciel-triage-hint],\n[data-ciel-current-none] {\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-note],\n[data-ciel-triage-note] {\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-note='error'],\n[data-ciel-triage-note='error'] {\n  color: var(--ciel-danger);\n}\n\n[data-ciel-note='sent'] {\n  color: var(--dsw-alias-state-success-primary);\n}\n\n/* ── evidence snippet (opaque, full-opacity text) ───────────────────────── */\n\n[data-ciel-evidence-body] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n  padding: 6px 0;\n  overflow: auto;\n  color: var(--ciel-text-1);\n  font-family: var(--dsw-font-mono, ui-monospace, monospace);\n  font-size: var(--ciel-font-xs);\n  line-height: 1.6;\n  background: var(--dsw-alias-markdown-code-block);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);\n  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);\n}\n\n[data-ciel-line] {\n  display: flex;\n  gap: 8px;\n  min-width: 0;\n  padding: 0 8px;\n}\n\n[data-ciel-line-number] {\n  flex: 0 0 auto;\n  min-width: 3ch;\n  color: var(--ciel-text-3);\n  text-align: right;\n  user-select: none;\n}\n\n[data-ciel-line-text] {\n  flex: 1 1 auto;\n  min-width: 0;\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-line-target] {\n  background: var(--dsw-alias-interactive-bg-active);\n}\n\n/* Per-suspect investigation rows belong in the existing scrolling body. */\n[data-ciel-investigations] {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n}\n\n[data-ciel-investigation] {\n  padding: 8px;\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n  background: var(--ciel-surface-1);\n}\n\n[data-ciel-investigation] p,\n[data-ciel-investigations] > p,\n[data-ciel-investigations-legacy] {\n  margin: 4px 0;\n  overflow-wrap: anywhere;\n  white-space: pre-wrap;\n  color: var(--ciel-text-2);\n}\n\n/* ── advice ─────────────────────────────────────────────────────────────── */\n\n[data-ciel-advice] {\n  overflow: auto;\n}\n\n[data-ciel-advice-disclaimer] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-bg-module-platform);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-advice-text] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-family: var(--dsw-font-mono, ui-monospace, monospace);\n  font-size: var(--ciel-font-xs);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-advice-items] {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n}\n\n[data-ciel-advice-item] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-advice-item-head] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-advice-item-title] {\n  min-width: 0;\n  font-weight: 500;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-item-framing],\n[data-ciel-advice-item-pitfalls],\n[data-ciel-advice-item-verify] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-issues] {\n  margin: 0;\n  padding-left: 18px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-issues] > li {\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-raw] {\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-raw] > summary {\n  cursor: pointer;\n}\n\n[data-ciel-jev],\n[data-ciel-advisor-jev] {\n  flex-shrink: 0;\n  min-width: 0;\n  overflow-wrap: anywhere;\n  padding: 10px;\n  margin-bottom: 10px;\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n  background: var(--ciel-surface-2);\n}\n[data-ciel-jev-check] + [data-ciel-jev-check] {\n  border-top: 1px solid var(--ciel-border-soft);\n  margin-top: 8px;\n}\n[data-ciel-jev] blockquote {\n  margin: 8px 0;\n  padding-left: 10px;\n  border-left: 2px solid var(--ciel-border);\n  white-space: pre-wrap;\n}\n\n/* ── narrow Ciel container (320px safe, no sideways scroll) ─────────────── */\n\n/* Spacing/target changes only: no font is shrunk to fit. */\n@container ciel-surface (max-width: 420px) {\n  [data-ciel-review-actions],\n  [data-ciel-evidence-current],\n  [data-ciel-evidence-head],\n  [data-ciel-advice-head] {\n    gap: 6px;\n  }\n\n  [data-ciel-annotation],\n  [data-ciel-advice-item] {\n    padding: 7px;\n  }\n\n  /* The platform md capsule fixes its own 36px height; at this width the\n     action rows want the compact geometry, so the height is set explicitly. */\n  [data-ciel-action] {\n    height: 32px;\n    min-height: 32px;\n  }\n}\n\n@container ciel-surface (max-width: 340px) {\n  [data-ciel-action] {\n    flex: 1 1 100%;\n  }\n}\n\n/* Viewport fallback for engines without container queries: a narrow window\n   always means a narrow rail, and only spacing changes. */\n@media (max-width: 520px) {\n  [data-ciel-review-actions],\n  [data-ciel-evidence-current],\n  [data-ciel-evidence-head],\n  [data-ciel-advice-head] {\n    gap: 6px;\n  }\n\n  [data-ciel-annotation],\n  [data-ciel-advice-item] {\n    padding: 7px;\n  }\n\n  [data-ciel-action] {\n    height: 32px;\n    min-height: 32px;\n  }\n}\n\n/* No added motion; keep it that way under reduced motion. */\n@media (prefers-reduced-motion: reduce) {\n  [data-ciel-action],\n  [data-ciel-pick] {\n    transition: none;\n  }\n}\n/* Refined Ciel review and evidence hierarchy, scoped to plugin-owned bodies. */\n[data-ciel-review],[data-ciel-evidence]{font-size:14px;line-height:1.65;padding:16px 18px 10px;background:var(--dsw-alias-bg-base,var(--ciel-surface-1))}\n[data-ciel-review-titlebar],[data-ciel-evidence-titlebar]{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 14px}\n[data-ciel-review-titlebar] h2,[data-ciel-evidence-titlebar] h2{font-size:21px;line-height:1.4;margin:0;font-weight:600}\n[data-ciel-locate-review],[data-ciel-evidence-back]{background:none!important;color:var(--dsw-alias-state-business-primary)!important;min-height:30px!important;height:auto!important;padding:4px 0!important;text-align:left;justify-content:flex-start!important}\n[data-ciel-review-conclusion]{font-size:20px;line-height:1.5;margin:10px 0;font-weight:600}\n[data-ciel-review-brief]{font-size:14px;color:var(--ciel-text-2);margin:6px 0}\n[data-ciel-review-scope-notice]{font-size:13px;color:var(--ciel-text-2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}\n[data-ciel-review-details],[data-ciel-evidence-metadata],[data-ciel-review-secondary],[data-ciel-listing-raw]{border:1px solid var(--ciel-border-soft);border-radius:7px;padding:0 12px;margin-top:12px;background:var(--ciel-surface-1);min-width:0}\n[data-ciel-review-details]>summary,[data-ciel-evidence-metadata]>summary,[data-ciel-review-secondary]>summary,[data-ciel-listing-raw]>summary{font-size:13px;line-height:1.5;padding:11px 0;cursor:pointer;color:var(--ciel-text-1)}\n[data-ciel-review-details] p{font-size:12px;line-height:1.7;margin:8px 0;color:var(--ciel-text-2)}\n[data-ciel-review-hint]{font-size:12px;line-height:1.6;margin:10px 0;color:var(--ciel-text-3)}\n[data-ciel-review-annotations]{padding-top:4px}\n[data-ciel-annotation]{padding:13px;border:1px solid var(--ciel-border-soft);border-radius:8px;margin-bottom:12px;background:var(--dsw-alias-bg-module-platform,var(--ciel-surface-1))}\n[data-ciel-pick]{font-size:13px;min-height:30px}\n[data-ciel-annotation-heading]{display:flex;align-items:flex-start;gap:10px;margin:14px 0 16px}\n[data-ciel-annotation-title]{font-size:17px!important;font-weight:600!important;line-height:1.55!important;margin:0}\n[data-ciel-annotation-section]{margin:16px 0}\n[data-ciel-annotation-section] h4,[data-ciel-annotation-refs] h4{font-size:13px;font-weight:400;color:var(--ciel-text-2);margin:0 0 8px}\n[data-ciel-annotation-anchor]{padding:9px 11px!important;border-left:2px solid var(--ciel-border)!important;background:var(--ciel-surface-2);border-radius:4px;color:var(--ciel-text-1)!important;line-height:1.65}\n[data-ciel-annotation-comment]{font-size:14px;line-height:1.8}\n[data-ciel-annotation-refs]{display:flex;flex-direction:column;align-items:stretch!important;gap:6px;margin-top:14px}\n[data-ciel-annotation-refs]>[data-ciel-action]{justify-content:flex-start!important;padding:9px 12px!important;min-height:48px!important;text-align:left;gap:10px}\n[data-ciel-evidence-link-label]{display:flex;flex-direction:column;align-items:flex-start;min-width:0;gap:3px}\n[data-ciel-evidence-link-label] strong{font-size:13px;font-weight:500}\n[data-ciel-evidence-link-label] small{font-size:11px;color:var(--ciel-text-3);font-weight:400}\n[data-ciel-review-actions]{padding-top:12px!important;padding-bottom:2px;gap:10px!important;background:var(--dsw-alias-bg-base,var(--ciel-surface-1))}\n[data-ciel-review-actions] [data-ciel-submit]{min-height:36px}\n[data-ciel-review-secondary]{margin-bottom:12px}\n[data-ciel-review-secondary] [data-ciel-jev]{border:0;padding:0;margin:0 0 12px;background:none}\n[data-ciel-evidence-subject]{font-size:13px;line-height:1.6;color:var(--ciel-text-2);margin:8px 0}\n[data-ciel-evidence-metadata]{margin:10px 0}\n[data-ciel-evidence-metadata] [data-ciel-evidence-head]{padding:0 0 12px;gap:8px;font-size:12px}\n[data-ciel-evidence-readable=listing]{overflow:auto}\n[data-ciel-listing]{display:flex;flex-direction:column;gap:16px;flex:1;min-height:0;margin:10px 0 16px}\n[data-ciel-listing] h3{font-size:14px;font-weight:500;margin:0 0 9px}\n[data-ciel-listing-pattern]{display:block;font-family:var(--dsw-font-mono,monospace);font-size:13px;padding:10px 12px;border:1px solid var(--ciel-border-soft);border-radius:6px;background:var(--dsw-alias-markdown-code-block);overflow-wrap:anywhere}\n[data-ciel-listing] ul{margin:0;padding:0;list-style:none;border:1px solid var(--ciel-border-soft);border-radius:7px;background:var(--ciel-surface-1);overflow:hidden}\n[data-ciel-listing] li{padding:12px;border-bottom:1px solid var(--ciel-border-soft);overflow-wrap:anywhere;font-size:13px;line-height:1.6}\n[data-ciel-listing] li:last-child{border-bottom:0}\n[data-ciel-listing-limit]{font-size:13px;line-height:1.75;background:var(--ciel-surface-2);padding:12px;border-radius:6px;margin:0;color:var(--ciel-text-2)}\n[data-ciel-listing-raw]{margin:0}\n[data-ciel-listing-raw] [data-ciel-evidence-body]{max-height:280px;min-height:70px;margin-bottom:12px}\n[data-ciel-evidence-current]{margin-top:auto;padding:12px 0 0;flex-shrink:0}\n[data-ciel-evidence-hint]{line-height:1.7}\n@container ciel-surface (max-width:420px){[data-ciel-review],[data-ciel-evidence]{padding:12px 10px 8px}[data-ciel-review-conclusion]{font-size:18px}[data-ciel-annotation-title]{font-size:16px!important}[data-ciel-review-titlebar]{align-items:flex-start;flex-wrap:wrap}}\n\n[data-ciel-review-head]{gap:0!important;padding:0!important}\n[data-ciel-review-titlebar]{margin-bottom:10px}\n[data-ciel-review-status]{margin:0}\n[data-ciel-review-conclusion]{margin:8px 0!important}\n[data-ciel-review-brief]{margin:4px 0 8px!important}\n[data-ciel-review-scope-notice]{margin:4px 0!important}\n[data-ciel-review-details]{margin:8px 0 4px!important}\n[data-ciel-annotation]{gap:2px}\n[data-ciel-annotation-heading]{margin:8px 0}\n[data-ciel-annotation-section]{margin:7px 0}\n";
 
   // plugin/src/inbox.js
   var INBOX_PANEL_ID = "dsh-ciel/inbox";
@@ -2196,7 +2567,7 @@
   function statusLabel(status) {
     switch (status) {
       case "sound":
-        return "整体成立";
+        return "已核实 · 无阻断";
       case "completed":
         return "已完成";
       case "error":
@@ -2232,7 +2603,7 @@
   function verdictLabel(verdict) {
     switch (verdict) {
       case "pass":
-        return "整体成立";
+        return "无已确认阻断";
       case "changes":
         return "建议修改";
       default:
@@ -3289,6 +3660,9 @@
   // plugin/src/inbox.css
   var inbox_default = "/* 夏尔收件箱 (Ciel inbox) — main-panel page + left-sidebar entry.\n *\n * Scoped under .ciel-inbox so it cannot leak into host chrome. Every color\n * comes from the platform alias tokens, with a local --ciel-* scale defined on\n * the root so the whole panel shares one control/radius/type rhythm.\n *\n * Visual pass (kept container-width aware, 320px safe):\n *  - one control scale (height / radius / type) for every Ciel button, all\n *    interaction targets >= 28px and no narrow-screen font shrinking;\n *  - clear card hierarchy: group head > summary > annotation rows;\n *  - the page status summary and every failure banner are lifted above the\n *    fold with flex order (non-interactive status copy only, so keyboard order\n *    is untouched);\n *  - a review group with zero annotations is boxed, and tinted when its status\n *    is anomalous — zero annotations never read as a normal quiet line;\n *  - :focus-visible rings on every control, no horizontal overflow at 320px;\n *  - the panel, cards, evidence, code and every error/warning surface stay\n *    opaque with full-opacity text.\n */\n\n/* ── local scale + root ─────────────────────────────────────────────────── */\n\n.ciel-inbox {\n  --ciel-font: var(--dsh-content-font-size-secondary, 13px);\n  --ciel-font-xs: 12px;\n  --ciel-radius-sm: 6px;\n  --ciel-radius-md: 8px;\n  --ciel-radius-lg: 10px;\n  --ciel-control-h: 30px;\n  --ciel-pill-h: 28px;\n  --ciel-intent-h: 28px;\n  --ciel-surface-1: var(--dsw-alias-bg-layer-1, #ffffff);\n  --ciel-surface-2: var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06));\n  --ciel-surface-3: var(--dsw-alias-bg-layer-3, rgba(127, 127, 127, .08));\n  --ciel-border-soft: var(--dsw-alias-border-l1, rgba(127, 127, 127, .18));\n  --ciel-border: var(--dsw-alias-border-l2, rgba(127, 127, 127, .3));\n  --ciel-text-1: var(--dsw-alias-label-primary, inherit);\n  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary, inherit));\n  --ciel-text-3: var(--dsw-alias-label-tertiary, rgba(127, 127, 127, .85));\n  --ciel-focus: var(--dsw-alias-state-business-primary, #4176e6);\n  --ciel-danger: var(--dsw-alias-state-error-primary, #d24949);\n  --ciel-warn: var(--dsw-alias-state-warn-primary, #d29922);\n  --ciel-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .08));\n  --ciel-active: var(--dsw-alias-interactive-bg-active, rgba(127, 127, 127, .14));\n  --ciel-plain: var(--dsw-alias-bg-module-platform, var(--dsw-alias-bg-layer-2, rgba(127, 127, 127, .06)));\n\n  display: flex;\n  flex-direction: column;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  box-sizing: border-box;\n  padding: 14px 16px 20px;\n  gap: 10px;\n  overflow: auto;\n  font-size: var(--ciel-font);\n  line-height: 1.55;\n  color: var(--ciel-text-1);\n  /* The opaque baseline surface; the host panel is not relied on. */\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-inbox / inline-size;\n}\n\n/* ── header: title + tools ─────────────────────────────────────────────── */\n\n.ciel-inbox-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 8px 10px;\n  min-width: 0;\n  padding-bottom: 10px;\n  border-bottom: 1px solid var(--ciel-border-soft);\n  order: 0;\n}\n\n.ciel-inbox-title {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: baseline;\n  gap: 4px 10px;\n  min-width: 0;\n  flex: 1 1 auto;\n}\n\n.ciel-inbox-title h1 {\n  margin: 0;\n  font-size: 15px;\n  font-weight: 600;\n  line-height: 1.3;\n}\n\n.ciel-inbox-session {\n  min-width: 0;\n  max-width: 100%;\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-2);\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.ciel-inbox-tools {\n  display: inline-flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n}\n\n/* ── controls: one geometry, native fill preserved ──────────────────────── */\n\n/* Card actions may arrive as the platform Button adapter (a <button> carrying\n * data-ciel-action and data-ciel-native-button); the toolbar and filters are\n * plain <button>. Geometry/layout/type and the focus ring apply to both paths\n * and are rooted at .ciel-inbox so a Ciel control wins over the primitive's\n * own md geometry without an override flag. The self-drawn fill (border,\n * background, colour, hover/active) is limited to the plain fallback button;\n * a native Button keeps the fill and text colour its variant chose. */\n.ciel-inbox button,\n.ciel-inbox [data-ciel-action] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  font-family: inherit;\n  cursor: pointer;\n}\n\n/* Disabled reads as disabled for every Ciel button, native or not. Only the\n   plain fallback fades; a native Button keeps its own variant disabled paint. */\n.ciel-inbox button:disabled,\n.ciel-inbox [data-ciel-action]:disabled {\n  cursor: default;\n}\n\n.ciel-inbox button:disabled:not([data-ciel-native-button]),\n.ciel-inbox [data-ciel-action]:disabled:not([data-ciel-native-button]) {\n  opacity: .5;\n}\n\n.ciel-inbox button:focus-visible,\n.ciel-inbox [data-ciel-action]:focus-visible,\n.ciel-inbox [tabindex]:focus-visible {\n  outline: 2px solid var(--ciel-focus);\n  outline-offset: 2px;\n}\n\n.ciel-inbox .ciel-inbox-refresh,\n.ciel-inbox .ciel-inbox-page,\n.ciel-inbox .ciel-inbox-evidence,\n.ciel-inbox .ciel-inbox-review-actions button,\n.ciel-inbox .ciel-inbox-review-actions [data-ciel-action],\n.ciel-inbox .ciel-inbox-filter,\n.ciel-inbox .ciel-inbox-intent {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  font-size: var(--ciel-font-xs);\n  line-height: 1.2;\n  font-weight: 500;\n}\n\n.ciel-inbox .ciel-inbox-refresh,\n.ciel-inbox .ciel-inbox-page,\n.ciel-inbox .ciel-inbox-evidence,\n.ciel-inbox .ciel-inbox-review-actions button,\n.ciel-inbox .ciel-inbox-review-actions [data-ciel-action] {\n  height: var(--ciel-control-h);\n  min-height: var(--ciel-control-h);\n  padding: 0 10px;\n  border-radius: var(--ciel-radius-md);\n  white-space: nowrap;\n}\n\n.ciel-inbox .ciel-inbox-refresh {\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox .ciel-inbox-filter,\n.ciel-inbox .ciel-inbox-intent {\n  height: var(--ciel-pill-h);\n  min-height: var(--ciel-pill-h);\n  border-radius: 999px;\n  white-space: nowrap;\n}\n\n.ciel-inbox .ciel-inbox-filter {\n  padding: 0 11px;\n}\n\n.ciel-inbox .ciel-inbox-intent {\n  padding: 0 9px;\n}\n\n/* Fallback skin: plain <button> only, never the native Button adapter. */\n.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]) {\n  border: 1px solid var(--ciel-border);\n  background: var(--ciel-surface-2);\n  color: inherit;\n}\n\n.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent):not([data-ciel-native-button]) {\n  border: 1px solid var(--ciel-border);\n  background: transparent;\n  color: inherit;\n}\n\n.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]):hover:not(:disabled) {\n  background: var(--ciel-hover);\n}\n\n.ciel-inbox :is(.ciel-inbox-refresh, .ciel-inbox-page, .ciel-inbox-evidence, .ciel-inbox-review-actions button, .ciel-inbox-review-actions [data-ciel-action]):not([data-ciel-native-button]):active:not(:disabled) {\n  background: var(--ciel-active);\n}\n\n.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent):not([data-ciel-native-button]):hover:not(:disabled) {\n  background: var(--ciel-hover);\n}\n\n.ciel-inbox :is(.ciel-inbox-filter, .ciel-inbox-intent).is-active:not([data-ciel-native-button]) {\n  border-color: var(--dsw-alias-brand-primary, var(--ciel-border));\n  background: var(--ciel-active);\n  font-weight: 600;\n}\n\n/* ── filters + page scope ───────────────────────────────────────────────── */\n\n.ciel-inbox-filters {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  order: 3;\n}\n\n.ciel-inbox-pageinfo {\n  margin-left: auto;\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-3);\n}\n\n/* ── status summary + filter note (first screen) ────────────────────────── */\n\n/* Flex order puts failures first, then this summary, then the controls. Only\n   static status copy and the banner <p> elements move: no control changes\n   keyboard order because none of these nodes is focusable. */\n.ciel-inbox-status-summary {\n  order: 2;\n  margin: 0;\n  padding: 6px 10px;\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n  background: var(--ciel-plain);\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-2);\n}\n\n.ciel-inbox-filter-note {\n  order: 4;\n  margin: 0;\n  font-size: var(--ciel-font-xs);\n  line-height: 1.5;\n  color: var(--ciel-text-3);\n}\n\n/* ── banners ────────────────────────────────────────────────────────────── */\n\n.ciel-inbox-banner {\n  margin: 0;\n  padding: 8px 10px;\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n  background: var(--ciel-surface-2);\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n/* A neutral banner is context, so it stays below the controls. */\n.ciel-inbox-banner[data-tone='neutral'] {\n  order: 5;\n}\n\n/* A failure banner is the first thing after the header. Its surface is an\n   opaque base mixed with the status colour: never a transparent wash. */\n.ciel-inbox-banner[data-tone='danger'] {\n  order: 1;\n  font-weight: 500;\n  color: var(--ciel-text-1);\n  border-color: rgba(210, 80, 80, .5);\n  border-color: color-mix(in srgb, var(--ciel-danger) 55%, transparent);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-danger) 10%, var(--ciel-surface-1));\n}\n\n.ciel-inbox-banner[data-tone='warning'] {\n  color: var(--ciel-text-1);\n  border-color: rgba(210, 153, 34, .5);\n  border-color: color-mix(in srgb, var(--ciel-warn) 55%, transparent);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-warn) 10%, var(--ciel-surface-1));\n}\n\n/* ── list + card hierarchy ──────────────────────────────────────────────── */\n\n.ciel-inbox-list {\n  order: 6;\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  min-width: 0;\n  margin: 0;\n  padding: 0;\n  list-style: none;\n}\n\n.ciel-inbox-review {\n  min-width: 0;\n  padding: 12px 14px;\n  border: 1px solid var(--ciel-border);\n  border-radius: var(--ciel-radius-lg);\n  background: var(--ciel-surface-3);\n  overflow-wrap: anywhere;\n}\n\n/* An anomalous group keeps a fixed accent stripe so it reads as a state, not\n   as a normal card. Inset shadow: no layout shift, follows the radius. */\n.ciel-inbox-review[data-ciel-inbox-review-status='error'],\n.ciel-inbox-review[data-ciel-inbox-review-status='failed'] {\n  box-shadow: inset 3px 0 0 0 var(--ciel-danger);\n}\n\n.ciel-inbox-review[data-ciel-inbox-review-status='cancelled'],\n.ciel-inbox-review[data-ciel-inbox-review-status='canceled'],\n.ciel-inbox-review[data-ciel-inbox-review-status='incomplete'],\n.ciel-inbox-review[data-ciel-inbox-review-status='unverified'],\n.ciel-inbox-review[data-ciel-inbox-review-status='completed-unparsed'] {\n  box-shadow: inset 3px 0 0 0 var(--ciel-warn);\n}\n\n.ciel-inbox-review-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px 8px;\n  min-width: 0;\n}\n\n.ciel-inbox-review-id {\n  min-width: 0;\n  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\n  font-size: var(--ciel-font-xs);\n  font-weight: 600;\n  color: var(--ciel-text-1);\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-meta {\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-3);\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-review-actions {\n  display: inline-flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  margin-left: auto;\n}\n\n.ciel-inbox-summary {\n  margin: 8px 0 0;\n  color: var(--ciel-text-1);\n  font-size: var(--ciel-font);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-review-error {\n  margin: 8px 0 0;\n  padding: 6px 9px;\n  border: 1px solid rgba(210, 80, 80, .45);\n  border-color: color-mix(in srgb, var(--ciel-danger) 50%, transparent);\n  border-radius: var(--ciel-radius-sm);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-danger) 9%, var(--ciel-surface-1));\n  color: var(--ciel-danger);\n  font-size: var(--ciel-font-xs);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n}\n\n/* ── annotations ────────────────────────────────────────────────────────── */\n\n.ciel-inbox-annotations {\n  display: flex;\n  flex-direction: column;\n  gap: 0;\n  min-width: 0;\n  margin: 10px 0 0;\n  padding: 0;\n  list-style: none;\n}\n\n.ciel-inbox-annotation {\n  min-width: 0;\n  padding: 10px 0 1px;\n  border-top: 1px solid var(--ciel-border-soft);\n}\n\n.ciel-inbox-annotation-head {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px 6px;\n  min-width: 0;\n}\n\n.ciel-inbox-annotation-title {\n  min-width: 0;\n  font-weight: 500;\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-anchor {\n  margin: 6px 0 4px;\n  padding: 5px 9px;\n  border-left: 2px solid var(--ciel-border);\n  border-radius: 0 var(--ciel-radius-sm) var(--ciel-radius-sm) 0;\n  background: var(--ciel-surface-1);\n  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-2);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n.ciel-inbox-comment {\n  margin: 4px 0;\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-annotation-foot {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  margin-top: 8px;\n}\n\n.ciel-inbox-intents {\n  display: inline-flex;\n  flex-wrap: wrap;\n  gap: 4px;\n  min-width: 0;\n  margin-left: auto;\n}\n\n.ciel-inbox-write-error {\n  margin: 8px 0 0;\n  padding: 6px 9px;\n  border: 1px solid rgba(210, 80, 80, .45);\n  border-color: color-mix(in srgb, var(--ciel-danger) 50%, transparent);\n  border-radius: var(--ciel-radius-sm);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-danger) 9%, var(--ciel-surface-1));\n  color: var(--ciel-danger);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n.ciel-inbox-locate-note {\n  font-size: var(--ciel-font-xs);\n  color: var(--ciel-text-3);\n}\n\n.ciel-inbox-locate-note[data-tone='danger'] {\n  color: var(--ciel-danger);\n}\n\n/* ── empty / state ──────────────────────────────────────────────────────── */\n\n/* Zero annotations is a state of the group, not a quiet sentence: box it.\n   The copy (and whether it is a failure) still comes from the client. */\n.ciel-inbox-empty[data-ciel-inbox-no-annotations] {\n  display: block;\n  margin: 10px 0 0;\n  padding: 7px 10px;\n  border: 1px dashed var(--ciel-border);\n  border-radius: var(--ciel-radius-sm);\n  background: var(--ciel-surface-1);\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n}\n\n.ciel-inbox-empty[data-ciel-inbox-no-matching-annotations] {\n  margin: 10px 0 0;\n  padding: 7px 10px;\n  border: 1px dashed var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n  background: transparent;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n.ciel-inbox-review[data-ciel-inbox-review-status='error'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],\n.ciel-inbox-review[data-ciel-inbox-review-status='failed'] .ciel-inbox-empty[data-ciel-inbox-no-annotations] {\n  border-style: solid;\n  border-color: rgba(210, 80, 80, .45);\n  border-color: color-mix(in srgb, var(--ciel-danger) 45%, transparent);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-danger) 8%, var(--ciel-surface-1));\n  color: var(--ciel-text-1);\n}\n\n.ciel-inbox-review[data-ciel-inbox-review-status='cancelled'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],\n.ciel-inbox-review[data-ciel-inbox-review-status='canceled'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],\n.ciel-inbox-review[data-ciel-inbox-review-status='incomplete'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],\n.ciel-inbox-review[data-ciel-inbox-review-status='unverified'] .ciel-inbox-empty[data-ciel-inbox-no-annotations],\n.ciel-inbox-review[data-ciel-inbox-review-status='completed-unparsed'] .ciel-inbox-empty[data-ciel-inbox-no-annotations] {\n  border-style: solid;\n  border-color: rgba(210, 153, 34, .45);\n  border-color: color-mix(in srgb, var(--ciel-warn) 45%, transparent);\n  background: var(--ciel-surface-1);\n  background: color-mix(in srgb, var(--ciel-warn) 8%, var(--ciel-surface-1));\n  color: var(--ciel-text-1);\n}\n\n.ciel-inbox-empty {\n  margin: 10px 0 0;\n  font-size: var(--ciel-font);\n  color: var(--ciel-text-3);\n}\n\n.ciel-inbox-state {\n  order: 6;\n  margin: 0;\n  padding: 14px 0;\n  color: var(--ciel-text-2);\n  /* A state panel is not a material surface: loading/empty/failure copy stays\n     on an opaque base and is never put on a translucent wash. */\n  background: var(--ciel-surface-1);\n}\n\n.ciel-inbox-state p {\n  margin: 4px 0;\n  overflow-wrap: anywhere;\n}\n\n/* A filter can leave the page with nothing to show; that must not look like a\n   clean page, so it is framed and the copy names the reason. */\n.ciel-inbox-state[data-ciel-inbox-state='filtered'],\n.ciel-inbox-state[data-ciel-inbox-state='empty'] {\n  padding: 10px 12px;\n  border: 1px dashed var(--ciel-border);\n  border-radius: var(--ciel-radius-md);\n  background: var(--ciel-surface-1);\n}\n\n.ciel-inbox-state[data-ciel-inbox-state='failed'] {\n  border: 1px solid var(--ciel-danger);\n  border-radius: var(--ciel-radius-md);\n  padding: 10px 12px;\n  color: var(--ciel-danger);\n}\n\n/* The left-sidebar list entry: the page count sits centered on the glyph. */\n.ciel-inbox-icon {\n  position: relative;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 100%;\n  height: 100%;\n  color: inherit;\n}\n\n.ciel-inbox-glyph {\n  display: block;\n  opacity: .85;\n}\n\n/* ── narrow Ciel container (right rail / split pane, down to 320px) ─────── */\n\n/* Only spacing/wrapping changes here: no font is ever shrunk to fit. */\n@container ciel-inbox (max-width: 440px) {\n  .ciel-inbox-head {\n    gap: 6px 8px;\n    padding-bottom: 8px;\n  }\n\n  .ciel-inbox-tools {\n    width: 100%;\n  }\n\n  .ciel-inbox-pageinfo {\n    margin-left: 0;\n  }\n\n  .ciel-inbox-review {\n    padding: 10px 12px;\n  }\n\n  .ciel-inbox-review-actions,\n  .ciel-inbox-intents {\n    width: 100%;\n    margin-left: 0;\n  }\n}\n\n@container ciel-inbox (max-width: 340px) {\n  .ciel-inbox-refresh {\n    flex: 1 1 100%;\n  }\n\n  .ciel-inbox-review {\n    padding: 9px 10px;\n  }\n}\n\n/* No added motion; keep it that way under reduced motion. */\n@media (prefers-reduced-motion: reduce) {\n  .ciel-inbox button {\n    transition: none;\n  }\n}\n\n/* ── long-card annotation disclosure (native details/summary) ───────────── */\n/*\n * The client wraps the annotation list in this <details> only when a review\n * shows more than eight annotations; a short card keeps the bare list and is\n * untouched here. The summary is a real control: a >=28px hit area, 12px type\n * and a clear focus ring. No open/close or colour transition is added, so\n * prefers-reduced-motion needs no override, and the group summary and its\n * error line stay outside the <details>, so collapsing never hides them.\n */\n.ciel-inbox-annotations-disclosure > summary {\n  box-sizing: border-box;\n  min-height: var(--ciel-pill-h);\n  padding: 4px 0;\n  font-size: var(--ciel-font-xs);\n  line-height: 20px;\n  color: var(--ciel-text-2);\n  cursor: pointer;\n}\n\n.ciel-inbox-annotations-disclosure > summary:hover {\n  color: var(--ciel-text-1);\n}\n\n.ciel-inbox-annotations-disclosure > summary:focus-visible {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 2px;\n  border-radius: var(--ciel-radius-sm);\n}\n";
 
+  // plugin/src/settings.css
+  var settings_default = "/* Ciel-owned surfaces inherit the host's palette and typography. */\n[data-ciel-settings]{display:flex;flex-direction:column;min-width:0;gap:12px;color:var(--dsw-alias-label-primary)}\n[data-ciel-settings-header]{display:flex;align-items:center;gap:12px;justify-content:space-between}\n[data-ciel-settings-heading]{display:flex;align-items:center;gap:9px;flex-wrap:wrap}\n[data-ciel-settings-heading] h2{font-size:21px;line-height:1.4;margin:0}\n[data-ciel-settings-subtitle]{font-size:13px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:4px 0 0}\n[data-ciel-settings-enabled]{flex:none;max-width:190px}\n[data-ciel-settings-enabled] [data-ciel-setting-head], [data-ciel-settings-enabled] [data-ciel-setting-help]{display:none}\n[data-ciel-settings-enabled] [data-ciel-setting]{padding:0!important;border:0!important}\n[data-ciel-setting]{min-width:0;position:relative}\n[data-ciel-setting-head]{display:flex;align-items:center;gap:8px;min-height:22px}\n[data-ciel-setting-help]{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:3px 0 0}\n[data-ciel-setting-help] summary{cursor:pointer;font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:4px;width:max-content}\n[data-ciel-setting-help] p{margin:6px 0 0}\n[data-ciel-settings-group]{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:0 13px;min-width:0;background:var(--dsw-alias-bg-layer-1)}\n[data-ciel-settings-group-head]{width:100%;min-height:42px;text-align:left;border:0;background:none;display:flex;align-items:center;gap:10px;padding:10px 0;color:inherit;cursor:pointer;font:inherit}\n[data-ciel-settings-group-head] strong{font-size:13px;font-weight:500}\n[data-ciel-settings-group-summary]{margin-left:auto;text-align:right;color:var(--dsw-alias-label-tertiary);font-size:11px;overflow-wrap:anywhere;max-width:60%}\n[data-ciel-settings-groups]{display:flex;flex-direction:column;gap:9px}\n[data-ciel-setting-kind=check]{display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px!important;padding:12px 0!important}\n[data-ciel-setting-kind=check] [data-ciel-setting-help]{grid-column:1/-1}\n[data-ciel-setting-control]{display:flex;align-items:center;gap:7px;min-width:0}\n[data-ciel-setting-kind=number]{display:grid!important;grid-template-columns:minmax(0,1fr) 112px;gap:4px 12px!important;padding:12px 0!important}\n[data-ciel-setting-kind=number]>input{grid-column:2;grid-row:1;min-width:0;width:100%!important}\n[data-ciel-setting-kind=number] [data-ciel-setting-help]{grid-column:1/-1}\n[data-ciel-setting=enabled] [data-ciel-setting-control]{flex-wrap:wrap;justify-content:flex-end}\n[data-ciel-settings-notice]{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);padding:8px 10px;border-radius:6px;margin:0}\n[data-ciel-settings-footer]{position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-1);border-top:1px solid var(--dsw-alias-border-l2);padding:12px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}\n[data-ciel-settings-footer-status]{font-size:12px;color:var(--dsw-alias-label-secondary);margin-right:auto}\n[data-ciel-settings-footer-error]{width:100%;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.6;margin:0}\n[data-ciel-draft-confirm] p{font-size:14px;line-height:1.7}\n[data-ciel-draft-confirm] pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;background:var(--dsw-alias-bg-layer-2);padding:12px;border-radius:8px;font:inherit;font-size:13px}\n[data-ciel-draft-confirm-actions]{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}\n.ciel-draft-modal{max-width:520px!important}\n@media(max-width:600px){[data-ciel-settings-group-summary]{max-width:48%}[data-ciel-settings-header]{align-items:flex-start}[data-ciel-settings-enabled]{max-width:135px}[data-ciel-setting-kind=number]{grid-template-columns:minmax(0,1fr) 85px}}\n\n[data-ciel-setting-help]{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 9px;align-items:start}\n[data-ciel-setting-help]>p{margin:0!important}\n[data-ciel-setting-help]>details>summary{font-size:11px;margin:0;white-space:nowrap}\n[data-ciel-setting-help]>details[open]{grid-column:1/-1}\n[data-ciel-setting-head]>span:last-child>span:first-child{display:none}\n[data-ciel-setting-kind=check]{padding:10px 0!important}\n[data-ciel-setting-kind=number]{padding:10px 0!important}\n[data-ciel-settings-times]{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}\n[data-ciel-settings-times] [data-ciel-setting-kind=number]{grid-template-columns:minmax(0,1fr) 80px}\n[data-ciel-settings-times] [data-ciel-setting-help]{display:block}\n[data-ciel-settings-times] [data-ciel-setting-help]>details{margin-top:3px}\n[data-ciel-settings-times] [data-ciel-setting-head]{flex-wrap:wrap;gap:2px}\n@media(max-width:450px){[data-ciel-settings-times]{grid-template-columns:1fr}}\n\n[data-ciel-setting-kind=check]{padding:6px 0!important}\n[data-ciel-setting-kind=number]{padding:7px 0!important}\n";
+
   // node_modules/.pnpm/@deepseek-ai+dsh-util-workspace-path@0.1.5-alpha.2_@deepseek-ai+cordis@4.0.2/node_modules/@deepseek-ai/dsh-util-workspace-path/lib/index.js
   var FILE_ADDRESS_PREFIX = "dsh-resource://file/";
   function encodeSegment2(segment) {
@@ -3325,7 +3699,7 @@
       Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
       const React = require2("react");
       const { createPortal } = require2("react-dom");
-      const { Switch, Tag, Button } = require2("@deepseek-ai/dsh-client-ui-primitives");
+      const { Switch, Tag, Button, Modal } = require2("@deepseek-ai/dsh-client-ui-primitives");
       if (typeof Switch !== "function" || typeof Tag !== "function" || typeof createPortal !== "function") {
         throw new Error("Ciel 的原生设置界面需要 DSH 0.1.5-alpha.2 或更新版本；请升级并刷新页面。");
       }
@@ -3338,6 +3712,7 @@
         ...props
       }, label);
       let scope = null;
+      let settingsDescribe = null;
       let sidebar = null;
       let getSessionRemote = () => void 0;
       let getRemote = () => void 0;
@@ -3358,6 +3733,11 @@
         criticModel: "gemini-3.8-flash",
         criticEffort: "medium",
         criticExploreEnabled: true,
+        jevEnabled: false,
+        advisorJevEnabled: false,
+        jevApiKey: "",
+        jevEndpoint: JEV_ENDPOINT,
+        jevModel: JEV_MODEL,
         enabled: true,
         criticTimeoutSeconds: 180,
         criticMaxTokens: 16384,
@@ -3394,9 +3774,23 @@
           summarize: (staged) => `文件核查${staged.criticExploreEnabled ? "开" : "关"} · 最多 ${staged.criticTimeoutSeconds} 秒`,
           children: [
             { kind: "check", key: "criticExploreEnabled", label: "允许评审时查文件", hint: "需要核对代码或文件依据时开启：批评者可用允许的 read/grep/glob 工具，在允许范围内查阅资料，不修改文件。关闭后仍会调用模型分析，但不做这一步文件核查。" },
+            { kind: "check", key: "jevEnabled", label: "启用 Jev 证据检查", hint: "评审后将主张原文和引用证据发给 TypeSafe 检查，产生额外 API 用量。证据可含源码、历史模型名/权限/工具声明、经敏感检查的工具输出及受限目录清单；不发送密钥或完整历史。结果和分歧显示在评审详情，不自动改裁决。需要开启文件核查，在下方 Jev API 配置中填写密钥，或让 DSH 启动进程继承 TYPESAFE_API_KEY。开关保存后生效，关闭会取消在途 Jev 检查。" },
+            { kind: "check", key: "advisorJevEnabled", label: "启用顾问建议检查（Jev）", hint: "顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。独立于评审开关，默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥与评审共用下方 Jev API 配置；关闭并保存会取消在途检查。" },
             { kind: "number", key: "maxCallsPerTurn", label: "每个代理回合最多咨询几次", min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: "限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。" },
             { kind: "number", key: "advisorTimeoutSeconds", label: "顾问最多等多久（秒）", min: 10, max: 600, hint: "一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。" },
-            { kind: "number", key: "criticTimeoutSeconds", label: "评审最多等多久（秒）", min: 10, max: 600, hint: "只按总时间控制评审：默认180秒，包含准备资料、分析和核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。" }
+            { kind: "number", key: "criticTimeoutSeconds", label: "评审最多等多久（秒）", min: 10, max: 600, hint: "只按总时间控制评审：默认180秒，包含准备资料、分析和核查。每个疑点独立调查，至多8项并发共享总时限，用量高于整批核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。" }
+          ]
+        },
+        {
+          kind: "group",
+          key: "jevApi",
+          label: "Jev API 配置",
+          defaultOpen: true,
+          summarize: (staged) => staged.jevModel,
+          children: [
+            { kind: "secret", key: "jevApiKey", label: "Jev API Key", hint: "顾问与评审共用。留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。" },
+            { kind: "text", key: "jevEndpoint", label: "Jev 接口地址", fallback: JEV_ENDPOINT, hint: "完整 HTTPS 地址（含 /v1/systemone 或代理对应路径），不会自动追加路径；必须兼容 TypeSafe systemone 协议，不是 OpenAI 接口。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送环境变量密钥。不允许 URL 内凭据、查询参数、片段或重定向。" },
+            { kind: "text", key: "jevModel", label: "Jev 模型 ID", fallback: JEV_MODEL, hint: "默认 jev-1.13.0，可填写接口支持的其他模型 ID；不经过「设置 → 模型」路由。保存后下一次 Jev 检查使用，正在进行的请求不变。" }
           ]
         },
         {
@@ -3496,6 +3890,7 @@
         };
       }
       let settingsEditor = createSettingsEditor();
+      let draftDecisions = createCielDecisionPrompt({ React, Modal, Button });
       function useSettingsField(key) {
         const editor = settingsEditor;
         const [, tick] = useState(0);
@@ -3629,7 +4024,7 @@
       function FieldHead({ label, overridden, disabled, onReset }) {
         return h(
           "div",
-          { style: css.head },
+          { style: css.head, "data-ciel-setting-head": "" },
           h("span", { style: css.label }, label),
           overridden ? h(
             "span",
@@ -3638,6 +4033,44 @@
             h("button", { type: "button", style: css.reset, disabled, onClick: onReset }, "重置")
           ) : null
         );
+      }
+      const SHORT_HINTS = {
+        enabled: "保存后生效；停用时已有结果仍可查看。",
+        criticExploreEnabled: "只读查阅允许范围内的资料，不修改文件。",
+        jevEnabled: "对照主张与引用证据；会产生额外 API 用量。",
+        advisorJevEnabled: "独立检查建议与本次背景是否一致；会产生额外 API 用量。",
+        maxCallsPerTurn: "每个代理回合最多咨询次数，包含追问。",
+        advisorTimeoutSeconds: "等待上限，不是费用上限。",
+        criticTimeoutSeconds: "整次评审时限，不是费用上限。"
+      };
+      function settingHelp(key, hint, brief) {
+        const short = brief || SHORT_HINTS[key];
+        return h(
+          "div",
+          { id: "ciel-setting-hint-" + key, "data-ciel-setting-help": "" },
+          short ? h("p", { style: css.hint }, short) : null,
+          short ? h("details", {}, h("summary", {}, "详细说明"), h("p", {}, hint)) : h("p", { style: css.hint }, hint)
+        );
+      }
+      function hasSettingsDraft() {
+        const draft = settingsEditor.get("drafts");
+        if (!draft) return false;
+        const snapshot = scope?.getSnapshot?.();
+        if (snapshot?.status !== "ready") return true;
+        const resets = settingsEditor.get("resets");
+        return FIELD_KEYS.some((key) => {
+          if (resets[key]) return true;
+          const def = FIELD_DEF_BY_KEY[key], value = snapshot.value?.[key];
+          if (def.kind === "secret") return Boolean(draft[key]);
+          if (def.kind === "number") return String(draft[key]).trim() === "" || Number(draft[key]) !== value;
+          if (def.kind === "paths") return JSON.stringify(String(draft[key] || "").split("\n").map((p) => p.trim()).filter(Boolean)) !== JSON.stringify(value || []);
+          return def.kind === "check" ? draft[key] !== Boolean(value) : draft[key] !== String(value ?? def.fallback ?? "");
+        });
+      }
+      function SettingsDraftNotice() {
+        useSettingsField("drafts");
+        useSettingsField("resets");
+        return hasSettingsDraft() ? h(Tag, { tone: "warning" }, "Ciel 草稿未保存") : null;
       }
       function CielSettingsSection() {
         const [, setTick] = useState(0);
@@ -3690,6 +4123,9 @@
           h("p", { role: "status" }, snap.status === "loading" ? "正在加载 Ciel 设置…" : "Ciel 设置暂不可用，请检查连接或插件状态。")
         );
         const value = snap.value || {};
+        const section = settingsDescribe?.getSnapshot?.().view?.namespaces?.find((row) => row.ns === "advisor");
+        const secretSlot = (section?.secrets || snap.secrets)?.find((row) => row.path?.length === 1 && row.path[0] === "jevApiKey");
+        const jevSettingsReady = secretSlot !== void 0 && typeof value.jevEndpoint === "string" && typeof value.jevModel === "string";
         const user = snap.user && typeof snap.user === "object" ? snap.user : {};
         const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key);
         const staged = drafts || {
@@ -3706,6 +4142,12 @@
           criticModel: String(value.criticModel ?? ""),
           criticEffort: String(value.criticEffort ?? "medium"),
           criticExploreEnabled: Boolean(value.criticExploreEnabled ?? true),
+          jevEnabled: Boolean(value.jevEnabled ?? false),
+          advisorJevEnabled: Boolean(value.advisorJevEnabled ?? false),
+          jevApiKey: "",
+          // Never copy a saved secret (even from a legacy snapshot).
+          jevEndpoint: String(value.jevEndpoint ?? JEV_ENDPOINT),
+          jevModel: String(value.jevModel ?? JEV_MODEL),
           criticExploreBudget: String(value.criticExploreBudget ?? "20"),
           enabled: Boolean(value.enabled ?? true),
           criticTimeoutSeconds: String(value.criticTimeoutSeconds ?? ""),
@@ -3718,8 +4160,8 @@
           if (editor.get("drafts") === null) editor.set("revision", snap.revision);
         };
         const numState = (def) => {
-          const parsed = Math.round(Number(staged[def.key]));
-          const invalid2 = staged[def.key].trim() === "" || !Number.isFinite(parsed) || parsed < def.min || parsed > def.max;
+          const parsed = Number(staged[def.key]);
+          const invalid2 = staged[def.key].trim() === "" || !Number.isInteger(parsed) || parsed < def.min || parsed > def.max;
           return { parsed, invalid: invalid2 };
         };
         const pathsState = (key) => {
@@ -3727,24 +4169,34 @@
           const invalid2 = parsed.length > 16 || new Set(parsed).size !== parsed.length || parsed.some((p) => !p.startsWith("/") || p.length > 4096 || /[\\%:\u0000-\u001f]/.test(p) || p.split("/").includes(".."));
           return { parsed, invalid: invalid2 };
         };
+        const textInvalid = (key) => key === "jevEndpoint" ? !validJevEndpoint(staged[key]) : key === "jevModel" ? !validJevModel(staged[key]) : key === "jevApiKey" && Boolean(staged[key]) && !validJevKey(staged[key]);
         const dirtyKey = (key) => {
           if (resets[key]) return true;
           const def = FIELD_DEF_BY_KEY[key];
           if (def && def.kind === "number") {
             const { parsed, invalid: invalid2 } = numState(def);
-            return !invalid2 && parsed !== value[key];
+            return invalid2 ? String(staged[key]) !== String(value[key] ?? "") : parsed !== value[key];
           }
           if (def && def.kind === "paths") return JSON.stringify(pathsState(key).parsed) !== JSON.stringify(Array.isArray(value[key]) ? value[key] : []);
           if (def && def.kind === "check") return staged[key] !== Boolean(value[key]);
+          if (def && def.kind === "secret") return Boolean(staged[key]);
           return staged[key] !== String(value[key] ?? (def && def.fallback) ?? "");
         };
         const dirty = FIELD_KEYS.some(dirtyKey);
         const edit = (key, next) => {
           startDraft();
-          setDrafts({ ...staged, [key]: next });
-          if (resets[key]) {
+          const changes = { [key]: next };
+          if (key === "provider" || key === "criticProvider") {
+            const group = catalog.groups?.find((group2) => group2.id === next);
+            if (Array.isArray(group?.models) && group.models.length > 0) {
+              changes[key === "provider" ? "model" : "criticModel"] = group.models[0].id;
+              changes[key === "provider" ? "reasoningEffort" : "criticEffort"] = "provider";
+            }
+          }
+          setDrafts({ ...staged, ...changes });
+          if (Object.keys(changes).some((changed) => resets[changed])) {
             const rest = { ...resets };
-            delete rest[key];
+            for (const changed of Object.keys(changes)) delete rest[changed];
             setResets(rest);
           }
           setSaveFailed(false);
@@ -3762,8 +4214,12 @@
           setResets({});
           setSaveFailed(false);
         };
+        const invalidField = (key) => {
+          const def = FIELD_DEF_BY_KEY[key];
+          return def.kind === "number" && numState(def).invalid || def.kind === "paths" && pathsState(key).invalid || textInvalid(key) || ["jevApiKey", "jevEndpoint", "jevModel"].includes(key) && !jevSettingsReady && dirtyKey(key);
+        };
         const save = async () => {
-          if (editor.get("saving") || !snap.writable) return;
+          if (editor.get("saving") || !snap.writable || FIELD_KEYS.some(invalidField)) return;
           setSaving(true);
           setSaveFailed(false);
           try {
@@ -3779,7 +4235,7 @@
                 ops.push({ op: "set", path: [key], value: parsed !== void 0 ? parsed : staged[key] });
               }
             }
-            if (ops.length > 0) await scope.mutate(ops, revision);
+            if (ops.length > 0 && await scope.mutate(ops, revision) === false) throw new Error("settings write refused");
             editor.set("revision", void 0);
             setDrafts(null);
             setResets({});
@@ -3833,7 +4289,7 @@
           const selectOptions = options.some((option) => option.value === staged[key]) ? options : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }];
           return h(
             "div",
-            { key, style: { ...css.field, ...css.fieldBorder } },
+            { key, "data-ciel-setting": key, "data-ciel-setting-kind": "route", style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
               label,
               overridden: overridden(key) && !resets[key],
@@ -3877,7 +4333,7 @@
         };
         const checkField = (key, label, hint) => h(
           "div",
-          { key, style: { ...css.field, ...key === "enabled" ? {} : css.fieldBorder } },
+          { key, "data-ciel-setting": key, "data-ciel-setting-kind": "check", style: { ...css.field, ...key === "enabled" ? {} : css.fieldBorder } },
           h(FieldHead, {
             label,
             overridden: overridden(key) && !resets[key],
@@ -3886,17 +4342,17 @@
           }),
           h(
             "div",
-            { style: css.checkRow, role: "group", "aria-label": label, "aria-describedby": "ciel-setting-hint-" + key },
+            { style: css.checkRow, "data-ciel-setting-control": "", role: "group", "aria-label": label, "aria-describedby": "ciel-setting-hint-" + key },
             h(Switch, {
               label,
               title: hint,
               checked: Boolean(staged[key]),
-              disabled,
+              disabled: disabled || key === "jevEnabled" && !staged.criticExploreEnabled,
               onChange: (next) => edit(key, next)
             }),
-            h(Tag, { tone: dirtyKey(key) ? "warning" : "neutral" }, (dirtyKey(key) ? "待保存 · " : "") + (Boolean(staged[key]) ? "已开启" : "已关闭"))
+            dirtyKey(key) ? h(Tag, { tone: "warning" }, "待保存 · " + (Boolean(staged[key]) ? "已开启" : "已关闭")) : null
           ),
-          h("p", { id: "ciel-setting-hint-" + key, style: css.hint }, hint)
+          settingHelp(key, hint, key === "jevEnabled" && !staged.criticExploreEnabled ? "文件核查已关闭：此检查暂不运行，原有偏好仍保留。" : void 0)
         );
         const effortField = (key, label, opts, hintReady, hintFallback) => {
           const options = opts.options.some((option) => option.value === staged[key]) ? opts.options : [...opts.options, { value: staged[key], label: `${staged[key]}（自定义）` }];
@@ -3921,13 +4377,39 @@
             h("p", { id: "ciel-setting-hint-" + key, style: css.hint }, hint)
           );
         };
+        const textField = ({ key, label, hint, kind }) => {
+          const secret = kind === "secret", invalid2 = textInvalid(key);
+          return h(
+            "div",
+            { key, "data-ciel-setting": key, style: { ...css.field, ...css.fieldBorder } },
+            h(FieldHead, { label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+            h("input", {
+              style: css.input,
+              type: secret ? "password" : "text",
+              value: staged[key],
+              "aria-label": label,
+              "aria-invalid": invalid2,
+              "aria-describedby": "ciel-setting-hint-" + key,
+              autoComplete: secret ? "new-password" : "off",
+              spellCheck: false,
+              placeholder: secret ? "留空保留；输入以替换" : void 0,
+              disabled: disabled || !jevSettingsReady,
+              onChange: (event) => edit(key, event.target.value)
+            }),
+            secret ? h("p", { role: "status", style: css.hint }, !jevSettingsReady ? "宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。" : resets[key] ? "待保存：清除密钥覆盖" : staged[key] ? "待保存：替换密钥" : secretSlot.set ? "已配置密钥（原值不回传）" : "未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。") : null,
+            secret ? h("button", { type: "button", style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key) }, "清除密钥覆盖") : null,
+            !secret && key === "jevEndpoint" && staged[key] !== JEV_ENDPOINT ? h("p", { role: "status", style: css.hint }, "自定义服务将收到密钥和原文；请另填该服务的 API Key。") : null,
+            invalid2 ? h("p", { role: "alert", style: css.hint }, secret ? "密钥须为 1–4096 个可打印 ASCII 字符，不含空白。" : key === "jevEndpoint" ? "请输入完整 HTTPS 地址，不含凭据、查询参数或片段。" : "请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。") : null,
+            settingHelp(key, hint)
+          );
+        };
         const numberField = (def) => {
           const { invalid: invalid2 } = numState(def);
           return h(
             "div",
-            { key: def.key, style: { ...css.field, ...css.fieldBorder } },
+            { key: def.key, "data-ciel-setting": def.key, "data-ciel-setting-kind": "number", style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
-              label: def.label,
+              label: def.key === "advisorTimeoutSeconds" ? "顾问时限（秒）" : def.key === "criticTimeoutSeconds" ? "评审时限（秒）" : def.label,
               overridden: overridden(def.key) && !resets[def.key],
               disabled,
               onReset: () => resetField(def.key)
@@ -3943,11 +4425,7 @@
               "aria-invalid": invalid2 || void 0,
               onChange: (event) => edit(def.key, event.target.value)
             }),
-            h(
-              "p",
-              { id: "ciel-setting-hint-" + def.key, style: invalid2 ? css.invalidText : css.hint },
-              invalid2 ? `须是 ${def.min}–${def.max} 之间的数字` : def.hint
-            )
+            invalid2 ? h("p", { id: "ciel-setting-hint-" + def.key, "data-ciel-setting-help": "", style: css.invalidText, role: "alert" }, `须是 ${def.min}–${def.max} 之间的整数`) : settingHelp(def.key, def.hint)
           );
         };
         const pathsField = (def) => {
@@ -3967,69 +4445,56 @@
           if (def.kind === "group") {
             const open = groupClosed[def.key] !== true;
             return h(
-              React.Fragment,
-              { key: def.key },
+              "section",
+              { key: def.key, "data-ciel-settings-group": def.key },
               h(
-                "div",
-                { style: { ...css.field, ...css.fieldBorder, marginLeft: depth * 14 } },
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    style: css.groupHead,
-                    "aria-expanded": open,
-                    onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open })
-                  },
-                  h(Chevron, { open }),
-                  h("span", { style: css.groupLabel }, def.label),
-                  groupDirty(def) ? h(Tag, { tone: "warning" }, "未保存") : null,
-                  open ? null : h("span", { style: css.groupSummary }, def.summarize(staged))
-                )
+                "button",
+                {
+                  type: "button",
+                  "data-ciel-settings-group-head": "",
+                  "aria-expanded": open,
+                  onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open })
+                },
+                h(Chevron, { open }),
+                h("strong", {}, def.label),
+                groupDirty(def) ? h(Tag, { tone: "warning" }, "未保存") : null,
+                open ? null : h("span", { "data-ciel-settings-group-summary": "" }, def.summarize(staged))
               ),
-              open ? def.children.map((child) => renderField(child, depth + 1)) : null
+              open ? h("div", { "data-ciel-settings-group-body": "" }, ...def.key === "common" ? [...def.children.slice(0, 4).map((child) => renderField(child, depth + 1)), h("div", { key: "time-limits", "data-ciel-settings-times": "" }, ...def.children.slice(4).map((child) => renderField(child, depth + 1)))] : def.children.map((child) => renderField(child, depth + 1))) : null
             );
           }
-          const el = def.kind === "route" ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options]) : def.kind === "effort" ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback) : def.kind === "check" ? checkField(def.key, def.label, def.hint) : def.kind === "paths" ? pathsField(def) : numberField(def);
-          return depth > 0 ? React.cloneElement(el, { style: { ...el.props.style, marginLeft: depth * 14 } }) : el;
+          const el = def.kind === "route" ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options]) : def.kind === "effort" ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback) : def.kind === "check" ? checkField(def.key, def.label, def.hint) : def.kind === "paths" ? pathsField(def) : def.kind === "text" || def.kind === "secret" ? textField(def) : numberField(def);
+          return el;
         };
-        const blocked = !dirty || FIELD_KEYS.some((key) => {
-          const def = FIELD_DEF_BY_KEY[key];
-          return def.kind === "number" && numState(def).invalid || def.kind === "paths" && pathsState(key).invalid;
-        }) || saving;
+        const blocked = !dirty || FIELD_KEYS.some(invalidField) || saving;
         return h(
           "section",
-          { "aria-label": "夏尔 Ciel", style: { color: "var(--dsw-alias-label-primary)", minWidth: 0 } },
+          { "aria-label": "夏尔 Ciel", "data-ciel-settings": "" },
           h(
-            "div",
-            { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "10px" } },
-            h("h2", { style: { margin: 0, fontSize: "20px" } }, "夏尔 Ciel"),
-            h(Tag, { tone: value.enabled === false ? "neutral" : "success" }, value.enabled === false ? "当前已停用" : "当前已启用"),
-            dirty ? h(Tag, { tone: "warning" }, "未保存") : null
-          ),
-          h("p", { style: { ...css.hint, marginBottom: "16px" } }, "顾问提供思路与提醒，批评者核查回复；选中的批注填入输入框，由你确认后发送。"),
-          h(
-            "div",
-            { style: { ...css.card, ...css.body } },
-            !snap.writable ? h("p", { style: css.readOnly, role: "status" }, "当前设置为只读。") : null,
-            h("p", { style: css.readOnly }, "以下修改均在点击「保存」后生效；「重置」只暂存默认值，「放弃」撤销未保存的修改。"),
-            FIELD_DEFS.map((def) => renderField(def, 0)),
+            "header",
+            { "data-ciel-settings-header": "" },
             h(
               "div",
-              { style: css.footer },
-              saveFailed ? h("p", { style: css.failed, role: "status" }, "保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。") : null,
-              h("button", {
-                type: "button",
-                style: !dirty && !saveFailed || saving ? { ...css.discard, ...css.disabled } : css.discard,
-                disabled: !dirty && !saveFailed || saving,
-                onClick: discard
-              }, "放弃"),
-              h("button", {
-                type: "button",
-                style: blocked ? { ...css.save, ...css.disabled } : css.save,
-                disabled: blocked,
-                onClick: save
-              }, saving ? "保存中…" : "保存")
-            )
+              {},
+              h(
+                "div",
+                { "data-ciel-settings-heading": "" },
+                h("h2", {}, "夏尔 Ciel"),
+                h(Tag, { tone: value.enabled === false ? "neutral" : "success" }, value.enabled === false ? "当前已停用" : "当前已启用")
+              ),
+              h("p", { "data-ciel-settings-subtitle": "" }, "顾问提供思路，评审核对依据。")
+            ),
+            h("div", { "data-ciel-settings-enabled": "" }, renderField(FIELD_DEFS[0], 0))
+          ),
+          h("p", { "data-ciel-settings-notice": "" }, !snap.writable ? "当前设置为只读。" : dirty ? "草稿尚未保存。切换设置页或关闭此窗口仍会保留；保存后才生效。" : "以下修改均在点击「保存」后生效；恢复默认值也需要保存。"),
+          h("div", { "data-ciel-settings-groups": "" }, ...FIELD_DEFS.slice(1).map((def) => renderField(def, 0))),
+          h(
+            "footer",
+            { "data-ciel-settings-footer": "" },
+            saveFailed ? h("p", { "data-ciel-settings-footer-error": "", role: "status" }, "保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。") : null,
+            h("span", { "data-ciel-settings-footer-status": "", role: "status" }, saving ? "正在保存…" : blocked && dirty ? "请先修正无效设置" : dirty ? FIELD_KEYS.filter(dirtyKey).length + " 项未保存的修改" : "没有未保存的修改"),
+            h(Button || "button", { type: "button", ...Button ? { variant: "toolbar", size: "md" } : {}, disabled: !dirty && !saveFailed || saving, onClick: discard }, "放弃"),
+            h(Button || "button", { type: "button", ...Button ? { variant: "primary", size: "md" } : {}, disabled: blocked || !snap.writable, onClick: save }, saving ? "保存中…" : "保存")
           )
         );
       }
@@ -4199,16 +4664,16 @@
         return entry?.verdict === "changes" ? "danger" : "neutral";
       }
       function verdictBadgeText(entry) {
-        if (entry?.status === "incomplete" || deriveCoverage(entry) === "partial") return "◇ 部分核实";
+        if (entry?.status === "incomplete" || deriveCoverage(entry) === "partial") return hasSettledReviewItems(entry) ? "◇ 已核查 · 证据受限" : "◇ 部分核实";
         if (entry?.status === "unverified" || deriveCoverage(entry) === "not-verified") return "◇ 未独立核实";
-        if (isSoundEntry(entry)) return "✓ 整体成立";
+        if (isSoundEntry(entry)) return "✓ 已核实 · 无阻断";
         if (entry && entry.verdict === "changes") return "⚠ 建议修改";
         if (entry && entry.verdict === "pass") return "◇ 未独立核实";
         return "批注评审";
       }
       function feedbackDraftTarget(ctx, sessionId) {
         const sessions = ctx.get("sessions");
-        if (sessions?.list?.getSnapshot?.().current !== sessionId) throw new Error("会话已切换，未填入；请回到原会话重试");
+        if (currentSessionId(sessions?.list?.getSnapshot?.()) !== sessionId) throw new Error("会话已切换，未填入；请回到原会话重试");
         const actx = sessions.scope(sessionId);
         const input = actx && ctx.get("conversation")?.input?.for(actx);
         const state = input?.state?.getSnapshot?.();
@@ -4216,7 +4681,8 @@
         if (state.phase !== "plain" || /^\s*\//.test(state.draft)) throw new Error("输入框正在处理命令或发送，请结束后再填入批注");
         return { actx, input, draftRev: state.draftRev };
       }
-      function appendFeedbackDraft(ctx, sessionId, text2, expected) {
+      function appendFeedbackDraft(ctx, sessionId, text2, expected, mode = "append") {
+        if (!["append", "replace"].includes(mode)) throw new Error("未知草稿操作，未填入");
         if (typeof text2 !== "string" || text2.trim() === "") throw new Error("批注草稿为空");
         const target = feedbackDraftTarget(ctx, sessionId);
         if (expected && (target.input !== expected.input || target.draftRev !== expected.draftRev)) throw new Error("输入内容已变化，未填入；请再次点击");
@@ -4232,19 +4698,26 @@
           end -= length - 1;
         }
         const applied = target.actx.bail(target.actx, "slash/input-insert-text", {
-          text: (state.draft === "" ? "" : "\n\n") + text2,
-          span: { start: end, end, draftRev: state.draftRev }
+          text: (mode === "replace" || state.draft === "" ? "" : "\n\n") + text2,
+          span: { start: mode === "replace" ? 0 : end, end, draftRev: state.draftRev }
         });
         if (applied !== true) throw new Error("输入框未接受批注草稿，未发送；请重试");
         return { duplicate: false };
       }
-      async function stageFeedbackDraft(ctx, request, call, isCurrent = () => true) {
+      async function stageFeedbackDraft(ctx, request, call, isCurrent = () => true, choose = void 0) {
         const target = feedbackDraftTarget(ctx, request.sessionId);
         const res = await call("prepareFeedback", request);
         if (!isCurrent()) throw new Error("页面或会话已变化，未填入；请重试");
         if (!res || res.ok !== true) throw new Error(String(res?.error || "无法准备草稿；若刚更新 Ciel，请重载后刷新页面"));
         if (res.sessionId !== request.sessionId || res.reviewId !== request.reviewId || res.messageId !== request.messageId) throw new Error("批注与会话不匹配，未填入");
-        return appendFeedbackDraft(ctx, request.sessionId, res.text, target);
+        const current = feedbackDraftTarget(ctx, request.sessionId);
+        if (current.input !== target.input || current.draftRev !== target.draftRev) throw new Error("输入内容已变化，未填入；请再次点击");
+        const state = current.input.state.getSnapshot();
+        let mode = "append";
+        if (typeof choose === "function" && state.draft !== "" && !state.draft.includes(res.text)) mode = await choose(state.draft);
+        if (mode === "cancel") return { cancelled: true };
+        if (!isCurrent()) throw new Error("页面或会话已变化，未填入；请重试");
+        return appendFeedbackDraft(ctx, request.sessionId, res.text, target, mode);
       }
       function isToolBudgetError(entry) {
         return entry?.diagnostics?.toolBudgetExceeded === true || /^(?:budget exceeded(?:;|$)|phase 2 aborted \(budget exceeded\))/i.test(String(entry?.error || ""));
@@ -4267,7 +4740,7 @@
         if (isSoundEntry(entry)) return "✓ 无阻断 (" + count + ")";
         if (entry.status === "cancelled") return "已取消 · 重新评审";
         if (entry.status === "error") return String(entry.error || "").includes("review timeout") ? "已到时限 · 重试" : isToolBudgetError(entry) ? "读取上限 · 重试" : "评审失败 · 重试";
-        if (entry.status === "incomplete") return "◇ 部分核实 · " + count + " 条";
+        if (entry.status === "incomplete") return (hasSettledReviewItems(entry) ? "◇ 已核查 · 证据受限 · " : "◇ 部分核实 · ") + count + " 条";
         if (entry.status === "unverified") return "◇ 未核实 · " + count + " 条";
         if (entry.verdict === "changes") return "⚠ 批注 " + count + " · 复审";
         return "批注 " + count + " · 复审";
@@ -4413,8 +4886,8 @@
         ".dsrf-blockers:hover{opacity:1}"
       ].join("\n");
       const ADVISOR_CARD_CSS = [
-        ".adv-card{color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}",
-        ".adv-head{padding:9px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}",
+        ".adv-card{--ciel-advisor-inset:14px;color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}",
+        ".adv-head{padding:9px var(--ciel-advisor-inset);display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}",
         ".adv-head:hover{background:var(--dsw-alias-interactive-bg-hover)}",
         ".adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}",
         ".adv-head-icon{flex:none;font-size:13px}",
@@ -4427,7 +4900,12 @@
         ".adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}",
         ".adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}",
         ".adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary, #b77700);font-family:ui-monospace,monospace;flex:none}",
-        ".adv-body{padding:4px 14px 12px}",
+        // Summary, Jev and model metadata share the card's content edge. Keep
+        // these selectors card-scoped: review panels/sidebars own their spacing.
+        ".adv-card .adv-head[data-ciel-summary-head]{padding-inline:var(--ciel-advisor-inset)}",
+        ".adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}",
+        ".adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}",
+        ".adv-body{padding:4px var(--ciel-advisor-inset) 12px}",
         ".adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid var(--dsw-alias-border-l2);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}",
         ".adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}",
         ".adv-item:first-of-type{border-top:none}",
@@ -4549,6 +5027,7 @@
               chips,
               navigationButton({ onClick: () => sidebar.openAdvice(props.sessionId, callId) }, "在侧栏查看")
             ),
+            meta?.jev ? h("p", { "data-ciel-advisor-jev-summary": "" }, advisorJevSummary(meta.jev)) : null,
             h("div", { className: "ciel-model-usage" }, modelLabel)
           );
         }
@@ -4574,6 +5053,7 @@
           open ? h(
             "div",
             { className: "adv-body" },
+            advisorJevPanel(h, meta?.jev),
             question !== "" ? h("div", { className: "adv-q" }, "咨询：" + clipAdv(question, 300)) : null,
             isError ? h("div", { className: "adv-err" }, body !== "" ? body : "（无错误详情）") : items.length > 0 ? items.map((item, i) => h(AdvisorItem, { key: i, item })) : h("div", { className: "adv-raw" }, body !== "" ? body : "（空回复）"),
             issues.length > 0 ? h("div", { className: "adv-issues" }, "解析问题：" + issues.join("；")) : null,
@@ -4619,11 +5099,28 @@
         }
         return { items, issues };
       }
-      function apply(ctx) {
+      function mountClient(ctx, settingsForm) {
         settingsEditor = createSettingsEditor();
+        draftDecisions = createCielDecisionPrompt({ React, Modal, Button });
+        const ownedDecisions = draftDecisions;
+        ctx.effect(() => () => ownedDecisions.dispose(), "Ciel: draft decisions");
+        ctx.slots.inject("shell.overlay", () => ctx.slots.register({ name: "shell.overlay", id: "ciel-draft-decisions" }, ownedDecisions.View));
+        ctx.slots.inject("settings.action", () => ctx.slots.register({ name: "settings.action", id: "ciel-draft-status", order: 30 }, SettingsDraftNotice));
+        ctx.effect(() => {
+          const beforeUnload = (event) => {
+            if (hasSettingsDraft()) {
+              event.preventDefault();
+              event.returnValue = "";
+            }
+          };
+          if (typeof window.addEventListener !== "function") return;
+          window.addEventListener("beforeunload", beforeUnload);
+          return () => window.removeEventListener("beforeunload", beforeUnload);
+        }, "Ciel: unsaved browser exit warning");
         const ownedEditor = settingsEditor;
         ctx.effect(() => () => ownedEditor.dispose(), "dsh-ciel: page-local settings draft");
-        scope = ctx.settingsScope.bind({ namespace: "ciel" });
+        scope = settingsForm;
+        settingsDescribe = ctx.configForms?.describe?.() || null;
         clientOn = (name, fn) => ctx.on(name, fn);
         getSessionRemote = () => {
           try {
@@ -4648,6 +5145,7 @@
         );
         const styleEl = document.createElement("style");
         styleEl.textContent = REVIEW_CSS + "\n" + ADVISOR_CARD_CSS + "\n" + sidebar_default + "\n" + inbox_default;
+        styleEl.textContent += settings_default;
         document.head.appendChild(styleEl);
         ctx.effect(() => () => styleEl.remove(), "dsh-advisor: review styles");
         const reviewTransport = createReviewTransport({
@@ -4700,9 +5198,21 @@
               return result;
             },
             onTriage: (request) => reviewCall("triage", request),
+            canPrepareFeedback: () => scope?.getSnapshot?.().value?.enabled !== false,
+            subscribeConfiguration: (listener) => scope?.subscribe?.(listener) || (() => {
+            }),
+            locateReview: async (sessionId, reviewId) => {
+              const controller = inbox.getController();
+              if (!controller) return { ok: false, error: "收件箱定位暂不可用" };
+              await controller.ensureLoaded();
+              const snapshot = controller.getSnapshot();
+              if (snapshot.sessionId !== sessionId) return { ok: false, error: "请先回到这条评审所属的会话。" };
+              const record = snapshot.reviews.find((review2) => review2.reviewId === reviewId);
+              return record ? controller.locate(record.key) : { ok: false, error: "该记录不在当前收件箱页；请在收件箱找到对应记录后定位。" };
+            },
             onPrepareFeedback: async (request) => {
-              await stageFeedbackDraft(ctx, request, reviewCall, () => clientActive);
-              return { ok: true };
+              const result = await stageFeedbackDraft(ctx, request, reviewCall, () => clientActive && scope?.getSnapshot?.().value?.enabled !== false, (preview) => draftDecisions.ask(preview));
+              return { ok: true, ...result };
             }
           });
           sidebar = native;
@@ -4856,7 +5366,7 @@
             head2.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)));
             const summary = doc.createElement("span");
             summary.setAttribute("data-ciel-summary-copy", "");
-            summary.textContent = entry.status === "error" ? reviewErrorText(entry) : entry.summary || "评审已完成";
+            summary.textContent = entry.status === "error" ? reviewErrorText(entry) : String(entry.summary || "评审已完成").replace(/(\d+) 项未查/g, "$1 项未核实");
             head2.appendChild(summary);
             const open = doc.createElement("span");
             open.setAttribute("data-ciel-summary-action", "");
@@ -4923,7 +5433,7 @@
             toggle.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)));
             const sum = doc.createElement("span");
             sum.className = "dsr-vsum";
-            sum.textContent = entry.summary || "批评者批注 · " + annotations.length + " 条";
+            sum.textContent = String(entry.summary || "批评者批注 · " + annotations.length + " 条").replace(/(\d+) 项未查/g, "$1 项未核实");
             toggle.appendChild(sum);
             const blockers = annotations.filter((a) => a && a.severity === "blocker").length;
             const nits = annotations.length - blockers;
@@ -4933,7 +5443,7 @@
             if (nits > 0) chips.appendChild(nativeTag("warning", nits + " nit"));
             if (blockers === 0 && nits === 0) chips.appendChild(nativeTag(isSoundEntry(entry) ? "success" : "neutral", "0 批注"));
             if (entry.stats && typeof entry.stats.checked === "number") {
-              const text2 = "疑点 " + entry.stats.checked + " · 证伪 " + entry.stats.confirmed + " · 排除 " + entry.stats.excluded + (typeof entry.stats.unchecked === "number" && entry.stats.unchecked > 0 ? " · 未查 " + entry.stats.unchecked : "");
+              const text2 = "疑点 " + entry.stats.checked + " · 证伪 " + entry.stats.confirmed + " · 排除 " + entry.stats.excluded + (typeof entry.stats.unchecked === "number" && entry.stats.unchecked > 0 ? " · 未核实 " + entry.stats.unchecked : "");
               const title = entry.explore ? "工具调用 " + entry.explore.toolCalls + (Number.isFinite(entry.explore.budget) ? "/" + entry.explore.budget : " 次") + (entry.outcomes ? "（执行前计数，包含已放行但失败的调用）" : "（旧版事件流采样）") + (entry.explore.salvaged ? "；本卡由熔断后的部分记录恢复" : "") : "";
               chips.appendChild(nativeTag("info", text2, title));
             } else if (entry.explore) {
@@ -4947,7 +5457,7 @@
               toggle.appendChild(tn);
             }
           } else {
-            head.textContent = (isSoundEntry(entry) ? "✓ 批评者：草案整体成立" : "批评者批注 · " + annotations.length + " 条" + (stats ? " · 标记 " + stats.marked + "/" + stats.total : "") + "（点击卡片定位到原文；波浪下划线与角标也可点击）" + (entry.status === "completed-unparsed" ? "（未解析出结构化批注，原文如下）" : "") + (stats && stats.failures.length > 0 ? "　标记失败：" + stats.failures.join("；") : "")) + targetsNote;
+            head.textContent = (isSoundEntry(entry) ? "✓ 批评者：已核实范围内无阻断" : "批评者批注 · " + annotations.length + " 条" + (stats ? " · 标记 " + stats.marked + "/" + stats.total : "") + "（点击卡片定位到原文；波浪下划线与角标也可点击）" + (entry.status === "completed-unparsed" ? "（未解析出结构化批注，原文如下）" : "") + (stats && stats.failures.length > 0 ? "　标记失败：" + stats.failures.join("；") : "")) + targetsNote;
           }
           if (entry.explore && entry.explore.salvaged) {
             head.appendChild(nativeTag("warning", "抢救产出", "本卡由熔断后的抢救书写员产出（阶段 2 中断后单次裁决恢复）"));
@@ -5260,10 +5770,11 @@
                     ctx,
                     { sessionId, reviewId, messageId, items: items.map((item) => ({ index: item.index })) },
                     reviewCall,
-                    () => aliveRef.current && generation === genRef.current
+                    () => aliveRef.current && generation === genRef.current && scope?.getSnapshot?.().value?.enabled !== false,
+                    (preview) => draftDecisions.ask(preview)
                   ).then((staged) => {
                     if (!clientActive) return;
-                    store.feedback.note.set(reviewId, staged.duplicate ? "这些批注已在输入框中，尚未自动发送" : "✓ 已填入输入框，请编辑确认后手动发送");
+                    store.feedback.note.set(reviewId, staged.cancelled ? "已取消，输入框保持不变。" : staged.duplicate ? "这些批注已在输入框中，尚未自动发送" : "✓ 已填入输入框，请编辑确认后手动发送");
                   }).catch((error) => {
                     if (!clientActive) return;
                     store.feedback.note.set(reviewId, "未填入：" + String(error && error.message || error));
@@ -5498,7 +6009,6 @@
           for (const k of Object.keys(__runtime)) delete __runtime[k];
         }, "dsh-advisor: review runtime cleanup");
       }
-      exports.apply = apply;
       exports.__test = {
         loadReviewPages,
         splitMarkdownBlocks,
@@ -5510,6 +6020,7 @@
         reviewErrorText,
         feedbackDraftTarget,
         appendFeedbackDraft,
+        getDraftDecisions: () => draftDecisions,
         stageFeedbackDraft,
         inFlightLabel,
         restoreSelection,
@@ -5540,7 +6051,11 @@
         fieldKeys: FIELD_KEYS.slice(),
         hasGroup: (key) => Object.prototype.hasOwnProperty.call(INITIAL_CLOSED_GROUPS, key) && INITIAL_CLOSED_GROUPS[key] === true
       };
-      exports.inject = ["settingsScope", "slots", "resources", "sidebarRightTabs", "sidebarRight"];
+      exports.apply = (ctx) => {
+        ctx.inject(["configForms"], (child) => mountClient(child, child.configForms.get("advisor")));
+        ctx.inject(["settingsScope"], (child) => mountClient(child, child.settingsScope.bind({ namespace: "ciel" })));
+      };
+      exports.inject = ["slots", "resources", "sidebarRightTabs", "sidebarRight"];
       return module.exports;
     }
   });

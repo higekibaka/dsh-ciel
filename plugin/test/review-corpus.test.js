@@ -47,7 +47,7 @@ test('captures sources/docs, keeps legitimate session/key folders, exposes only 
   const corpus = await createReviewCorpus({ root: f.root })
   t.after(() => corpus.dispose())
   assert.deepEqual(corpus.publicInfo(), { fileCount: 5, byteCount: 114, roots: ['/project'], truncated: false })
-  assert.deepEqual(corpus.read({ file_path: 'src/main.js', offset: 2, limit: 1 }), { file_path: '/project/src/main.js', offset: 2, total_lines: 3, content: 'beta.* literal', truncated: true })
+  assert.deepEqual(corpus.read({ file_path: 'src/main.js', offset: 2, limit: 1 }), { file_path: '/project/src/main.js', offset: 2, total_lines: 3, content: 'beta.* literal\n', next_offset: 3, truncated: false })
   assert.equal(corpus.read({ file_path: `${f.root}/src/main.js` }).content, 'alpha\nbeta.* literal\ngamma\n')
   assert.deepEqual(corpus.glob({ pattern: '**/*.js' }).paths, ['/project/key/index.js', '/project/sessions/index.js', '/project/src/main.js'])
   assert.deepEqual(corpus.grep({ pattern: '.*', include: '*.js' }).matches, [{ file_path: '/project/src/main.js', line_number: 2, line: 'beta.* literal' }])
@@ -55,6 +55,39 @@ test('captures sources/docs, keeps legitimate session/key folders, exposes only 
   assert.deepEqual(corpus.glob({ pattern: 'src/m?in.*' }).paths, ['/project/src/main.js'])
   assert.deepEqual(corpus.glob({ pattern: '*.no-match' }), { paths: [], truncated: false })
   assert.equal(JSON.stringify(corpus.publicInfo()).includes(f.base), false)
+})
+
+test('root directory evidence survives recursive byte exhaustion without exposing protected names or link targets', async t => {
+  const f = await fixture(t)
+  await f.put('project/a-big/large.txt', 'x'.repeat(100))
+  await fs.mkdir(path.join(f.root, 'z-empty-project'))
+  await f.put('project/.env', 'SECRET')
+  await f.put('project/.dsh/private.txt', 'SECRET')
+  await fs.symlink(f.outside, path.join(f.root, 'external-link'))
+  const corpus = await createReviewCorpus({ root: f.root, limits: { maxBytes: 50 } })
+  t.after(() => corpus.dispose())
+  assert.equal(corpus.publicInfo().truncated, true)
+  const manifest = corpus.directoryManifests()[0]
+  assert.equal(manifest.complete, true)
+  assert.ok(manifest.entries.some(entry => entry.name === 'z-empty-project' && entry.kind === 'directory'))
+  assert.ok(manifest.entries.some(entry => entry.name === 'external-link' && entry.kind === 'symlink'))
+  assert.match(manifest.temporal, /review-start.*not the historical/)
+  assert.doesNotMatch(JSON.stringify(manifest), /SECRET|\.env|\.dsh|fake-home/)
+  denied(() => corpus.read({ file_path: 'external-link/private.txt' }))
+  manifest.entries.length = 0
+  assert.ok(corpus.directoryManifests()[0].entries.length > 0, 'caller receives a detached snapshot')
+  await fs.mkdir(path.join(f.root, 'created-later'))
+  assert.ok(!corpus.directoryManifests()[0].entries.some(entry => entry.name === 'created-later'))
+})
+
+test('a bounded root enumeration cannot claim completeness for absent names', async t => {
+  const f = await fixture(t)
+  await fs.mkdir(path.join(f.root, 'first'))
+  await fs.mkdir(path.join(f.root, 'second'))
+  const corpus = await createReviewCorpus({ root: f.root, limits: { maxEntries: 1 } })
+  t.after(() => corpus.dispose())
+  assert.equal(corpus.directoryManifests()[0].complete, false)
+  assert.deepEqual(corpus.directoryManifests()[0].entries, [])
 })
 
 test('line counts do not invent an extra line for a final newline and preserve captured bytes', async t => {
@@ -69,6 +102,28 @@ test('line counts do not invent an extra line for a final newline and preserve c
     assert.equal(read.content, content, name)
     assert.equal(read.truncated, false)
   }
+})
+
+test('large original files can be fully reconstructed through pages after the live file changes', async t => {
+  const f = await fixture(t)
+  const original = Array.from({ length: 6001 }, (_, i) => `第 ${i + 1} 行 original text ${'x'.repeat(40)}\r\n`).join('') + 'last line without newline'
+  assert.ok(Buffer.byteLength(original) > 256 * 1024)
+  const file = await f.put('project/large.txt', original)
+  const corpus = await createReviewCorpus({ root: f.root })
+  t.after(() => corpus.dispose())
+  await fs.writeFile(file, 'modified after capture')
+  let offset = 1, reconstructed = '', pages = 0
+  while (offset !== null) {
+    const result = corpus.read({ file_path: 'large.txt', offset, limit: 1000 })
+    assert.equal(result.truncated, false, 'a complete requested page is not a coverage failure')
+    assert.equal(result.total_lines, 6002)
+    reconstructed += result.content
+    assert.ok(result.next_offset === null || result.next_offset > offset)
+    offset = result.next_offset
+    assert.ok(++pages <= 7)
+  }
+  assert.equal(reconstructed, original)
+  assert.equal(corpus.publicInfo().truncated, false)
 })
 
 test('excludes fake sensitive/process records, archives, symlinks, hardlinks and secret-bearing source', async t => {
@@ -245,14 +300,14 @@ test('bounds are deterministic, bounded, and visible without rejected names', as
   assert.ok(corpus.publicInfo().byteCount <= 10)
   assert.equal(corpus.publicInfo().truncated, true)
   assert.equal(corpus.grep({ pattern: 'a' }).truncated, true)
-  assert.equal(corpus.read({ file_path: 'a.js' }).content, 'a')
+  assert.equal(corpus.read({ file_path: 'a.js' }).content, 'a\n')
   denied(() => corpus.read({ file_path: 'b.js' }))
   denied(() => corpus.read({ file_path: 'a.js', limit: 2 })); corpus.dispose()
   corpus = await createReviewCorpus({ root: f.root, limits: { maxEntries: 1 } })
   assert.equal(corpus.publicInfo().fileCount, 0)
   assert.equal(corpus.publicInfo().truncated, true); corpus.dispose()
   corpus = await createReviewCorpus({ root: f.root, limits: { maxOutputBytes: 2 } })
-  assert.equal(corpus.read({ file_path: 'a.js' }).content, 'a')
+  assert.equal(corpus.read({ file_path: 'a.js' }).content, 'a\n')
   assert.equal(corpus.read({ file_path: 'a.js' }).truncated, true)
   denied(() => corpus.grep({ pattern: 'a' }))
   denied(() => corpus.glob({ pattern: '*' }))
@@ -388,4 +443,69 @@ test('placeholder credential values never fail the review while real shapes stil
     '{"client_secret":"FAKE_CLIENT_SECRET"}',
     'PASSWORD=FAKE_PASSWORD',
   ]) assert.equal(detectSensitiveText(text), true)
+})
+
+test('referenced project is captured before unrelated siblings exhaust the same budget', async t => {
+  const f = await fixture(t)
+  await f.put('project/a-unrelated/large.js', 'a'.repeat(100))
+  await f.put('project/云山巨城/index.html', '<main>city</main>\n')
+  await f.put('project/云山巨城/README.md', 'Start locally.\n')
+  const before = await createReviewCorpus({ root: f.root, limits: { maxBytes: 110 } })
+  denied(() => before.read({ file_path: '云山巨城/index.html' }))
+  before.dispose()
+  const corpus = await createReviewCorpus({
+    root: f.root, focusText: '交付目录：' + f.root + '/云山巨城/index.html',
+    limits: { maxBytes: 110 },
+  })
+  t.after(() => corpus.dispose())
+  assert.equal(corpus.read({ file_path: '云山巨城/index.html' }).content, '<main>city</main>\n')
+  assert.equal(corpus.read({ file_path: '云山巨城/README.md' }).content, 'Start locally.\n')
+  assert.equal(corpus.publicInfo().truncated, true, 'unrelated source was omitted')
+  assert.ok(corpus.publicInfo().byteCount <= 110, 'no capacity increase')
+  assert.deepEqual(corpus.glob({ path: '/project/云山巨城', pattern: '**/*' }), {
+    paths: ['/project/云山巨城/README.md', '/project/云山巨城/index.html'], truncated: false,
+  })
+  assert.equal(corpus.grep({ path: '云山巨城', pattern: 'external-dependency' }).truncated, false)
+  assert.equal(corpus.glob({ pattern: '**/*' }).truncated, true)
+  assert.deepEqual(corpus.publicInfo().focusedPaths, ['/project/云山巨城'])
+  assert.ok(corpus.directoryManifests().find(m => m.path === '/project/云山巨城').entries
+    .some(entry => entry.name === 'index.html'))
+})
+
+test('capture focus is only ordering and cannot admit protected content or follow links', async t => {
+  const f = await fixture(t)
+  await f.put('project/a.js', 'a')
+  await f.put('project/z-target/index.js', 'target')
+  await f.put('project/.env', 'PRIVATE')
+  await f.put('project/private/keep.js', 'PRIVATE')
+  await f.put('fake-home/external.js', 'PRIVATE')
+  await fs.symlink(f.outside, path.join(f.root, 'z-link'))
+  const corpus = await createReviewCorpus({
+    root: f.root, protectedRoots: [path.join(f.root, 'private')],
+    focusText: '/project/z-target/index.js /project/.env /project/private /project/z-link/external.js ' + f.outside,
+    limits: { maxFiles: 1 },
+  })
+  t.after(() => corpus.dispose())
+  assert.equal(corpus.read({ file_path: 'z-target/index.js' }).content, 'target')
+  for (const name of ['.env', 'private/keep.js', 'z-link/external.js', f.outside + '/external.js']) {
+    denied(() => corpus.read({ file_path: name }))
+  }
+  assert.doesNotMatch(JSON.stringify(corpus.directoryManifests()), /PRIVATE|keep\.js|external\.js|fake-home/)
+  await deniedAsync(() => createReviewCorpus({ root: f.root, focusText: {} }))
+  await deniedAsync(() => createReviewCorpus({ root: f.root, focusText: 'x'.repeat(32769) }))
+})
+
+test('focused scope still reports its own omissions and does not match a sibling name prefix', async t => {
+  const f = await fixture(t)
+  await f.put('project/a/index.js', 'a')
+  await f.put('project/z/index.js', 'z')
+  let corpus = await createReviewCorpus({ root: f.root, focusText: '/project/z-extra/index.js', limits: { maxFiles: 1 } })
+  assert.equal(corpus.read({ file_path: 'a/index.js' }).content, 'a')
+  denied(() => corpus.read({ file_path: 'z/index.js' }))
+  corpus.dispose()
+  await f.put('project/z/second.js', 'second')
+  corpus = await createReviewCorpus({ root: f.root, focusText: '/project/z', limits: { maxFiles: 1 } })
+  t.after(() => corpus.dispose())
+  assert.equal(corpus.glob({ path: 'z', pattern: '*' }).truncated, true)
+  assert.equal(corpus.grep({ path: 'z', pattern: 'missing' }).truncated, true)
 })

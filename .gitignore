@@ -52,6 +52,7 @@ playwright/.auth/
 /.artifacts/
 
 # Local history, drafts and raw test evidence are not public deliverables.
+/design-qa.md
 /prototypes/
 /docs/stability-plan.md
 /docs/upstream-agent-team-race-discussion*.md

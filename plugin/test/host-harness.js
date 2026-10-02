@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 // Offline service harness: actual Cordis/Typert registration and production
 // review orchestration; scripted subagent boundaries, no network or model SDK.
 import { Context } from '@deepseek-ai/cordis'
@@ -31,7 +32,7 @@ export async function reviewHarness(scripts = [], overrides = {}) {
   const disposals = []
   const executions = []
   const pending = new Set()
-  let config = Config(overrides)
+  let config = resolvedConfig(overrides)
   let service
   let isolationCallbacks
   const controls = new Map()
@@ -172,7 +173,7 @@ export async function reviewHarness(scripts = [], overrides = {}) {
   return {
     ctx, service, sid, messageId, requests, executions, delivered, disposals, parent,
     childEvents: childEventLog, lastControl: () => lastControl,
-    configure: (next) => { config = Config({ ...config, ...next }) },
+    configure: (next) => { config = resolvedConfig({ ...config, ...next }) },
     start: () => service.start({ sessionId: sid, messageId }),
     cancel: () => service.cancel({ sessionId: sid, messageId }),
     stop: () => owner.dispose(),

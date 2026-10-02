@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 // Inbox service — backend contract tests.
 //
 // Every store call is bound to a private temp `home`; this file never reads or
@@ -45,7 +46,7 @@ async function fingerprint(sessionId, reviewId) {
 }
 
 function makeService() {
-  return new AdvisorReviewService(new Context(), new Set(), () => Config({}), new Set(), { inboxHome: home })
+  return new AdvisorReviewService(new Context(), new Set(), () => resolvedConfig({}), new Set(), { inboxHome: home })
 }
 
 test('record store persists the inbox kind as its own small record', async () => {

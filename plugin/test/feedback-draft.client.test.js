@@ -103,3 +103,36 @@ test('unclaimed slash input, invalid chips and rejected revision never fall back
   assert.equal(rejected.state.draft, '')
   assert.throws(() => api.appendFeedbackDraft({ get() {} }, 's1', '批注'), /未填入/)
 })
+
+test('existing draft requires decision in the production confirmation path; cancellation does not write', async () => {
+  const request={sessionId:'s1',messageId:'m1',reviewId:'r1',items:[{index:0}]}
+  const c=composer({draft:'keep'});let previews=[]
+  const result=await api.stageFeedbackDraft(c.ctx,request,async()=>({ok:true,...request,text:'feedback'}),()=>true,async preview=>{previews.push(preview);return 'cancel'})
+  assert.deepEqual(result,{cancelled:true});assert.deepEqual(previews,['keep']);assert.equal(c.state.draft,'keep');assert.equal(c.events.length,0)
+})
+test('edits and session switches during confirmation fence the eventual insertion', async () => {
+ const request={sessionId:'s1',messageId:'m1',reviewId:'r1',items:[{index:0}]}
+ for(const mode of ['edit','switch']){
+  const c=composer({draft:'keep'})
+  await assert.rejects(api.stageFeedbackDraft(c.ctx,request,async()=>({ok:true,...request,text:'feedback'}),()=>true,async()=>{if(mode==='edit'){c.state.draft='new';c.state.draftRev++}else c.switch('other');return 'replace'}))
+  assert.equal(c.events.length,0)
+ }
+})
+test('explicit replacement addresses the whole atomic input span without sending or dropping attachments',()=>{
+ const c=composer({draft:'look @file',occurrences:[{offset:5,length:5}]})
+ api.appendFeedbackDraft(c.ctx,'s1','feedback',api.feedbackDraftTarget(c.ctx,'s1'),'replace')
+ assert.deepEqual(c.events[0],{text:'feedback',span:{start:0,end:6,draftRev:1}})
+ assert.deepEqual(c.state.attachmentIds,['keep-attachment'])
+})
+
+
+test('modern retained main-view selection resolves the composer and still rejects another session',()=>{
+ const c=composer({draft:'keep'})
+ const originalGet=c.ctx.get
+ const sessions=originalGet('sessions')
+ sessions.list.getSnapshot=()=>({byId:{s1:{id:'s1',retainedBy:{mainView:1}},other:{id:'other',retainedBy:{sidebar:1}}}})
+ api.appendFeedbackDraft(c.ctx,'s1','feedback')
+ assert.equal(c.events.length,1)
+ sessions.list.getSnapshot=()=>({byId:{s1:{id:'s1',retainedBy:{mainView:0}},other:{id:'other',retainedBy:{mainView:1}}}})
+ assert.throws(()=>api.feedbackDraftTarget(c.ctx,'s1'),/会话已切换/)
+})

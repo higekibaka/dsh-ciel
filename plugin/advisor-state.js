@@ -113,7 +113,7 @@ function reminderTextFor(agent, current) {
         if (event.data.name === 'todo_write' || event.data.name === 'exit_plan_mode') planning = true
       } else if (event.type === 'user/message') {
         const source = event.data?.source
-        if (source?.kind !== 'plugin' || source.plugin !== '@deepseek-ai/dsh-system-prompt') continue
+        if (source?.kind !== 'runtime-context' && (source?.kind !== 'plugin' || source.plugin !== '@deepseek-ai/dsh-system-prompt')) continue
         if (Array.isArray(source.sections) && !source.sections.some(section => section?.name === 'advisor:plan-reminder')) continue
         const content = event.data && event.data.content
         if (

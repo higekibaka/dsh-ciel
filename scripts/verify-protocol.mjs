@@ -5,16 +5,26 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { createRequire } from 'node:module'
-import { REVIEW_REMOTE, REVIEW_METHODS } from '../plugin/review-protocol.js'
+import { createRequire, registerHooks } from 'node:module'
+
 import { createReviewTransport } from '../plugin/src/review-transport.js'
-import { AdvisorReviewService, Config, apply } from '../plugin/index.js'
+
 import { writeRecord } from '../plugin/record-store.js'
 
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT must point to the current built DSH checkout')
 const requireTarget = createRequire(join(checkout, 'packages/core/tools/package.json'))
-const { Context } = await import(pathToFileURL(requireTarget.resolve('@deepseek-ai/cordis')).href)
+const shared = {
+  '@deepseek-ai/cordis': requireTarget.resolve('@deepseek-ai/cordis'),
+  '@deepseek-ai/schemastery': requireTarget.resolve('@deepseek-ai/schemastery'),
+  '@deepseek-ai/dsh-typert-protocol': join(checkout, 'packages/typert/protocol/lib/index.js'),
+}
+const hooks = registerHooks({ resolve(specifier, context, next) {
+  return shared[specifier] ? { url: pathToFileURL(shared[specifier]).href, shortCircuit: true } : next(specifier, context)
+} })
+const { REVIEW_REMOTE, REVIEW_METHODS } = await import('../plugin/review-protocol.js')
+const { Config, apply } = await import('../plugin/index.js')
+const { Context } = await import(pathToFileURL(shared['@deepseek-ai/cordis']).href)
 const { default: Registry } = await import(pathToFileURL(join(checkout, 'packages/typert/registry/lib/index.js')).href)
 const { default: Gateway } = await import(pathToFileURL(join(checkout, 'packages/api/gateway/lib/index.js')).href)
 const home = await mkdtemp('/tmp/ciel-protocol-dsh-')
@@ -69,4 +79,5 @@ try {
   for (const scope of owned.reverse()) await scope.dispose()
   if (beforeHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = beforeHome
   await rm(home, { recursive: true, force: true })
+  hooks.deregister()
 }

@@ -25,18 +25,19 @@ function noteLimited(control, error) {
   if (error?.code === 'CIEL_REVIEW_ACCESS_LIMITED') control.accessLimited = true
 }
 const virtualPath = { type: 'string', description: 'Snapshot path under virtual /project or approved /external-1, /external-2, … roots, OR the original approved absolute path from the host mapping (the same captured file). Relative paths use /project. No parent traversal.' }
+const captureEvidence = { type: 'boolean', description: 'Default true. Use false while searching/reading for context, then true on a focused read of the decisive source lines to save a citable receipt. Archive limits never shorten query content.' }
 const specs = {
   read: {
-    description: 'Read frozen UTF-8 source from the Ciel in-memory review snapshot only, not the live filesystem. Returns a JSON string — call JSON.parse. Fields: file_path, offset (1-based), total_lines, content, truncated, evidence_refs (host receipt ids for the cited spans), evidence_instruction, and review_time (limit_ms, remaining_ms, tool_calls, model_requests, instruction). Paths are virtual /project or approved /external-1 roots. Excluded or out-of-scope files are unavailable.',
-    parameters: { type: 'object', properties: { file_path: virtualPath, offset: { type: 'integer', minimum: 1, description: 'First line, 1-based; default 1.' }, limit: { type: 'integer', minimum: 1, maximum: 2000, description: 'Maximum lines; default snapshot bound (at most 2000).' } }, required: ['file_path'], additionalProperties: false },
+    description: 'Read original UTF-8 text from the frozen Ciel snapshot, never the live filesystem. JSON.parse the result: content is the unmodified source page, offset is 1-based, total_lines is the file length, next_offset gives the next page (null at end). Follow next_offset to read the whole file. evidence_spans contains the separately bounded saved excerpts; evidence_refs cover ONLY those excerpts. evidence_limited means the archive is limited, not that content is shortened. review_time reports the shared remaining_ms, tool_calls and model_requests. Return the parsed result from run_code to show it to the model; console.log has a per-entry byte limit. Excluded files remain unavailable.',
+    parameters: { type: 'object', properties: { file_path: virtualPath, offset: { type: 'integer', minimum: 1, description: 'First line, 1-based; default 1. Follow next_offset for subsequent pages.' }, limit: { type: 'integer', minimum: 1, maximum: 2000, description: 'Maximum lines; default snapshot bound (at most 2000).' }, capture_evidence: captureEvidence }, required: ['file_path'], additionalProperties: false },
   },
   grep: {
     description: 'Search only copied in-memory Ciel review source using a LITERAL substring, NOT a regular expression. Returns a JSON string — call JSON.parse. Fields: matches (each with file_path, line_number, line, evidence_ref), truncated, evidence_refs (host receipt ids), evidence_instruction, and review_time (limit_ms, remaining_ms, tool_calls, model_requests, instruction). Virtual roots: /project and approved /external-1, /external-2, … .',
-    parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Nonempty literal substring (case-sensitive), not regex.' }, path: virtualPath, include: { type: 'string', description: 'Optional relative glob filter; supports *, ?, ** path segments, not regex or braces.' } }, required: ['pattern'], additionalProperties: false },
+    parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Nonempty literal substring (case-sensitive), not regex.' }, path: virtualPath, include: { type: 'string', description: 'Optional relative glob filter; supports *, ?, ** path segments, not regex or braces.' }, capture_evidence: captureEvidence }, required: ['pattern'], additionalProperties: false },
   },
   glob: {
     description: 'Find only copied in-memory Ciel review source paths; never enumerate the live filesystem. Returns a JSON string — call JSON.parse. Fields: paths (virtual), truncated, evidence_refs (host receipt ids), evidence_instruction, and review_time (limit_ms, remaining_ms, tool_calls, model_requests, instruction). Supports *, ? and ** path segments (no braces). Default root /project; approved additional roots /external-1, /external-2, … .',
-    parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Relative glob; * and ? within a segment, ** across path segments; a basename-only pattern matches at any depth.' }, path: virtualPath }, required: ['pattern'], additionalProperties: false },
+    parameters: { type: 'object', properties: { pattern: { type: 'string', description: 'Relative glob; * and ? within a segment, ** across path segments; a basename-only pattern matches at any depth.' }, path: virtualPath, capture_evidence: captureEvidence }, required: ['pattern'], additionalProperties: false },
   },
 }
 function reviewTime(control) {
@@ -60,7 +61,10 @@ function reader(name, control, signal, child) {
         // The synchronous parent guard owns permission, deadline and query
         // accounting. These methods read copied data only.
         const value = control.corpus[name](args)
-        if (value.truncated) control.accessLimited = true
+        // Exploration may narrow a broad search or reread a smaller span.
+        // Final cited receipts, not an earlier recoverable query/archival cap,
+        // determine coverage. Actual withheld/denied data stays explicit.
+        if (value.withheld) control.accessLimited = true
         // Corpus responses are owned JSON; deadline metadata is separate from
         // captured source content and does not spend another model request.
         const rendered = JSON.stringify({ ...value, review_time: reviewTime(control) })

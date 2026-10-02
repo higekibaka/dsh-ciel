@@ -1,3 +1,4 @@
+import { resolvedConfig } from './config-fixture.js'
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
@@ -20,11 +21,11 @@ async function scenario(t, scripts, config) {
 }
 
 test('review defaults expose one deadline while accepting deprecated count settings', () => {
-  assert.equal(Config({}).criticTimeoutSeconds, 180)
-  assert.equal(Config({}).criticExploreBudget, undefined)
-  assert.equal(Config({}).criticMaxRequests, undefined)
-  assert.equal(Config({ criticExploreBudget: 0, criticMaxRequests: 2 }).criticExploreBudget, 0)
-  assert.equal(Config({ criticExploreBudget: 1000, criticMaxRequests: 1000 }).criticMaxRequests, 1000)
+  assert.equal(resolvedConfig({}).criticTimeoutSeconds, 180)
+  assert.equal(resolvedConfig({}).criticExploreBudget, undefined)
+  assert.equal(resolvedConfig({}).criticMaxRequests, undefined)
+  assert.equal(resolvedConfig({ criticExploreBudget: 0, criticMaxRequests: 2 }).criticExploreBudget, 0)
+  assert.equal(resolvedConfig({ criticExploreBudget: 1000, criticMaxRequests: 1000 }).criticMaxRequests, 1000)
 })
 
 for (const text of ['I cannot review this.', '', '## suspects\n1. suspect: bad count', '## suspects\n- suspect: ']) {
@@ -90,6 +91,39 @@ test('phase one excludes author evidence; phase two gets it and all handles drai
   assert.equal(h.disposals.length, 2)
 })
 
+test('historical Host metadata can settle a claim without reading an unrelated truncated corpus', async t => {
+  const h = await scenario(t, [SUSPECT, (_api, spec) => {
+    const ref = /Host historical fact receipt (e\d+) \(model-route, available\)/.exec(spec.prompt[0].text)?.[1]
+    assert.ok(ref)
+    assert.doesNotMatch(spec.prompt[0].text, /PRIVATE_CONFIG_SENTINEL|future-model/)
+    return verdict({ evidence: ref })
+  }])
+  const events = h.parent.session.snapshotEvents()
+  events[4].data.message.source = { kind: 'model', provider: 'local', model: 'historical-model', replayState: 'PRIVATE_CONFIG_SENTINEL' }
+  events.unshift(
+    { type: 'sandbox/mode', data: { mode: 'read-only' } },
+    { type: 'approval/policy', data: { policy: 'ask' } },
+    { type: 'request/header', data: { header: { config: { provider: 'local', model: 'historical-model', apiKey: 'PRIVATE_CONFIG_SENTINEL' }, tools: [{ name: 'read' }] } } },
+  )
+  events.forEach((event, index) => { event.seq = index })
+  events.push({ seq: events.length, type: 'request/header', data: { header: { config: { provider: 'local', model: 'future-model' } } } })
+  const originalCorpus = h.service.coordinator.createCorpus
+  h.service.coordinator.createCorpus = async options => {
+    const corpus = await originalCorpus(options)
+    return { ...corpus, publicInfo: () => ({ ...corpus.publicInfo(), truncated: true }) }
+  }
+  const { review } = await h.start()
+  assert.equal(review.status, 'sound')
+  assert.equal(review.coverage, 'complete')
+  assert.equal(review.privacy.dataLimited, true)
+  assert.match(review.coverageNote, /仅针对提名疑点/)
+  assert.equal(review.investigations[0].toolCalls, 0)
+  assert.ok(!h.requests[0].prompt[0].text.includes('Host historical fact receipt'))
+  const record = await h.service.readEvidence({ sessionId: h.sid, reviewId: review.reviewId, evidenceId: review.evidenceIds[0] })
+  assert.equal(record.evidence.kind, 'host-fact')
+  assert.match(record.evidence.content, /historical-model/)
+})
+
 test('unattributed request stays partial despite otherwise verified evidence and persists its recovery note', async (t) => {
   const h = await scenario(t, [SUSPECT, ({ tool }) => verdict({ evidence: tool().evidence_refs[0] })])
   delete h.parent.session.snapshotEvents()[1].data.source
@@ -109,14 +143,16 @@ test('all nominated suspects reach verification regardless of legacy count setti
   const h = await scenario(t, [two, ({ tool }) => {
     const ref = tool().evidence_refs[0]
     return verdict({ evidence: ref }).replace('fixed fixture result', 'BOTH files independently verified')
-  }], { criticExploreBudget: 1 })
+  }, '## dossier\n- result: s2 | outcome: unchecked | evidence: none | reason: Missing second source in snapshot\n\n## verdict: pass\nsummary: unresolved'], { criticExploreBudget: 1 })
   const { review } = await h.start()
   assert.deepEqual(review.suspects, { total: 2, triaged: 2, skipped: 0 })
-  assert.match(h.requests[1].prompt[0].text, /second count/)
+  assert.equal(h.requests.length, 3, 'both suspects receive their own investigator')
+  assert.doesNotMatch(h.requests[1].prompt[0].text, /second count/)
+  assert.match(h.requests[2].prompt[0].text, /second count/)
   assert.equal(review.stats.checked, 2)
   assert.equal(review.stats.unchecked, 1)
   assert.equal(review.summary.includes('BOTH'), false)
-  assert.match(review.summary, /1 项未查/)
+  assert.match(review.summary, /1 项未核实/)
   assert.equal(review.status, 'incomplete')
   assert.equal(review.sound, false)
 })
@@ -514,4 +550,53 @@ test('the shared deadline denies nested PTC source calls after expiry', async (t
   assert.equal(result.review.diagnostics.toolCalls, 3)
   assert.equal(h.service.coordinator.children.size, 0)
   assert.equal(h.service.coordinator.activeOperations.size, 0)
+})
+
+test('capture prioritizes selected human request and draft paths without using author tool text as authority', async t => {
+  const h = await scenario(t, [SUSPECT, ({ tool }) => verdict({ evidence: tool().evidence_refs[0] })])
+  const original = h.service.coordinator.createCorpus
+  let focus
+  h.service.coordinator.createCorpus = async options => {
+    focus = options.focusText
+    return original(options)
+  }
+  const result = await h.start()
+  assert.equal(result.ok, true)
+  assert.match(focus, /The file has 42 lines\./)
+  assert.match(focus, /Check the file count\./)
+  assert.doesNotMatch(focus, /AUTHOR_EVIDENCE_SENTINEL/)
+  assert.ok(focus.length <= 32768)
+})
+
+test('recorded browser observation survives selection, archive, grounding and persisted evidence read', async t => {
+  const h = await scenario(t, [SUSPECT, (_api, spec) => {
+    const ref = /Host evidence reference (a\d+) is a available historical mcp__playwright__browser_console_messages output/.exec(spec.prompt[0].text)?.[1]
+    assert.ok(ref, 'investigator must receive an actually archived browser receipt')
+    assert.match(spec.prompt[0].text, /Recorded browser errors: 0/)
+    return verdict({ evidence: ref })
+  }])
+  const events = h.parent.session.snapshotEvents()
+  events[2].data.name = 'mcp__playwright__browser_console_messages'
+  events[3].data.message.content[0].content[0].text = 'Recorded browser errors: 0'
+  const result = await h.start()
+  assert.equal(result.ok, true)
+  assert.equal(result.review.coverage, 'complete')
+  assert.equal(result.review.stats.excluded, 1)
+  const record = await h.service.readEvidence({
+    sessionId: h.sid, reviewId: result.review.reviewId, evidenceId: result.review.evidenceIds[0],
+  })
+  assert.equal(record.evidence.tool, 'mcp__playwright__browser_console_messages')
+  assert.equal(record.evidence.content, 'Recorded browser errors: 0')
+  assert.equal(record.evidence.truncated, false)
+})
+
+test('a genuinely clipped cited log still limits coverage even when the model clears its suspect', async t => {
+  const h = await scenario(t, [SUSPECT, () => verdict({ evidence: 'a1' })])
+  h.parent.session.snapshotEvents()[3].data.message.content[0].content[0].text = 'Recorded browser logs\n[output truncated]'
+  const { review } = await h.start()
+  assert.equal(review.stats.excluded, 1)
+  assert.equal(review.stats.unchecked, 0)
+  assert.equal(review.coverage, 'partial')
+  assert.equal(review.sound, false)
+  assert.match(review.coverageNote, /部分引用片段/)
 })

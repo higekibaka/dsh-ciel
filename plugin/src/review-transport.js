@@ -1,13 +1,18 @@
 import { assertReviewResultIdentity } from '../review-protocol.js'
 import { reviewErrorDetails, classifyReviewFailure } from '../review-errors.js'
 
+// Cordis service lookups return fresh caller-bound proxies. Compare only their
+// underlying identity; invoke $mount on the proxy so effect ownership stays
+// with the client plugin. Plain services/test doubles retain normal identity.
+const remoteIdentity = remote => remote?.[Symbol.for('cordis.original')] ?? remote
+
 /** Own one Remote mount, deduplicate readiness, and release late mounts on stop. */
 export function createReviewTransport({ getRemote, getApi, descriptor }) {
   let active = true, mounted = false, pending, disposeMount, mountOwner
   async function ready() {
     if (!active) return { ok: false, ...reviewErrorDetails('CIEL_REMOTE_DISPOSED') }
     if (pending) return pending
-    if (mounted && getRemote() === mountOwner) return null
+    if (mounted && remoteIdentity(getRemote()) === mountOwner) return null
     pending = (async () => {
       try {
         if (mounted) {
@@ -25,7 +30,7 @@ export function createReviewTransport({ getRemote, getApi, descriptor }) {
           return { ok: false, ...reviewErrorDetails('CIEL_REMOTE_DISPOSED') }
         }
         disposeMount = dispose
-        mountOwner = remote
+        mountOwner = remoteIdentity(remote)
         mounted = true
         return null
       } catch (error) {

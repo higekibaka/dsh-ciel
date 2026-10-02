@@ -1,6 +1,57 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createReviewTransport } from '../src/review-transport.js'
+import { Context, getTraceable, symbols } from '@deepseek-ai/cordis'
+
+// Real Cordis returns a fresh caller-bound facade for every service lookup.
+// Unmounting a Remote aborts its outstanding RPCs; a progress query must not
+// mistake facade churn for replacement and cancel a pending review.start.
+test('Cordis facade churn does not remount or abort a pending start during progress reads', async (t) => {
+  const ctx = new Context()
+  let mounts = 0, disposals = 0, complete, current, startSignal, markStarted
+  const started = new Promise(resolve => { markStarted = resolve })
+  const remote = {
+    [symbols.tracker]: { property: 'ctx' },
+    ctx: null,
+    async $mount() {
+      assert.equal(this.ctx, ctx, 'mount keeps the caller-bound facade')
+      mounts++
+      current = new AbortController()
+      const controller = current
+      return () => { disposals++; controller.abort() }
+    },
+  }
+  const getRemote = () => getTraceable(ctx, remote)
+  assert.notEqual(getRemote(), getRemote(), 'regression requires distinct facades')
+  const transport = createReviewTransport({
+    getRemote,
+    getApi: () => ({
+      start: () => new Promise(resolve => {
+        complete = () => resolve({ ok: true, value: { ok: true } })
+        startSignal = current.signal
+        startSignal.addEventListener('abort', () => resolve({ ok: false, error: {
+          code: 'gateway/cancelled', message: 'client api: Remote invocation "advisorReview/start" was aborted',
+        } }), { once: true })
+        markStarted()
+      }),
+      progress: async () => ({ ok: true, value: { inFlight: true } }),
+      list: async () => ({ ok: true, value: { reviews: [] } }),
+    }),
+  })
+  t.after(() => transport.dispose())
+  await transport.ready()
+  const start = transport.call('start', {})
+  await started
+  await Promise.all([transport.call('progress', {}), transport.call('list', {})])
+  await transport.call('progress', {})
+  const observed = { mounts, disposals, aborted: startSignal.aborted }
+  complete()
+  const result = await start
+  assert.deepEqual(observed, { mounts: 1, disposals: 0, aborted: false })
+  assert.deepEqual(result, { ok: true })
+  await transport.dispose()
+  assert.equal(disposals, 1)
+})
 
 test('a failed mount can be retried, concurrent calls share readiness, successful mount is not repeated', async () => {
   let mounts = 0, disposals = 0

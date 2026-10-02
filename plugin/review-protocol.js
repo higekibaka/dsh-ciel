@@ -16,11 +16,78 @@ const cursor = value => value === null || string(value, 4096)
 const recordOf = (value, check) => object(value) && Object.entries(value).every(([key, item]) => key !== '__proto__' && key !== 'constructor' && key !== 'prototype' && check(item, key))
 const route = value => object(value) && string(value.provider, 256) && string(value.model, 256)
 const usage = value => object(value) && optional(value.requested, route) && array(value.used, route, 32)
+const probability = value => Number.isFinite(value) && value >= 0 && value <= 1
+const relation = enumOf('supports', 'contradicts', 'insufficient')
+const jevReason = enumOf('disabled', 'no-eligible-claims', 'invalid-config', 'missing-key', 'time-unavailable', 'cancelled', 'timeout', 'http-error', 'invalid-response', 'transport-error', 'no-exact-claim', 'sensitive-input', 'no-source-evidence', 'limited-evidence', 'input-too-large')
+const jevCheck = value => object(value) && /^s[1-9][0-9]*$/.test(value.suspectId)
+  && enumOf('cleared', 'defect', 'unchecked')(value.criticOutcome)
+  && array(value.evidenceRefs, ref => typeof ref === 'string' && /^[ea][1-9][0-9]*$/.test(ref), 128)
+  && optional(value.claim, text => typeof text === 'string' && text.length > 0 && text.length <= 1000)
+  && (value.status === 'skipped' ? jevReason(value.reason) : value.status === 'completed'
+    && typeof value.claim === 'string' && relation(value.relation) && probability(value.confidence)
+    && object(value.probabilities) && Object.keys(value.probabilities).length === 3
+    && ['supports', 'contradicts', 'insufficient'].every(key => probability(value.probabilities[key]))
+    && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 0.001
+    && (value.disagreement === null || typeof value.disagreement === 'boolean'))
+const jev = value => object(value) && value.mode === 'shadow' && string(value.requestedModel, 128)
+  && enumOf('completed', 'partial', 'skipped', 'error', 'cancelled')(value.status)
+  && integer(value.requestCount, 1) && integer(value.elapsedMs) && array(value.checks, jevCheck, 8)
+  && optional(value.omittedChecks, integer)
+  && optional(value.reason, jevReason) && optional(value.model, model => string(model, 128))
+  && optional(value.usage, tokens => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens))
+const advisorJevCheck = value => object(value) && /^a[1-6]$/.test(value.id)
+  && (value.status === 'skipped' ? jevReason(value.reason) : value.status === 'completed'
+    && relation(value.relation) && probability(value.confidence) && object(value.probabilities)
+    && Object.keys(value.probabilities).length === 3
+    && ['supports', 'contradicts', 'insufficient'].every(key => probability(value.probabilities[key]))
+    && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 0.001)
+export const isAdvisorJev = value => object(value) && value.mode === 'shadow' && value.scope === 'provided-context'
+  && string(value.requestedModel, 128) && enumOf('completed', 'partial', 'skipped', 'error', 'cancelled')(value.status)
+  && integer(value.requestCount, 1) && integer(value.elapsedMs) && integer(value.omittedChecks)
+  && array(value.checks, advisorJevCheck, 6) && new Set(value.checks.map(row => row.id)).size === value.checks.length
+  && optional(value.reason, jevReason) && optional(value.model, model => string(model, 128))
+  && optional(value.usage, tokens => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens))
+
+// DSH's tool schema subset excludes numeric bounds, patterns and maxItems.
+// Transport parsing and isAdvisorJev enforce those constraints at the boundary.
+const jevCountSchema = { type: 'integer' }
+const jevProbabilitySchema = { type: 'number' }
+export const ADVISOR_JEV_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['mode', 'scope', 'requestedModel', 'status', 'requestCount', 'elapsedMs', 'omittedChecks', 'checks'],
+  properties: {
+    mode: { type: 'string', enum: ['shadow'] }, scope: { type: 'string', enum: ['provided-context'] },
+    requestedModel: { type: 'string' }, model: { type: 'string' }, reason: { type: 'string' },
+    status: { type: 'string', enum: ['completed', 'partial', 'skipped', 'error', 'cancelled'] },
+    requestCount: { ...jevCountSchema, enum: [0, 1] }, elapsedMs: jevCountSchema, omittedChecks: jevCountSchema,
+    usage: { type: 'object', additionalProperties: false, required: ['inputTokens', 'outputTokens'],
+      properties: { inputTokens: jevCountSchema, outputTokens: jevCountSchema } },
+    checks: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['id', 'status'],
+      properties: {
+        id: { type: 'string', enum: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'] }, status: { type: 'string', enum: ['completed', 'skipped'] },
+        reason: { type: 'string' }, relation: { type: 'string', enum: ['supports', 'contradicts', 'insufficient'] },
+        confidence: jevProbabilitySchema,
+        probabilities: { type: 'object', additionalProperties: false, required: ['supports', 'contradicts', 'insufficient'],
+          properties: { supports: jevProbabilitySchema, contradicts: jevProbabilitySchema, insufficient: jevProbabilitySchema } },
+      },
+    } },
+  },
+}
 const annotation = value => object(value) && enumOf('blocker', 'nit')(value.severity)
   && ['title', 'anchor', 'comment', 'block', 'evidence'].every(key => optional(value[key], item => typeof item === 'string'))
+const investigation = value => object(value) && typeof value.id === 'string' && /^s[1-8]$/.test(value.id)
+  && ['suspect', 'reason'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 1200)
+  && optional(value.block, v => string(v, 64))
+  && enumOf('settled', 'unresolved', 'failed', 'not-started')(value.status)
+  && enumOf('cleared', 'defect', 'unchecked')(value.outcome)
+  && (value.status === 'settled' ? value.outcome !== 'unchecked' : value.outcome === 'unchecked')
+  && ['toolCalls', 'modelRequests', 'elapsedMs'].every(key => integer(value[key]))
+  && array(value.evidenceRefs, ref => typeof ref === 'string' && /^[ea][1-9][0-9]*$/.test(ref), 128)
 const review = value => object(value) && session(value.sessionId) && string(value.reviewId) && string(value.messageId)
   && string(value.status, 64) && Number.isFinite(value.createdAt) && array(value.annotations, annotation, 64)
-  && optional(value.modelUsage, usage)
+  && optional(value.modelUsage, usage) && optional(value.jev, jev)
+  && optional(value.investigations, rows => array(rows, investigation, 8) && new Set(rows.map(row => row.id)).size === rows.length)
 const triage = value => recordOf(value, row => object(row) && recordOf(row.states, (state, key) => /^(0|[1-9][0-9]*)$/.test(key) && index(Number(key)) && enumOf('accept', 'dismiss')(state)) && optional(row.filter, enumOf('all', 'blocker')))
 const shapes = {
   list: { sessionId: session, cursor: value => optional(value, cursor), limit: value => optional(value, v => integer(v, 100) && v > 0) },
@@ -69,7 +136,7 @@ export function parseReviewResult(method, value) {
     case 'callModelUsage': valid = value.modelUsage === null || usage(value.modelUsage); break
     case 'readReview': valid = value.ok === true && review(value.review); break
     case 'readEvidence': valid = value.ok === true && object(value.evidence) && typeof value.evidence.content === 'string' && string(value.evidence.id) && fingerprint(value.evidence.contentSha256); break
-    case 'readAdvice': valid = value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === 'string'; break
+    case 'readAdvice': valid = value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === 'string' && optional(value.advice.jev, isAdvisorJev); break
     case 'prepareFeedback': valid = value.ok === true && session(value.sessionId) && string(value.reviewId) && string(value.messageId) && typeof value.text === 'string' && integer(value.count, 8) && value.count > 0; break
     case 'inboxList': valid = value.ok === true && session(value.sessionId) && array(value.reviews, row => review(row) && row.sessionId === value.sessionId && fingerprint(row.reviewFingerprint) && integer(row.revision) && row.annotations.every((a, i) => a.index === i && intent(a.intent)), 25) && cursor(value.nextCursor) && typeof value.limited === 'boolean'; break
     case 'inboxSetIntent': valid = value.ok === true && session(value.sessionId) && string(value.reviewId) && fingerprint(value.reviewFingerprint) && integer(value.revision) && recordOf(value.intents, (v, k) => /^(0|[1-9][0-9]*)$/.test(k) && integer(Number(k), 63) && intent(v)); break

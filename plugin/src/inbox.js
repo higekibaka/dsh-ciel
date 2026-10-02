@@ -265,7 +265,7 @@ export function reviewClassification(review) {
 /** The status chip copy for one review. */
 export function statusLabel(status) {
   switch (status) {
-    case 'sound': return '整体成立'
+    case 'sound': return '已核实 · 无阻断'
     case 'completed': return '已完成'
     case 'error':
     case 'failed': return '失败'
@@ -292,7 +292,7 @@ export function coverageLabel(coverage) {
 /** The verdict chip copy for one review. */
 export function verdictLabel(verdict) {
   switch (verdict) {
-    case 'pass': return '整体成立'
+    case 'pass': return '无已确认阻断'
     case 'changes': return '建议修改'
     default: return undefined
   }
