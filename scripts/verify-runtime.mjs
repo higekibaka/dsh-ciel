@@ -857,8 +857,13 @@ try {
       assert.ok(id, 'every native child receives exactly one assigned suspect')
       assert.equal((assignment.match(/\ns[12]\. \[b1\]/g) || []).length, 1)
       const refs = []
-      for (const message of options.messages || []) if (message.role === 'tool') {
-        for (const block of message.content || []) if (block.type === 'text') collectToolEvidence(block.text, refs, [])
+      for (const message of options.messages || []) for (const block of message.content || []) {
+        if (message.role === 'tool' && block.type === 'text') collectToolEvidence(block.text, refs, [])
+        // DSH 0.1.6 nests tool results inside content blocks rather than
+        // dedicated tool-role messages. Keep evidence local to THIS child.
+        if (block.type === 'tool-result') for (const part of block.content || []) {
+          if (part.type === 'text') collectToolEvidence(part.text, refs, [])
+        }
       }
       return refs.length
         ? textResponse(pass.replace('result: s1', 'result: ' + id).replace('%REF%', refs.at(-1)))
