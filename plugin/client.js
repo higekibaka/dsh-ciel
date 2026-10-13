@@ -5959,8 +5959,17 @@
               store.popover = null;
               emit();
             };
+            const handleKeydown = (event) => {
+              if (event.key === "Escape") {
+                close();
+              }
+            };
             document.addEventListener("click", close);
-            return () => document.removeEventListener("click", close);
+            document.addEventListener("keydown", handleKeydown);
+            return () => {
+              document.removeEventListener("click", close);
+              document.removeEventListener("keydown", handleKeydown);
+            };
           }, [pop]);
           if (!pop || !pop.annotation) return null;
           const a = pop.annotation;
