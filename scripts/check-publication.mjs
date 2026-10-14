@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +13,7 @@ const files = pack
   : execFileSync('git', ['ls-files', '-z', ...(args.includes('--include-untracked') ? ['--cached', '--others', '--exclude-standard'] : [])], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean)
 
 // These two curated summaries contain no raw transcripts.
-const summaries = new Set(['docs/ab/ab-comparison-0.13.0.md', 'docs/ab/stability-verification.md'])
+const summaries = new Set()
 const forbiddenPath = /(?:^|\/)(?:\.npmrc|\.pypirc|\.env(?:\..*)?|id_rsa|id_ed25519|credentials(?:\.[^/]*)?|secrets(?:\.[^/]*)?|cookies[^/]*|storage-state[^/]*|storageState[^/]*)$|\.(?:pem|key|p12|pfx|har|jsonl|tgz)$/i
 const privateDirectory = /^(?:\.artifacts|\.local|\.auth|\.dsh|prototypes|docs\/images|test-results|playwright-report)\//
 const media = /\.(?:png|jpe?g|gif|webp|avif|mp4|webm)$/i
@@ -25,26 +25,22 @@ const patterns = [
   ['personal-path', /(?:\/home\/|\/Users\/|[A-Za-z]:\\Users\\|\/mnt\/[a-z]\/Users\/)(?!example(?:[\/\\]|\b)|user(?:[\/\\]|\b)|tester(?:[\/\\]|\b))[^\s"'<>/\\)]+/g],
 ]
 
-function isFakeFixture(file, kind, match, text) {
-  if (file === 'plugin/test/review-facts.test.js' && kind === 'auth-value') return match[1] === 'PRIVATE_KEY_NOT_TO_PROJECT'
+function isFakeFixture(file, kind, match) {
   if (file === 'scripts/verify-profile-settings.mjs' && kind === 'auth-value') return match[1] === 'settings-fixture-secret'
-  if (file === 'plugin/test/review-runtime.test.js' && kind === 'auth-value') return match[1] === 'PRIVATE_CONFIG_SENTINEL'
-  if (file === 'plugin/test/review-evidence.test.js' && kind === 'auth-value') return match[1] === 'FAKE_SECRET_TEST_VALUE_123456'
-  if (file === 'plugin/test/review-corpus.test.js' && kind === 'personal-path') return match[0] === '/home/' + 'fake-user'
-  if (file === 'plugin/test/review-corpus.test.js' && kind === 'auth-value') return match[1] === 'FAKE_LONG_BEARER_TOKEN'
-  if (file === 'plugin/test/review-privacy.test.js' && kind === 'auth-value') return match[1] === 'FAKE_SECRET_TEST_VALUE_NOT_REAL'
-  if (file !== 'plugin/test/review-evidence.test.js') return false
-  if (kind === 'credential') return match[0] === 'sk-proj-' + 'abcdefghijklmnop'
-  return kind === 'private-key' && text.slice(match.index + match[0].length).startsWith('\\nFAKE\\n')
+  if (file === 'plugin/test/sensitive-text.test.js' && kind === 'auth-value') return match[1] === 'FAKE_LONG_BEARER_TOKEN'
+  return false
 }
 
 const findings = []
+let scanned = 0
 function flag(file, kind, text = '', index = 0) {
   // Never print a matching value or the source line: it could contain a secret.
   findings.push({ file, kind, line: text.slice(0, index).split('\n').length })
 }
 
 for (const file of files) {
+  try { statSync(resolve(root, file)) } catch (error) { if (error.code === 'ENOENT') continue; throw error }
+  scanned++ // A tracked deletion is not publication content.
   const exampleEnv = /(?:^|\/)\.env\.(?:example|sample)$/.test(file)
   if ((!exampleEnv && forbiddenPath.test(file)) || privateDirectory.test(file) || media.test(file)
     || (file.startsWith('docs/ab/') && !summaries.has(file))
@@ -65,5 +61,5 @@ if (findings.length) {
   for (const finding of findings) console.error(`${finding.file}:${finding.line}: ${finding.kind}`)
   process.exitCode = 1
 } else {
-  console.log(`Publication check passed: ${files.length} ${pack ? 'package' : args.includes('--include-untracked') ? 'candidate' : 'tracked'} files; no matching private artifacts or credential patterns.`)
+  console.log(`Publication check passed: ${scanned} ${pack ? 'package' : args.includes('--include-untracked') ? 'candidate' : 'tracked'} files; no matching private artifacts or credential patterns.`)
 }

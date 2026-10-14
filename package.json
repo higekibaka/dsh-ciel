@@ -10,7 +10,6 @@
     "test": "node --test plugin/test/*.test.js"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-util-workspace-path": "0.1.5-alpha.2",
     "esbuild": "0.28.1"
   }
 }

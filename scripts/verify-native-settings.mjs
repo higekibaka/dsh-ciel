@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real DSH SettingsRoot + native Switch/Tag + real Ciel client, in JSDOM.
+// Real DSH SettingsRoot + real advisor-only Ciel client, in JSDOM.
 // Only settings/RPC data are fixtures. CSS Modules are compiled from the real
 // stylesheets; no native component implementation or CSS is copied here.
 // Run from DSH checkout:
@@ -9,14 +9,14 @@ import { createRequire, registerHooks } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { loadClientFactory } from '../plugin/test/review-ui.harness.js'
+import { loadClientFactory } from '../plugin/test/advisor-ui.harness.js'
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT is required')
 const rootRequire = createRequire(join(checkout, 'package.json'))
 const webRequire = createRequire(join(checkout, 'apps/web/package.json'))
 const { JSDOM } = rootRequire('jsdom')
 const { transform } = rootRequire('lightningcss')
-const dom = new JSDOM('<!doctype html><html><head></head><body><main id="settings-fixture"></main><main id="review-fixture"></main></body></html>', { pretendToBeVisual: true })
+const dom = new JSDOM('<!doctype html><html><head></head><body><main id="settings-fixture"></main></body></html>', { pretendToBeVisual: true })
 const doc = dom.window.document
 const saved = new Map()
 for (const key of ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'DocumentFragment', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'DOMParser', 'Text', 'Event', 'KeyboardEvent', 'InputEvent', 'NodeFilter', 'IS_REACT_ACT_ENVIRONMENT']) {
@@ -50,15 +50,10 @@ try {
     load('packages/client/ui-settings-general/src/client/SettingsRoot.tsx'),
   ])
   const plugin = loadClientFactory(doc).factory(React, { 'react-dom': ReactDOM, '@deepseek-ai/dsh-client-ui-primitives': { Switch, Tag } })
-  let value = { ...plugin.__test.defaults, criticExploreBudget: 20, criticMaxRequests: 32 }, user = {}, revision = 0
+  let value = { ...plugin.__test.defaults }, user = {}, revision = 0
   const scopeListeners = new Set(), writes = [], registrations = []
   const remote = { $mount: async () => {}, $on: () => () => {} }
-  const rpc = {
-    list: async () => ({ ok: true, value: { reviews: [], sentKeys: [], triage: {} } }),
-    progress: async () => ({ ok: true, value: { inFlight: false } }),
-    start: async () => { modelCalls++; throw new Error('Review must not start') },
-    feedback: async () => { modelCalls++; throw new Error('Automatic feedback must not run') },
-  }
+  const rpc = { readAdvice: async () => ({ ok: false, error: 'fixture missing' }), callModelUsage: async () => ({ modelUsage: null }) }
   const ctx = {
     configForms: { describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }] } }) }), get(entryId) { assert.equal(entryId, 'advisor'); return {
       getSnapshot: () => ({ status: 'ready', mode: 'host', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision }),
@@ -78,7 +73,7 @@ try {
     } } },
     get(name) {
       if (name === 'remote') return remote
-      if (name === 'remote.advisorReview') return rpc
+      if (name === 'remote.cielAdvisor') return rpc
       if (name === 'remote.session') return { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) }
     },
     on() { return () => {} },
@@ -121,9 +116,6 @@ try {
   await click(nav('夏尔 Ciel'))
   const sw = () => doc.querySelector('button[role="switch"][aria-label="启用 Ciel"]')
   assert.equal(sw().getAttribute('aria-checked'), 'true')
-  assert.equal(dom.window.getComputedStyle(sw()).width, '36px', 'real native Switch stylesheet is active')
-  const jevSwitch = () => doc.querySelector('button[role="switch"][aria-label="启用 Jev 证据检查"]')
-  assert.equal(jevSwitch().getAttribute('aria-checked'), 'false', 'Jev is opt-in in the native settings page')
   const advisorJevSwitch = () => doc.querySelector('button[role="switch"][aria-label="启用顾问建议检查（Jev）"]')
   assert.equal(advisorJevSwitch().getAttribute('aria-checked'), 'false')
   await click(sw())
@@ -138,34 +130,19 @@ try {
   assert.equal(sw().getAttribute('aria-checked'), 'false', 'draft survives section remount')
   await click(button('放弃'))
   assert.equal(sw().getAttribute('aria-checked'), 'true')
-  await click(jevSwitch())
-  assert.equal(value.jevEnabled, false, 'Jev remains off until Save')
+  await click(advisorJevSwitch())
+  assert.equal(value.advisorJevEnabled, false, 'Jev stays off until Save')
   await click(sw())
   await click(button('保存'))
-  assert.equal(writes.length, 1)
   assert.equal(value.enabled, false)
-  assert.equal(value.jevEnabled, true)
-  assert.equal(value.advisorJevEnabled, false, 'review toggle leaves advisor Jev off')
-  assert.equal(value.criticExploreBudget, 20)
-  assert.equal(value.criticMaxRequests, 32, 'retired user settings are preserved but never edited')
-  assert.equal(doc.querySelector('[aria-label="每次评审最多几次工具查询"]'), null)
-  assert.equal(doc.querySelector('[aria-label="每次评审最多请求模型几次"]'), null)
-  assert.match(doc.body.textContent, /只按总时间控制评审/)
-  assert.match(doc.body.textContent, /当前已停用/)
-  assert.equal(button('保存').disabled, true)
-  await click(jevSwitch())
-  await click(button('保存'))
-  assert.equal(value.jevEnabled, false, 'native Switch can disconnect Jev again')
-  assert.equal(writes.length, 2)
-  await click(advisorJevSwitch())
-  assert.equal(value.advisorJevEnabled, false, 'advisor Jev is staged until Save')
-  await click(button('保存'))
   assert.equal(value.advisorJevEnabled, true)
-  assert.equal(value.jevEnabled, false)
+  assert.equal(writes.length, 1)
+  assert.equal(doc.querySelector('[aria-label="启用 Jev 证据检查"]'), null)
+  assert.equal(doc.querySelector('[aria-label="允许评审时查文件"]'), null)
+  assert.match(doc.body.textContent, /当前已停用/)
   await click(advisorJevSwitch())
   await click(button('保存'))
   assert.equal(value.advisorJevEnabled, false)
-  assert.equal(writes.length, 4)
   const keyInput = () => doc.querySelector('input[aria-label="Jev API Key"]')
   assert.equal(keyInput().type, 'password')
   assert.equal(keyInput().disabled, false, 'secret metadata comes from the native describe mirror')
@@ -190,32 +167,10 @@ try {
   await click([...doc.querySelectorAll('button')].find(n => n.textContent === '关闭设置'))
   assert.equal(scopeListeners.size, 0)
 
-  const rt = plugin.__test.runtime
-  const reviewRoot = createRoot(doc.getElementById('review-fixture')); roots.push(reviewRoot)
-  const baseEntry = { reviewId: 'native-review', messageId: 'native-message', status: 'incomplete', verdict: 'pass', coverage: 'partial', createdAt: 1, annotations: [], summary: '4 项疑点，4 项排除', stats: { checked: 4, confirmed: 0, excluded: 4, unchecked: 0 }, privacy: { mode: 'restricted-snapshot' }, coverageNote: '资料读取范围受限' }
-  baseEntry.sessionId = 'fixture'
-  rt.absorb(baseEntry)
-  await act(async () => reviewRoot.render(h('div', null, h('p', null, '这是一份超过两百字的隔离测试草稿。'.repeat(20)), h(rt.ReviewButton, { sessionId: 'fixture', messageId: 'native-message' }))))
-  const card = () => doc.querySelector('.dsr-tail')
-  assert.ok(card())
-  assert.equal(card().querySelector('[data-tone="warning"]').textContent, '◇ 已核查 · 证据受限')
-  assert.ok(!card().querySelector('[data-tone="success"]'), 'incomplete zero annotations must not look verified')
-  assert.equal(card().querySelectorAll('.ciel-native-tag-mount').length, card().querySelectorAll('[data-tone]').length)
-  await click(card().querySelector('.dsr-vtoggle'))
-  assert.equal(card().querySelector('.dsr-details').hidden, true)
-  for (let i = 2; i <= 6; i++) {
-    await act(async () => { rt.absorb({ ...baseEntry, createdAt: i }); rt.emit() })
-    assert.equal(doc.querySelectorAll('.dsr-tail').length, 1)
-    assert.equal(card().querySelectorAll('[data-tone]').length, 3, 'portal tags do not accumulate on repaint')
-    assert.equal(card().querySelector('.dsr-details').hidden, true)
-  }
-  await act(async () => reviewRoot.render(null))
-  assert.equal(doc.querySelectorAll('.dsr-tail').length, 0)
-  assert.equal(doc.querySelectorAll('.ciel-native-tag-mount').length, 0)
   assert.equal(network, 0)
   assert.equal(modelCalls, 0)
   assert.deepEqual(warnings, [])
-  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), nativeSwitchCss: true, jevToggle: true, draftSurvivesNavigation: true, atomicSave: true, nativeTags: true, collapseSurvivesRepaint: true, portalCleanup: true, network, modelCalls }))
+  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), advisorOnly: true, draftSurvivesNavigation: true, atomicSave: true, secretRedaction: true, network, modelCalls }))
 } finally {
   if (act) await act(async () => { for (const root of roots) root.unmount(); for (const off of cleanups.reverse()) off() })
   globalThis.fetch = originalFetch

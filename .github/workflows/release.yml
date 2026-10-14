@@ -57,7 +57,8 @@ jobs:
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
-          node --check plugin/ptc-runtime.js
+          node --check plugin/advisor-protocol.js
+          node --check plugin/advisor-service.js
       - name: Unit tests
         run: node --test
         working-directory: plugin
@@ -69,6 +70,8 @@ jobs:
             echo "tag v$TAG does not match plugin/package.json version $PKG"
             exit 1
           fi
+      - name: Validate release notes before publishing
+        run: node scripts/release-notes.mjs > "$RUNNER_TEMP/ciel-release-notes.md"
       - name: Publish to npm with provenance
         run: npm publish --provenance --access public
         working-directory: plugin
@@ -76,7 +79,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/release-notes.mjs > "$RUNNER_TEMP/ciel-release-notes.md"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "Ciel ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/ciel-release-notes.md"
           else

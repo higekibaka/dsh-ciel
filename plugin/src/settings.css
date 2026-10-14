@@ -25,13 +25,29 @@
 [data-ciel-setting-kind=number] [data-ciel-setting-help]{grid-column:1/-1}
 [data-ciel-setting=enabled] [data-ciel-setting-control]{flex-wrap:wrap;justify-content:flex-end}
 [data-ciel-settings-notice]{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);padding:8px 10px;border-radius:6px;margin:0}
-[data-ciel-settings-footer]{position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-1);border-top:1px solid var(--dsw-alias-border-l2);padding:12px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-[data-ciel-settings-footer-status]{font-size:12px;color:var(--dsw-alias-label-secondary);margin-right:auto}
-[data-ciel-settings-footer-error]{width:100%;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.6;margin:0}
-[data-ciel-draft-confirm] p{font-size:14px;line-height:1.7}
-[data-ciel-draft-confirm] pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;background:var(--dsw-alias-bg-layer-2);padding:12px;border-radius:8px;font:inherit;font-size:13px}
-[data-ciel-draft-confirm-actions]{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}
-.ciel-draft-modal{max-width:520px!important}
+/* SettingsRoot owns 24px side/bottom scroll padding. Paint its entire bottom
+   gutter too: sticky content alone leaves a strip of scrolling text below it.
+   The opaque skirt is pointer-active, so covered controls cannot be clicked. */
+[data-ciel-settings-footer]{
+  --ciel-settings-gutter:24px;
+  position:sticky;bottom:0;z-index:2;isolation:isolate;
+  margin:4px calc(-1 * var(--ciel-settings-gutter)) 0;
+  padding:14px var(--ciel-settings-gutter) 12px;
+  background:var(--dsw-alias-bg-layer-2);
+  border-top:1px solid var(--dsw-alias-border-l1);
+  box-shadow:0 -6px 14px -12px var(--dsw-alias-border-l2);
+  display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;
+}
+[data-ciel-settings-footer]::after{
+  content:"";position:absolute;top:100%;inset-inline:0;
+  height:var(--ciel-settings-gutter);background:var(--dsw-alias-bg-layer-2);
+}
+[data-ciel-settings-footer-status]{flex:1 1 180px;min-width:0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}
+[data-ciel-settings-footer][data-dirty=true] [data-ciel-settings-footer-status]{color:var(--dsw-alias-label-primary)}
+[data-ciel-settings-footer-actions]{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto}
+[data-ciel-settings-footer-actions] .ciel-button{min-width:64px;border-radius:8px;font-size:13px}
+[data-ciel-settings-footer-actions] .ciel-button:disabled{opacity:1;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1)}
+[data-ciel-settings-footer-error]{flex-basis:100%;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.6;margin:0}
 @media(max-width:600px){[data-ciel-settings-group-summary]{max-width:48%}[data-ciel-settings-header]{align-items:flex-start}[data-ciel-settings-enabled]{max-width:135px}[data-ciel-setting-kind=number]{grid-template-columns:minmax(0,1fr) 85px}}
 
 [data-ciel-setting-help]{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 9px;align-items:start}
@@ -41,12 +57,32 @@
 [data-ciel-setting-head]>span:last-child>span:first-child{display:none}
 [data-ciel-setting-kind=check]{padding:10px 0!important}
 [data-ciel-setting-kind=number]{padding:10px 0!important}
-[data-ciel-settings-times]{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-[data-ciel-settings-times] [data-ciel-setting-kind=number]{grid-template-columns:minmax(0,1fr) 80px}
-[data-ciel-settings-times] [data-ciel-setting-help]{display:block}
-[data-ciel-settings-times] [data-ciel-setting-help]>details{margin-top:3px}
-[data-ciel-settings-times] [data-ciel-setting-head]{flex-wrap:wrap;gap:2px}
-@media(max-width:450px){[data-ciel-settings-times]{grid-template-columns:1fr}}
 
 [data-ciel-setting-kind=check]{padding:6px 0!important}
 [data-ciel-setting-kind=number]{padding:7px 0!important}
+
+/* Local equivalents of the host's switch, read-only tag and action button. */
+.ciel-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;corner-shape:round;background:var(--dsw-alias-border-l3);cursor:pointer}
+.ciel-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}
+.ciel-switch:disabled{cursor:default;opacity:.5}
+.ciel-switch-thumb{display:block;width:16px;height:16px;border-radius:50%;corner-shape:round;background:var(--dsw-alias-switch-thumb);transition:transform 120ms ease}
+.ciel-switch[aria-checked=true] .ciel-switch-thumb{background:var(--dsw-alias-label-primary-foreground);transform:translateX(16px)}
+.ciel-switch:focus-visible,.ciel-button:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+.ciel-tag{display:inline-flex;align-items:center;border-radius:999px;corner-shape:round;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;white-space:nowrap}
+.ciel-tag[data-tone=outline]{border:.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-tertiary)}
+.ciel-tag[data-tone=neutral]{background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}
+.ciel-tag[data-tone=success]{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);color:var(--dsw-alias-state-success-primary)}
+.ciel-tag[data-tone=info]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent);color:var(--dsw-alias-state-business-primary)}
+.ciel-tag[data-tone=warning]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent);color:var(--dsw-alias-state-warn-primary)}
+.ciel-tag[data-tone=danger]{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);color:var(--dsw-alias-state-error-primary)}
+.ciel-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;border:0;border-radius:12px;cursor:pointer;font:inherit;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary);background:transparent;padding:0 14px}
+.ciel-button:disabled{cursor:not-allowed;opacity:.4}
+.ciel-button-md{height:36px}.ciel-button-sm{height:28px;font-size:12px;line-height:18px;padding:0 10px;border-radius:8px}
+.ciel-button-primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
+.ciel-button-primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}
+.ciel-button-toolbar{background:var(--dsw-alias-button-tool-bar-fill)}
+.ciel-button-toolbar:hover:not(:disabled){background:var(--dsw-alias-button-tool-bar-hover)}
+.ciel-button-ghost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ciel-button-ghost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
+.ciel-button-icon{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center}
+@media(prefers-reduced-motion:reduce){.ciel-switch-thumb{transition:none}}

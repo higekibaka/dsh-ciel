@@ -15,7 +15,7 @@ jobs:
           version: 11
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Install root development dependencies
         run: pnpm install --frozen-lockfile
       - name: Install plugin dependencies
@@ -32,7 +32,8 @@ jobs:
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
-          node --check plugin/ptc-runtime.js
+          node --check plugin/advisor-protocol.js
+          node --check plugin/advisor-service.js
       - name: Unit tests
         run: node --test
         working-directory: plugin
@@ -47,10 +48,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: dsh-v0.1.6-alpha.2
-            commit: ddefc45fbc7f8e46dd73185e68295696d1297887
-          - target: dsh-v0.1.7-alpha.1
-            commit: c36a83ff6bb95e3f82cf79f9be7c724270a8aa61
           - target: dsh-v0.2.0-rc.2
             commit: 639ed015397290b3745d163aafe02ffee4aa3f84
     runs-on: ubuntu-latest
@@ -83,6 +80,8 @@ jobs:
         run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/link-harness-peers.mjs
       - name: Offline DSH execution-chain replay
         run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target CIEL_VERIFY_NATIVE_PEERS=1 node scripts/verify-runtime.mjs
+      - name: Offline advisor transport retry regression
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-retry.mjs
       - name: Offline DSH protocol verification
         run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-protocol.mjs
       - name: Offline native sidebar verification

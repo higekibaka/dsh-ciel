@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRuntime } from './review-ui.harness.js'
+import { createRuntime } from './advisor-ui.harness.js'
 
 test('advisor header, Jev summary, body and model line share one card-local inset', async t => {
   const styles = []

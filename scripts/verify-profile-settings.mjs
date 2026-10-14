@@ -18,7 +18,7 @@ const load = path => import(pathToFileURL(join(checkout, path, 'lib/index.js')).
 const [{ boot, initProfile, readProfilePatches }, { default: ConfigEditor }, { default: Settings }, ciel] = await Promise.all([
   load('packages/boot/app-boot'), load('packages/boot/config-editor'), load('packages/settings/settings'), import('../plugin/index.js'),
 ])
-const plugins = [['advisor', ciel, { jevEnabled: false, guidanceEnabled: false }, { advisorJevEnabled: true, jevEnabled: false, enabled: false, jevApiKey: 'settings-fixture-secret', jevEndpoint: 'https://proxy.invalid/systemone', jevModel: 'jev-test' }]]
+const plugins = [['advisor', ciel, { guidanceEnabled: false }, { advisorJevEnabled: true, enabled: false, jevApiKey: 'settings-fixture-secret', jevEndpoint: 'https://proxy.invalid/systemone', jevModel: 'jev-test' }]]
 if (process.env.GLASS_PLUGIN) {
   const glass = await import(pathToFileURL(resolve(process.env.GLASS_PLUGIN, 'lib/index.js')).href)
   plugins.push(['endfield-glass', glass, {}, { motion: 'static', frameRate: 60 }])
@@ -73,7 +73,6 @@ try {
     await assert.rejects(ctx.settings.update(id, { enabled: 'invalid' }))
   }
   const persisted = await readFile(profile.patchPath, 'utf8')
-  assert.ok(persisted.includes('jevEnabled'))
   assert.ok(persisted.includes('advisorJevEnabled'))
   await ctx.fiber.dispose(); ctx = await start()
   for (const [id, , , updates] of plugins) {

@@ -1,5 +1,5 @@
 // The consultation gate and planning reminder share one event classification.
-import { sessionEvents, toolEventView } from './review-content.js'
+import { sessionEvents } from './advisor-content.js'
 
 /**
  * Consultation inputs reconstructed from the caller's session log, augmented
@@ -80,13 +80,7 @@ function consultationFacts(events) {
 
 /** One-shot reminder rendered by the agent-scoped context when planning starts unconsulted. */
 const PLAN_REMINDER_TEXT =
-  '[advisor:plan-reminder] Planning has started in this turn and the advisor ' +
-  'has not been consulted. If this task involves an open design space, an ' +
-  'unfamiliar domain, an irreversible decision, or a difficult diagnosis — ' +
-  'and the task is bigger than one consultation round-trip — call ' +
-  'ask_advisor now with the facts you have gathered. Judge the decision ' +
-  'space, not the prompt length: a one-line request can hide a large open ' +
-  'design. If the task is mechanical or fully specified, ignore this reminder.'
+  "[advisor:plan-reminder] Planning has started in this turn and the advisor has not been consulted. If this task involves an open design space, an unfamiliar domain, an irreversible decision, or a difficult diagnosis—and the task is bigger than one consultation round-trip—call ask_advisor now with the facts you have gathered. Judge the decision space, not prompt length: a one-line request can hide a large open design. If the task is mechanical or fully specified, ignore this reminder."
 
 /**
  * Self-evaluating text for the per-agent reminder context: the reminder string
@@ -132,20 +126,6 @@ function reminderTextFor(agent, current) {
   }
 }
 
-// ═══════════════════════ M3-③ 批评者：锚定批注评审 ═══════════════════════
-// Ported from the live-tested annrev dynamic prototype (prototypes/
-// annotation-review). The browser button calls the `advisorReview` Remote
-// namespace below; every review persists to a per-session sidecar JSONL
-// store (see persistReview) and hydrates back across restarts.
-//
-// 0.9.1: the critic route is CONFIGURABLE (criticProvider/criticModel/
-// criticEffort in the advisor settings namespace) — the hard-coded constants
-// became a defect the day gemini-3.7-flash returned 503 under load and the
-// user found no knob that reached the critic (the card only drove the
-// advisory route). Cross-family routing stays the design default; the
-// settings description says so.
-
-/** Critic persona: convergent red-line annotations, visible text only. */
 function createConsultationGate() {
   const entries = new WeakMap()
   return {
@@ -165,27 +145,5 @@ function createConsultationGate() {
     },
   }
 }
-
-/**
- * Parse the advisor's structured-Markdown reply into items. Sister of
- * parseAnnotations: tolerant by design — a missing field is an issue, never
- * a dropped item; zero heads means the reply predates or broke the contract
- * and the caller simply gets the raw text (structure is an enhancement,
- * never a gate — M3-②'s core discipline).
- */
-/**
- * 0.12.0 ①块切分：把 markdown 草稿切成顶层块（b1..bN），供批评者输入的
- * 块地图与浏览器的 gutter 渲染共用同一序号空间。host 与 client 各内嵌一份
- * 相同实现（两端无共享打包通道），一致性由 test/blocks.fixtures.js 的共享
- * 夹具锁定——改一端不改另一端会红测试。
- *
- * 规则（行级扫描，宁简勿繁）：
- *   - 围栏代码（```/~~~，长围栏吞短围栏）自成一块；
- *   - ATX 标题、水平线自成一块；
- *   - 连续表格行 / 引用行（含懒惰续行）各成一块；
- *   - 列表含松散项（空行后仍是列表内容）仍为一块；
- *   - 其余非空行聚成段落块；空行只是边界，不进任何块。
- * 渲染 DOM 与切分序号的错位风险由消费方兜底（块定位失败退回旧 proximity）。
- */
 
 export { GATE_REJECTION_HEAD, gateFacts, consultationFacts, PLAN_REMINDER_TEXT, reminderTextFor, createConsultationGate }

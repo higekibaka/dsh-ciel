@@ -1,4 +1,4 @@
-import { sessionEvents } from './review-content.js'
+import { sessionEvents } from './advisor-content.js'
 
 /** Owned per-call provenance. Requested settings are never treated as execution evidence. */
 const MODEL_ROUTE_SCHEMA = {

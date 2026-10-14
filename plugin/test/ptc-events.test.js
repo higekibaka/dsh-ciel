@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { toolEventView, gateFacts, advisorTargets, turnEvidence, createReviewObserver } from '../index.js'
+import { toolEventView, gateFacts, reminderTextFor, createConsultationGate } from '../index.js'
 const NL = String.fromCharCode(10)
 const answer = ['## [high] 检查边界','framing: 多看一种情况','pitfalls: 别漏空值','verification_target: 验证空值'].join(NL)
 const start = (seq, id, name, args = {}) => ({ seq, type: 'tool/ptc-dispatch-start', data: { parentCallId: 'outer', subCallId: id, name, arguments: args } })
@@ -26,14 +26,6 @@ test('PTC consultations count exact sub-call results and enforce independent wor
   events.push(start(7, 'r2', 'grep'))
   assert.equal(gateFacts(parent).workSinceLast, true)
 })
-test('advisor targets are recovered only from matched successful PTC advisor output', () => {
-  const events = [turn, start(2, 'a1', 'ask_advisor'), end(3, 'a1', 'ask_advisor', answer)]
-  assert.equal(advisorTargets(events, target).items[0].verificationTarget, '验证空值')
-  assert.match(advisorTargets(events, target).from, /^same-turn/)
-  assert.equal(advisorTargets([turn, end(3, 'a1', 'ask_advisor', answer)], target).items.length, 0)
-  assert.equal(advisorTargets([turn, start(2, 'a1', 'read'), end(3, 'a1', 'ask_advisor', answer)], target).items.length, 0)
-  assert.equal(advisorTargets([turn, start(2, 'a1', 'ask_advisor'), end(3, 'a1', 'ask_advisor', answer, true)], target).items.length, 0)
-})
 test('event adaptation is read-only and idempotent with native events', () => {
   const events = [turn, wrapper, start(2, 'r1', 'read'), end(3, 'r1', 'read', 'x')]
   const before = JSON.stringify(events)
@@ -43,51 +35,35 @@ test('event adaptation is read-only and idempotent with native events', () => {
   assert.equal(view[2].data.callId, 'r1')
   assert.equal(view[3].data.message.content[0].toolCallId, 'r1')
 })
-test('PTC terminal evidence is quoted, while private sources and file bodies remain hidden', () => {
-  const events = [turn, start(2, 'b1', 'bash', { command: 'unit-test' }), end(3, 'b1', 'bash', '7 passed'), start(4, 'r1', 'read'), end(5, 'r1', 'read', 'FILE_BODY_PRIVATE_TO_AUTHOR'), start(6, 'b2', 'bash', { command: 'printenv' }), end(7, 'b2', 'bash', 'PRIVATE_ENV_SENTINEL')]
-  const result = turnEvidence(events, target, { protectInputs: true })
-  assert.equal(result.quotes.length, 1)
-  assert.equal(result.quotes[0].text, '7 passed')
-  assert.equal(result.withheld, true)
-  assert.ok(!JSON.stringify(result).includes('FILE_BODY_PRIVATE_TO_AUTHOR'))
-  assert.ok(!JSON.stringify(result).includes('PRIVATE_ENV_SENTINEL'))
-})
-test('ordinary PTC wrapper output is not a privacy incident, but sensitive output still is', () => {
-  const result = text => ({ seq: 4, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'outer', content: [{ type: 'text', text }] }] } } })
-  const events = [turn, wrapper, start(2, 'r1', 'read'), end(3, 'r1', 'read', 'ordinary file')]
-  const normal = turnEvidence([...events, result('ordinary wrapper output')], target, { protectInputs: true })
-  assert.equal(normal.withheld, false)
-  assert.equal(normal.quotes.length, 0)
-  assert.ok(!normal.tools.includes('ordinary wrapper output'))
-  assert.equal(turnEvidence([...events, result('API_KEY="FAKE_CREDENTIAL_123"')], target, { protectInputs: true }).withheld, true)
-})
 test('sensitive-input rejections do not spend consultation quota', () => {
   const events = [turn, start(1, 'a1', 'ask_advisor'), end(2, 'a1', 'ask_advisor', 'Error: 咨询输入含疑似凭据，未发送给顾问', true)]
   assert.equal(gateFacts({ session: { snapshotEvents: () => events } }).settledThisTurn, 0)
 })
-test('the review observer excludes the outer run_code transport and narrates nested source calls', async () => {
-  const events = [
-    turn,
-    wrapper,
-    start(2, 'r1', 'read', { file_path: '/project/a.js' }),
-    end(3, 'r1', 'read', '{"evidence_refs":["e1"]}'),
-    start(4, 'g1', 'grep', { pattern: 'needle' }),
-    end(5, 'g1', 'grep', '{"evidence_refs":["e2"]}'),
-  ]
-  const agents = { get: () => ({ session: { snapshotEvents: () => events } }) }
-  const observer = createReviewObserver({ agents, runId: 'child', intervalMs: 5 })
-  await new Promise((resolve) => setTimeout(resolve, 25))
-  assert.equal(observer.calls(), 2, 'nested source dispatches count; run_code does not')
-  assert.equal(observer.action().kind, 'thinking')
-  assert.equal(observer.action().last.name, 'grep')
-  assert.equal(observer.action().last.target, 'needle')
-  assert.equal(observer.stop(), 2)
+
+test('reservation prevents parallel and pre-publication quota bypass, resets only on a new turn',()=>{
+ const gate=createConsultationGate(),parent={}
+ const facts={turnKey:1,settledThisTurn:0}
+ const release=gate.reserve(parent,facts,1)
+ assert.throws(()=>gate.reserve(parent,facts,1),/in flight/)
+ release();release()
+ assert.throws(()=>gate.reserve(parent,facts,1),/exhausted/)
+ gate.reserve(parent,{turnKey:2,settledThisTurn:0},1)()
+ assert.throws(()=>gate.reserve({},undefined,1),/telemetry unavailable/)
 })
-test('an outer transport call alone is not a source action', async () => {
-  const events = [turn, wrapper]
-  const agents = { get: () => ({ session: { snapshotEvents: () => events } }) }
-  const observer = createReviewObserver({ agents, runId: 'child', intervalMs: 5 })
-  await new Promise((resolve) => setTimeout(resolve, 15))
-  assert.equal(observer.stop(), 0)
-  assert.deepEqual(observer.action(), { kind: 'thinking' })
+test('planning reminders use durable source identity and never consume a consultation',()=>{
+ const events=[turn,{seq:1,type:'tool/call',data:{name:'todo_write',callId:'plan'}}]
+ const parent={session:{snapshotEvents:()=>events}},current=()=>({enabled:true,planReminderEnabled:true})
+ const reminder=reminderTextFor(parent,current)
+ assert.match(reminder,/advisor:plan-reminder/)
+ events.push({type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:reminder}]}})
+ assert.equal(reminderTextFor(parent,current),reminder,'user quoting marker does not consume reminder')
+ events.push({type:'user/message',data:{source:{kind:'runtime-context',sections:[{name:'advisor:plan-reminder'}]},content:[{type:'text',text:reminder}]}})
+ assert.equal(reminderTextFor(parent,current),'')
+ assert.equal(gateFacts(parent).settledThisTurn,0)
+ assert.equal(reminderTextFor(parent,()=>({enabled:false,planReminderEnabled:true})),'')
+})
+test('failed provider execution spends quota while preflight rejections do not',()=>{
+ const events=[turn,start(1,'a1','ask_advisor'),end(2,'a1','ask_advisor','provider failed',true)]
+ assert.equal(gateFacts({session:{snapshotEvents:()=>events}}).settledThisTurn,1)
+ assert.equal(gateFacts({session:{snapshotEvents:()=>{throw new Error('unavailable')}}}),undefined)
 })

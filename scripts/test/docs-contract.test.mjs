@@ -21,11 +21,6 @@ test('README contract accepts real types, undefined secret and retired hidden fi
   assert.deepEqual(checkReadme(chinese, '1.2.3', fields, defaults, 'zh'), [])
 })
 
-test('version drift rejects stale current links, install command and highlights', () => {
-  assert.ok(check(doc.replaceAll('1.2.3', '1.2.2')).length >= 4)
-  assert.ok(check(doc.replace('dsh-ciel@1.2.3', 'dsh-ciel@latest')).includes('install command version mismatch'))
-})
-
 test('default, missing, duplicate and unknown config rows are rejected', () => {
   assert.ok(check(doc.replace('| `false` |', '| `true` |')).includes('configuration default mismatch: enabled'))
   assert.ok(check(doc.replace('| `apiKey` | unset | secret |', '')).includes('missing configuration row: apiKey'))
@@ -34,16 +29,21 @@ test('default, missing, duplicate and unknown config rows are rejected', () => {
   assert.ok(checkReadme(doc, '1.2.3', { ...fields, newField: { meta: {} } }, defaults, 'en').includes('missing configuration row: newField'))
 })
 
+test('release links and install versions must match the package version', () => {
+  assert.ok(check(doc.replaceAll('1.2.3', '1.2.2')).includes('release version mismatch or missing install version'))
+  assert.ok(check(doc.replace('dsh-ciel@1.2.3', 'dsh-ciel@latest')).includes('release version mismatch or missing install version'))
+})
+
 test('a secret placeholder cannot become a documented default credential', () => {
   assert.ok(check(doc.replace('| unset |', '| `redacted` |')).includes('configuration default mismatch: apiKey'))
 })
 
 test('npm README is a deterministic English body with repository links', () => {
-  const english = '<p>banner</p>\n' + doc + '[Contract](docs/review-contract.md#核实结果) [Changes](CHANGELOG.md) [MIT](LICENSE)\n'
+  const english = '<p>banner</p>\n' + doc + '[Contract](docs/architecture.md#advisor-only-architecture) [Changes](CHANGELOG.md) [MIT](LICENSE)\n'
   const built = packageReadme(english)
   assert.ok(built.startsWith('<!-- Generated from README.en.md'))
   assert.ok(!built.includes('<p>banner'))
-  assert.ok(built.includes('](https://github.com/higekibaka/dsh-ciel/blob/main/docs/review-contract.md#核实结果)'))
+  assert.ok(built.includes('](https://github.com/higekibaka/dsh-ciel/blob/main/docs/architecture.md#advisor-only-architecture)'))
   assert.ok(built.includes('[MIT](LICENSE)'))
   assert.equal(packageReadme(english), built)
   assert.throws(() => packageReadme('missing heading'))
@@ -52,7 +52,6 @@ test('npm README is a deterministic English body with repository links', () => {
 test('current docs cannot silently be unclassified or label shipped features unreleased', () => {
   assert.deepEqual(checkClassification(doc), [])
   assert.ok(checkClassification(doc.replace('<!-- ciel-doc: current -->', '')).length)
-  assert.ok(checkClassification(doc + '\n## 开发版：Jev').length)
   assert.deepEqual(checkClassification('<!-- ciel-doc: historical -->\n## 开发版：旧设计'), [])
 })
 

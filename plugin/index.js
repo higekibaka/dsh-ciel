@@ -1,106 +1,58 @@
-import { REVIEW_METHODS, reviewInvocation, ADVISOR_JEV_SCHEMA } from './review-protocol.js'
-// dsh-ciel host half: a pre-planning advisor for DeepSeek Harness agents.
-// (0.11.0 起由 dsh-advisor 更名为 dsh-ciel——大贤者夏尔；settings 命名空间同版
-//  迁移 `advisor` → `ciel`（旧节自动迁入，为 omdsh-dev/dsh-advisor 让名），
-//  sidecar 目录 $DSH_HOME/dsh-advisor/、消息标签 [advisor:*]、typert 契约 id
-//  均为数据连续性保留旧名。)
-//
-// What this plugin contributes, all at the host layer:
-//   1. the `ask_advisor` tool — one synchronous consultation with a second,
-//      knowledge-rich model that returns ideas and knowledge, never steps;
-//   2. the `advisor:guidance` prompt section — the consultation protocol
-//      (when to call, explore-first ordering, bounded follow-ups);
-//   3. the `ciel` settings namespace — edited from Settings → 夏尔 Ciel,
-//      applied to later consultations after explicit Save, without restart;
-//
-// Every registered settings namespace is served to configuration pages, so
-// the browser card pairs with `ciel` directly; the dormant `ciel` directory
-// entry below exists only for Models-page presence (the same seam
-// dsh-vision-router uses).
-
+// Ciel: planning advisor, with optional context checks and read-only history.
 import Schema from '@deepseek-ai/schemastery'
-// Resolved through the shared profiles node_modules fallback (the app's own
-// dependency graph) — deliberately NOT declared in package.json so no second
-// copy with its own registry state gets installed beside the app's.
-import { createReviewOperation } from './review-operation.js'
-import { detectSensitiveText } from './review-corpus.js'
+import { ADVISOR_METHODS, advisorInvocation, ADVISOR_JEV_SCHEMA } from './advisor-protocol.js'
+import { createAdvisorOperation } from './advisor-operation.js'
+import { detectSensitiveText } from './sensitive-text.js'
 import { prepareAdvisorJev, checkAdvisorWithJev, renderAdvisorJev } from './jev-advisor.js'
 import { JEV_MODEL, JEV_ENDPOINT, JEV_MODEL_PATTERN, JEV_KEY_PATTERN, JEV_ENDPOINT_PATTERN, jevConnection } from './jev-config.js'
-import { userText } from './review-input.js'
-import { listInbox, setInboxIntent } from './inbox-service.js'
-import { AdvisorReviewService } from './review-service.js'
+import { AdvisorService } from './advisor-service.js'
 import { MODEL_USAGE_SCHEMA, createModelUsage, modelUsageSnapshot, captureModelUsage } from './model-usage.js'
-import { outputText, childErrorDetail, criticExplorePersona, toolEventView, createReviewObserver, parseSuspectList, triageSuspects, parseOutcomeRows, recoverCitedDossier, reconcileReviewLedger, parseCriticReview, parseSuspectResponse, reviewCoverage, splitMarkdownBlocks, parseAdvisorItems, advisorTargets, turnEvidence } from './review-content.js'
+import { outputText, childErrorDetail, parseAdvisorItems, toolEventView } from './advisor-content.js'
 import { gateFacts, reminderTextFor, createConsultationGate } from './advisor-state.js'
-import { reviewsPath, readReviews, persistReview, persistCallModelUsage, readCallModelUsage, persistAdvice, readFeedbackTriage, appendFeedback } from './review-repository.js'
+import { persistCallModelUsage, readCallModelUsage, persistAdvice } from './advisor-repository.js'
 
 /** Cordis plugin name. */
 export const name = 'dsh-ciel'
 
 /** Advisor persona: the ideas-only output contract for the child agent. */
 const ADVISOR_PERSONA =
-  'You are a senior technical advisor consulted BEFORE planning begins. ' +
-  'Offer: alternative problem framings, relevant domain knowledge and prior art, ' +
-  'common pitfalls, cross-domain analogies, and the evaluation dimensions an ' +
-  'expert would check. Output ideas and knowledge ONLY — never step-by-step ' +
-  'plans, never code, never tool usage instructions. Output at most six items, ' +
-  'each in EXACTLY this Markdown shape — field keys stay English verbatim, ' +
-  'the content goes in the question\'s language:\n\n' +
-  '## [high] short title\n' +
-  'framing: the core direction or mechanism — one short paragraph\n' +
-  'pitfalls: known failure modes of this direction — one short paragraph\n' +
-  'verification_target: what the caller should verify against the environment\n\n' +
-  'The tier tag is mandatory: [high] established domain consensus, [mid] ' +
-  'grounded but context-dependent judgment, [low] extrapolation or ' +
-  'cross-domain analogy — and never give numeric scores. If the question ' +
-  'lies outside your reliable knowledge, say so plainly, tag the affected ' +
-  'items [low], and never invent specific names, links, version numbers, or ' +
-  'studies — cross-domain analogies from fields you do know remain welcome. ' +
-  'You have no internet or environment access: ' +
-  'if the question hinges on time-sensitive facts (versions, availability, ' +
-  'pricing) the caller did not supply, declare that gap at the top of your ' +
-  'answer.'
+  "You are a senior technical advisor consulted BEFORE planning begins. Offer alternative problem framings, relevant domain knowledge, prior art, common pitfalls, cross-domain analogies, and expert evaluation dimensions. Output ideas and knowledge ONLY—never step-by-step plans, never code, never tool usage instructions.\n" +
+  "\n" +
+  "Output at most six items in EXACTLY this Markdown format (keep English field keys verbatim; write content in the question's language):\n" +
+  "\n" +
+  "## [high] short title\n" +
+  "framing: the core direction or mechanism — one short paragraph\n" +
+  "pitfalls: known failure modes of this direction — one short paragraph\n" +
+  "verification_target: what the caller should verify against the environment\n" +
+  "\n" +
+  "The tier tag is mandatory:\n" +
+  "- [high]: Established domain consensus.\n" +
+  "- [mid]: Grounded but context-dependent judgment.\n" +
+  "- [low]: Extrapolation or cross-domain analogy.\n" +
+  "Never provide numeric scores.\n" +
+  "\n" +
+  "If the question lies outside your reliable knowledge, state so plainly, tag affected items [low], and never invent names, links, version numbers, or studies (cross-domain analogies from familiar fields remain welcome). You have no internet or environment access: if the question hinges on missing time-sensitive facts (versions, availability, pricing), declare that gap at the very top of your answer."
 
 /** Guidance prompt section text: the consultation protocol for the caller. */
 const GUIDANCE_TEXT =
-  'You have an `ask_advisor` tool connected to a second model chosen for ' +
-  'knowledge breadth. The advisor gives ideas, not plans; its value is ' +
-  'diversity — directions your own priors would not sample first.\n\n' +
-  'WHEN to consult (at most once per planning phase, and only for ' +
-  'knowledge-heavy tasks): an open solution space (architecture, technology ' +
-  'selection, data modeling, scene/aesthetic composition — several ' +
-  'fundamentally different routes exist); ' +
-  'an unfamiliar domain where your training knowledge is thin; a highly ' +
-  'irreversible decision (migrations, external contracts); or a difficult ' +
-  'diagnosis where ordinary approaches have already failed twice.\n\n' +
-  'Do NOT consult when the answer is inside the environment (inspect the ' +
-  'code instead), for mechanical pattern-fixed tasks, or for small tasks ' +
-  'where one consultation costs more than the task itself. Judge the ' +
-  'decision space, not the prompt length: a one-line request can hide a ' +
-  'large open design, and a long spec can hide zero decisions. Do NOT ' +
-  'consult about errors in a spec: factual conflicts go to evidence ' +
-  '(inspect or verify yourself), tradeoff conflicts go to the user (ask or ' +
-  'note in the plan); the advisor enters only when fixing the error reopens ' +
-  'a design space.\n\n' +
-  'HOW to consult: (1) Explore first — gather concrete environment facts ' +
-  '(code structure, versions, constraints) BEFORE calling, and run any web ' +
-  'lookups for time-sensitive facts yourself: the advisor has no internet ' +
-  'access, so everything it needs must arrive in your context; if the domain ' +
-  'is unfamiliar to you, do a short research pass first and pass the digest; ' +
-  'ungrounded ' +
-  'questions get generic answers. (2) One divergent consultation: pass the ' +
-  'goal, the facts you found, and the constraints; expect framings, prior ' +
-  'art, pitfalls, and evaluation dimensions — never steps. (3) Work ' +
-  'independently: filter the ideas, verify each claim against the real ' +
-  'environment (the advisor can hallucinate plausible knowledge), and sketch ' +
-  'the plan yourself. (4) At most two targeted follow-ups per planning ' +
-  'phase; each follow-up must carry NEW facts discovered since the last ' +
-  'call and must ask a specific question. Never paste your draft plan back ' +
-  'to the advisor — reviewing drafts is a different role. (5) Own the ' +
-  'result: in the final plan, state which advisor ideas you adopted or ' +
-  'rejected, and why.\n\n' +
-  'If `ask_advisor` fails or its route is unavailable, plan on your own and ' +
-  'note that the advisor was unavailable.'
+  "The `ask_advisor` tool connects to a second model chosen for knowledge breadth. The advisor gives ideas, not plans; its value is diversity—directions your own priors would not sample first.\n" +
+  "\n" +
+  "WHEN to consult (at most once per planning phase, strictly for knowledge-heavy tasks):\n" +
+  "- Open solution spaces with fundamentally divergent routes (architecture, technology selection, data modeling, scene/aesthetic composition).\n" +
+  "- Unfamiliar domains where your training knowledge is thin.\n" +
+  "- Highly irreversible decisions (migrations, external contracts).\n" +
+  "- Difficult diagnoses where ordinary approaches have already failed twice.\n" +
+  "\n" +
+  "Do NOT consult when the answer is inside the environment (inspect code instead), for mechanical pattern-fixed tasks, or for small tasks where consultation overhead exceeds task value. Judge the decision space, not prompt length: a one-line request can hide a large open design, while a long spec can hide zero decisions. Do NOT consult on spec errors: resolve factual conflicts via inspection and tradeoff conflicts with the user; the advisor enters only if resolving the error reopens an open design space.\n" +
+  "\n" +
+  "HOW to consult:\n" +
+  "1. Explore first: Gather concrete environment facts (code structure, versions, constraints) and research time-sensitive facts beforehand. The advisor has no internet access; ungrounded questions get generic answers. For unfamiliar domains, perform a brief research pass and provide the digest in `context`.\n" +
+  "2. Divergent consultation (once): Pass the goal, discovered facts, and constraints. Expect alternative framings, prior art, common pitfalls, and evaluation dimensions—never step-by-step procedures.\n" +
+  "3. Work independently: Filter ideas, verify claims against the real environment (advisors can hallucinate plausible knowledge), and synthesize the plan yourself.\n" +
+  "4. Targeted follow-ups (at most two per phase): Each follow-up must introduce NEW facts discovered since the last call and ask a specific question. Never send draft plans to the advisor—reviewing drafts is a separate role.\n" +
+  "5. Own the result: In your final plan, state which advisor ideas you adopted or rejected, and why.\n" +
+  "\n" +
+  "If `ask_advisor` fails or its route is unavailable, plan on your own and note that the advisor was unavailable."
 
 // DSH 0.1.7 wraps live fields in stable references. Keep plain snapshots at
 // Ciel's operation boundaries; older DSH installations still pass plain values.
@@ -110,17 +62,9 @@ export function configValues(config) {
 }
 const configFields = {
   enabled: Schema.boolean().default(true)
-    .description('允许 Ciel 顾问咨询、评审及准备批注草稿；批注须由用户手动发送。关闭取消本插件在途模型调用，不改变模型配置'),
+    .description('允许 Ciel 顾问咨询。关闭取消本插件在途模型调用，不改变模型配置'),
   advisorTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
-    .description('一次 ask_advisor 顾问咨询的总时限，秒；取消或超时不会自动重试'),
-  criticTimeoutSeconds: Schema.number().step(1).min(10).max(600).default(180)
-    .description('一次完整评审的总时限（秒，含准备资料、存疑和逐项独立核查）；至多 8 项并发共享时限，查询与模型请求次数只统计，超时停止，不自动重试'),
-  // Legacy keys remain accepted so existing settings files still load.
-  // They are hidden, have no defaults, and never affect a new review.
-  criticMaxRequests: Schema.number().hidden()
-    .description('旧版兼容字段，已停用：评审只按总时限控制执行预算'),
-  criticMaxTokens: Schema.number().step(1).min(256).max(32768).default(16384)
-    .description('每次模型响应的输出长度上限；存疑最多 4096。这是单条响应大小保护，不限制请求次数或整次评审用量'),
+    .description('一次 ask_advisor 的总时限，秒；网络重试遵循提供方策略，共享此时限，取消或超时后停止'),
   provider: Schema.string().default('kimi-coding')
     .description('顾问模型的提供方路由（须是设置 → 模型 中已注册的 provider）'),
   model: Schema.string().default('kimi-for-coding')
@@ -140,29 +84,14 @@ const configFields = {
     .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
   guidanceEnabled: Schema.boolean().default(true)
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
-  criticProvider: Schema.string().default('google')
-    .description('批评者路由的提供方（0.9.1 起可配；跨家族路由的纠错收益最高）'),
-  criticModel: Schema.string().default('gemini-3.8-flash')
-    .description('批评者模型 id'),
-  criticEffort: Schema.union(['provider', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-    .default('medium')
-    .description('批评者思考深度：provider 跟随提供方默认（不注入）；其余档位注入评审子代理的每个请求，模型不支持的档位会报错（gemini-3.8-flash 仅支持 low/medium/high）'),
-  criticExploreEnabled: Schema.boolean().default(true)
-    .description('探索型批评者（0.13.0）：评审时对可证伪疑点做只读定点核实（PTC run_code 内调用 read/grep/glob 快照工具，世界可碰、过程不许碰）；关闭后退回纯草稿裁决'),
   jevApiKey: Schema.string().max(4096).pattern(JEV_KEY_PATTERN).role('secret')
     .description('Jev API 密钥；保存在本机 DSH 配置，设置读取不回传原值。未配置时回退到 TYPESAFE_API_KEY（仅官方接口），不是加密保险库'),
   jevEndpoint: Schema.string().max(2048).pattern(JEV_ENDPOINT_PATTERN).default(JEV_ENDPOINT)
     .description('Jev 完整 HTTPS 接口地址，不追加路径；必须兼容 TypeSafe systemone 协议。自定义地址会收到密钥和检查原文，须另填密钥，不复用环境变量'),
   jevModel: Schema.string().pattern(JEV_MODEL_PATTERN).default(JEV_MODEL)
-    .description('Jev 模型 ID，顾问与评审检查共用；保存后下次检查使用'),
-  jevEnabled: Schema.boolean().default(false)
-    .description('启用 Jev 证据检查：向 TypeSafe 发送主张原文和已引用证据（源码、历史模型/权限/工具声明、经敏感检查的工具输出及受限目录清单），产生额外 API 用量。结果与分歧显示在评审详情，不自动更改裁决。密钥在 Jev API 配置中设置，官方接口也可使用 TYPESAFE_API_KEY 环境变量；关闭取消在途 Jev 检查'),
+    .description('顾问建议检查的 Jev 模型 ID；保存后下次检查使用'),
   advisorJevEnabled: Schema.boolean().default(false)
     .description('顾问回答后用 Jev 对照本次问题和背景检查建议；将这些内容发送给 TypeSafe，产生额外 API 用量。独立开关，默认关闭；仅检查背景一致性，不独立核实事实，不改写建议。关闭取消在途检查'),
-  criticExploreBudget: Schema.number().hidden()
-    .description('旧版兼容字段，已停用（包括旧值 0）；是否查文件只由 criticExploreEnabled 控制'),
-  criticAdditionalRoots: Schema.array(Schema.string()).default([])
-    .description('可选：额外允许评审查阅的源码目录，每项为绝对路径；不允许主目录、凭据或会话状态目录。默认仅当前项目。修改只影响后续评审'),
 }
 const LegacyConfig = Schema.object(configFields)
 export const Config = Schema.object(Object.fromEntries(Object.entries(configFields).map(([key, field]) => [key,
@@ -172,9 +101,6 @@ export const Config = Schema.object(Object.fromEntries(Object.entries(configFiel
  * ask_advisor keeps the raw prose unchanged. When enabled, the caller model
  * also receives a separately labeled Jev context check before that prose,
  * while the parsed structure rides tool/result.meta via presentationMeta.
- * Parse once in execute(); UI cards (M3-④) and the critic's rubric input
- * (M3-③ 输入三件套之"当时的顾问输出") then read the same items without
- * re-parsing — the UIR spine on the harness's own channel.
  */
 const advisorOutput = {
   schema: {
@@ -233,49 +159,11 @@ async function migrateLegacyAdvisorSettings(settings, cielScope) {  try {
   const legacyUser = settingsUserSection(settings, 'advisor')
   const cielUser = settingsUserSection(settings, 'ciel')
   if (Object.keys(legacyUser).length === 0 || Object.keys(cielUser).length > 0) return false
-  await cielScope.update(legacyUser)
+  await cielScope.update(Object.fromEntries(Object.entries(legacyUser).filter(([key]) => Object.hasOwn(configFields, key))))
   return true
 }
 
-// Named exports for the unit tests (the loader only consumes apply/inject).
-export {
-  migrateLegacyAdvisorSettings,
-  createModelUsage,
-  captureModelUsage,
-  modelUsageSnapshot,
-  persistCallModelUsage,
-  persistAdvice,
-  readCallModelUsage,
-  settingsUserSection,
-  parseAdvisorItems,
-  advisorTargets,
-  userText,
-  reviewsPath,
-  readReviews,
-  persistReview,
-  splitMarkdownBlocks,
-  parseCriticReview,
-  criticExplorePersona,
-  createReviewObserver,
-  turnEvidence,
-  parseSuspectList,
-  parseSuspectResponse,
-  parseOutcomeRows,
-  recoverCitedDossier,
-  reconcileReviewLedger,
-  reviewCoverage,
-  createReviewOperation,
-  createConsultationGate,
-  gateFacts,
-  reminderTextFor,
-  toolEventView,
-  AdvisorReviewService,
-  triageSuspects,
-  appendFeedback,
-  readFeedbackTriage,
-  listInbox,
-  setInboxIntent,
-}
+export { migrateLegacyAdvisorSettings, createModelUsage, captureModelUsage, modelUsageSnapshot, persistCallModelUsage, persistAdvice, readCallModelUsage, settingsUserSection, parseAdvisorItems, createAdvisorOperation, createConsultationGate, gateFacts, reminderTextFor, toolEventView, AdvisorService }
 
 export function apply(ctx, config) {
   const activeOperations = new Set()
@@ -293,7 +181,7 @@ export function apply(ctx, config) {
   // service is absent (the composition config then stands alone).
   let current = () => configValues(config)
   const beginAdvisorCall = (signal) => {
-    const operation = createReviewOperation({ timeoutMs: (current().advisorTimeoutSeconds ?? 180) * 1000, maxRequests: 1 })
+    const operation = createAdvisorOperation({ timeoutMs: (current().advisorTimeoutSeconds ?? 180) * 1000 })
     const onAbort = () => operation.cancel('advisor cancelled')
     signal?.addEventListener('abort', onAbort, { once: true })
     if (signal?.aborted) onAbort()
@@ -305,18 +193,16 @@ export function apply(ctx, config) {
     } }
   }
   let resyncGuidance = () => {}
-  let cancelJevChecks = () => {}
   const advisorJevControllers = new Set()
   const settingsChanged = () => {
     resyncGuidance()
     if (current().enabled === false) for (const operation of activeOperations) operation.cancel('Ciel disabled')
-    if (current().jevEnabled !== true) cancelJevChecks()
     if (current().advisorJevEnabled !== true) for (const controller of advisorJevControllers) controller.abort()
   }
   ctx.on('loader/volatile-update', settingsChanged)
   ctx.inject(['settings'], (sctx) => {
     if (typeof sctx.settings.configure === 'function') {
-      if (!Config.dict.jevEnabled.meta.volatile) throw new Error('Ciel settings on DSH 0.1.7 require @deepseek-ai/schemastery >=3.18.3')
+      if (!Config.dict.advisorJevEnabled.meta.volatile) throw new Error('Ciel settings on DSH 0.1.7 require @deepseek-ai/schemastery >=3.18.3')
       sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber))
       return
     }
@@ -461,51 +347,26 @@ export function apply(ctx, config) {
     return { ...resolved, reasoningEffort: effort }
   })
 
-  // ── M3-③ critic: effort pin for critic children, driven by the
-  // criticEffort setting (0.9.1). Default 'medium' — the documented
-  // gemini-3.7-flash default; 'low' was the 0.5.0 workaround for the MINIMAL
-  // rejection and trades review quality for latency, which misannotations do
-  // not repay. 'provider'/empty leaves the request untouched. The strict
-  // Remote descriptors and the service itself follow.
-  const liveCriticChildren = new Set()
-  ctx.on('agent/request', async (payload, next) => {
-    const agent = payload && payload.agent
-    if (agent === undefined || !liveCriticChildren.has(agent.id)) return next()
-    reviewService.coordinator.beforeRequest(agent.id)
-    const effort = current().criticEffort
-    if (effort === undefined || effort === '' || effort === 'provider') return next()
-    const resolved = await next()
-    return { ...resolved, reasoningEffort: effort }
+  ctx.inject(['typert'], tctx => {
+    tctx.effect(() => tctx.typert.register({
+      package: 'dsh-advisor', face: 'host', schemas: [],
+      model: { services: [], events: [], objects: [] },
+      invocations: ADVISOR_METHODS.map(advisorInvocation),
+    }), 'Ciel: advisor data descriptors')
   })
-  // Strict descriptors into the typert registry — through ctx.inject because
-  // the registry's mount time is not ours to know (bare ctx.get loses boot
-  // races; observed live on this very composition).
-  ctx.inject(['typert'], (tctx) => {
-    tctx.effect(
-      () => tctx.typert.register({
-        package: 'dsh-advisor',
-        face: 'host',
-        schemas: [],
-        model: { services: [], events: [], objects: [] },
-        invocations: REVIEW_METHODS.map(reviewInvocation),
-      }),
-      'dsh-advisor: review remote descriptors',
-    )
-  })
-  const reviewService = new AdvisorReviewService(ctx, liveCriticChildren, () => current(), activeOperations)
-  cancelJevChecks = () => reviewService.coordinator.cancelJevChecks()
-  ctx.inject(['tools'], (tctx) => {
+  new AdvisorService(ctx)
+  let advisorGuardAvailable = false
+  ctx.inject(['tools'], tctx => {
     if (typeof tctx.tools.guard !== 'function') return
-    tctx.tools.guard((exec) => {
-      const advisor = liveAdvisorChildren.get(exec.agent?.id)
-      if (advisor) { advisor.cancel('unexpected tool in advisor'); return 'advisor has no tools' }
-      return reviewService.coordinator.guard(exec)
+    tctx.tools.guard(exec => {
+      const operation = liveAdvisorChildren.get(exec.agent?.id)
+      if (operation) { operation.cancel('unexpected tool in advisor'); return 'advisor has no tools' }
     })
-    reviewService.coordinator.guardAvailable = true
+    advisorGuardAvailable = true
     tctx.effect(() => () => {
-      reviewService.coordinator.guardAvailable = false
-      for (const operation of reviewService.coordinator.inFlight.values()) operation.cancel('tool guard unavailable')
-    }, 'Ciel: review guard readiness')
+      advisorGuardAvailable = false
+      for (const operation of activeOperations) operation.cancel('tool guard unavailable')
+    }, 'Ciel: advisor guard readiness')
   })
 
   // ── the ask_advisor tool. Each call is a fresh one-shot child on the spawn
@@ -514,23 +375,7 @@ export function apply(ctx, config) {
   ctx.inject(['tools', 'subagents'], (tctx) => {
     tctx.tools.register({
       name: 'ask_advisor',
-      description:
-        'Consult a second, knowledge-rich model BEFORE planning. USE WHEN the task has an ' +
-        'open design space (architecture, scene/aesthetic composition, technology ' +
-        'selection, data modeling — several fundamentally different routes exist), ' +
-        'touches an unfamiliar domain, carries an irreversible decision, or is a ' +
-        'difficult diagnosis after ordinary approaches failed twice; SKIP mechanical, ' +
-        'fully-specified, or small-scope tasks — judge the decision space, not the ' +
-        'prompt length (a one-line request can hide a large open design). Do NOT ' +
-        'consult about errors in a spec: factual conflicts go to evidence (inspect or ' +
-        'verify yourself), tradeoff conflicts go to the user. The advisor has no ' +
-        'internet: research unfamiliar domains and time-sensitive facts yourself ' +
-        'first, then pass the goal, the established facts, and the constraints; ' +
-        'receive framings, prior art, pitfalls, and evaluation dimensions — ideas ' +
-        'only, never steps. At most one consultation per planning phase plus two ' +
-        'follow-ups; follow-ups are separate calls, each with new facts and one ' +
-        'specific question (never a draft plan). When you use its ideas, state ' +
-        'which you adopted or rejected.',
+      description: "Consult a second, knowledge-rich model BEFORE planning. USE WHEN exploring open design spaces (architecture, tech selection, data modeling, aesthetics with divergent routes), unfamiliar domains, irreversible decisions, or difficult diagnoses failing twice. SKIP mechanical, fully specified, or small-scope tasks—judge the decision space, not prompt length (a one-line prompt can hide an open design). Do NOT consult on spec errors: verify factual conflicts yourself and escalate tradeoff conflicts to the user. The advisor has no internet: inspect the environment and research unfamiliar domains and time-sensitive facts first, then pass the goal, established facts, and constraints to receive framings, prior art, pitfalls, and evaluation dimensions (ideas only, never steps). Budget: 1 consultation plus up to 2 targeted follow-ups per planning phase (each requiring new facts and a specific question; never draft plans). In your final plan, state which recommendations you adopted or rejected, and why.",
       parameters: {
         type: 'object',
         properties: {
@@ -556,7 +401,7 @@ export function apply(ctx, config) {
         const modelUsage = createModelUsage(cfg.provider, cfg.model)
         try {
         if (cfg.enabled === false) throw new Error('Ciel disabled')
-        if (!reviewService.coordinator.guardAvailable) throw new Error('Ciel requires tools.guard() before model calls')
+        if (!advisorGuardAvailable) throw new Error('Ciel requires tools.guard() before model calls')
         // ── Mechanized negative gates (prompt text advises; these decide).
         // Gate order is cheapest-first; each error teaches the remedy.
         if (typeof args.context !== 'string' || args.context.trim() === '') {

@@ -1,8 +1,7 @@
 /**
  * Ciel record store — schema v1.
  *
- * This module owns the NEW Ciel data root introduced for the evidence/sidebar
- * work: `<home>/ciel/v1`. It never reads or writes the legacy
+ * This module owns the advisor data root: `<home>/ciel/v1`. It never reads or writes the legacy
  * `<home>/dsh-advisor` root; old records are intentionally not migrated.
  *
  * On-disk layout (one record per file, never an append-only log):
@@ -33,28 +32,18 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { chmod, lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 /** The persisted envelope schema version. */
 export const RECORD_SCHEMA_VERSION = 1
 
-/** Record kinds. reviews/evidence/advice/inbox are current; calls/feedback are reserved. */
-export const RECORD_KINDS = Object.freeze(['reviews', 'evidence', 'advice', 'inbox', 'calls', 'feedback'])
+/** Active advisor record kinds; historical data remains untouched. */
+export const RECORD_KINDS = Object.freeze(['advice', 'calls'])
 
 /** Hard per-file bound; an oversized record is an explicit error, never truncated. */
 export const RECORD_MAX_FILE_BYTES = 512 * 1024
-
-/** Hard per-session list bounds; exceeding either is an explicit error, never a silent partial list. */
-export const RECORD_MAX_LIST_RECORDS = 200
-export const RECORD_MAX_LIST_BYTES = 16 * 1024 * 1024
-
-/** Paginated listing bounds (listRecordsPage): per-page record cap and default. */
-export const RECORD_PAGE_DEFAULT_LIMIT = 100
-export const RECORD_PAGE_MAX_LIMIT = 200
-/** Metadata bound for one directory enumeration; exceeding it is an explicit error. */
-export const RECORD_MAX_ENUMERATED_FILES = 10000
 
 /** Identity length caps. */
 export const RECORD_MAX_SESSION_ID_LENGTH = 128
@@ -65,8 +54,6 @@ const KIND_SET = new Set(RECORD_KINDS)
 // no separators, no '.' / '..' (the leading-alphanumeric rule also excludes
 // hidden directories). Dots remain legal inside the id.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
-// base64url(sha256(id)) is exactly 43 characters with no padding.
-const RECORD_FILE_PATTERN = /^[A-Za-z0-9_-]{43}\.json$/
 const STORE_PARTS = Object.freeze(['ciel', 'v1'])
 const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
 
@@ -115,29 +102,6 @@ function assertId(id) {
   }
 }
 
-/** Page size for listRecordsPage: an integer in [1, RECORD_PAGE_MAX_LIMIT], default 100. */
-function assertPageLimit(limit) {
-  if (limit === undefined) return RECORD_PAGE_DEFAULT_LIMIT
-  if (!Number.isInteger(limit) || limit < 1 || limit > RECORD_PAGE_MAX_LIMIT) {
-    fail('CIEL_RECORD_INVALID_LIMIT', 'page limit must be an integer between 1 and ' + RECORD_PAGE_MAX_LIMIT)
-  }
-  return limit
-}
-
-/**
- * A cursor is the opaque hashed filename of the last record of the previous
- * page. It is validated against the exact filename grammar and used only as a
- * sort key: it is never joined into a path, never parsed back into an id, and
- * never echoed in an error message.
- */
-function assertPageCursor(cursor) {
-  if (cursor === undefined || cursor === null) return null
-  if (typeof cursor !== 'string' || !RECORD_FILE_PATTERN.test(cursor)) {
-    fail('CIEL_RECORD_INVALID_CURSOR', 'invalid record cursor')
-  }
-  return cursor
-}
-
 function resolveHome(home) {
   if (typeof home !== 'string' || home.length === 0) {
     fail('CIEL_RECORD_INVALID_HOME', 'invalid home directory')
@@ -166,10 +130,6 @@ export function recordRoot(home = process.env.DSH_HOME || join(homedir(), '.dsh'
 
 function recordFileName(id) {
   return createHash('sha256').update(id, 'utf8').digest('base64url') + '.json'
-}
-
-function recordPath(home, kind, sessionId, id) {
-  return join(recordRoot(home), kind, sessionId, recordFileName(id))
 }
 
 async function lstatOrNull(path) {
@@ -254,7 +214,7 @@ async function assertReplaceableFile(path) {
  * Write `serialized` to `path` atomically: create a random temp file in the
  * same directory with O_EXCL, fsync it, then rename over the target. Same-key
  * writes therefore atomically replace the prior record (the intended way to
- * publish a final review state); cross-identity replacement cannot happen
+ * publish final advice); cross-identity replacement cannot happen
  * because the target filename is derived from kind/session/id.
  */
 async function atomicWriteFile(path, serialized, beforeCommit) {
@@ -374,7 +334,7 @@ function assertRecordIdentity(record, kind, sessionId, id) {
  * replace a record of another kind/session/id. Returns frozen identity metadata
  * (never a copy of `value`).
  *
- * @param {string} kind reviews | evidence | advice | calls | feedback
+ * @param {string} kind advice | calls
  * @param {string} sessionId safe single path segment
  * @param {string} id opaque id (may contain ':')
  * @param {unknown} value JSON-serializable payload
@@ -447,189 +407,4 @@ export async function readRecord(kind, sessionId, id, options = {}) {
   const read = await readRecordFile(join(dir, recordFileName(id)))
   if (read === null) return null
   return assertRecordIdentity(parseRecord(read.buffer), kind, sessionId, id)
-}
-
-/**
- * Enumerate the safe record filenames of one session directory, sorted by
- * filename. Returns null when the directory is missing. The number of
- * directory entries processed is bounded by `maxEntries`; exceeding it is an
- * explicit error. Symlinked or non-regular matching entries are refused.
- */
-async function enumerateRecordNames(dir, { maxEntries }) {
-  let entries
-  try {
-    entries = await readdir(dir, { withFileTypes: true })
-  } catch (error) {
-    if (error.code === 'ENOENT') return null
-    throw error
-  }
-  if (entries.length > maxEntries) {
-    fail('CIEL_RECORD_ENUM_LIMIT', 'record directory enumeration exceeds ' + maxEntries + ' entries')
-  }
-  const names = []
-  for (const entry of entries) {
-    if (!RECORD_FILE_PATTERN.test(entry.name)) continue
-    if (entry.isSymbolicLink()) {
-      fail('CIEL_RECORD_UNSAFE_PATH', 'record file must not be a symbolic link')
-    }
-    if (!entry.isFile()) {
-      fail('CIEL_RECORD_UNSAFE_PATH', 'record path is not a regular file')
-    }
-    names.push(entry.name)
-  }
-  names.sort()
-  return names
-}
-
-/**
- * Read one named record file and validate its exact ownership. Read-level
- * failures (missing, oversized, symlinked, hard-linked) propagate unchanged;
- * parse/identity failures are rethrown with only the hashed filename appended,
- * never the stored body.
- */
-async function readValidatedRecord(dir, name, kind, sessionId) {
-  const read = await readRecordFile(join(dir, name), { allowMissing: false })
-  let record
-  try {
-    record = parseRecord(read.buffer)
-    if (
-      typeof record.id !== 'string' ||
-      typeof record.kind !== 'string' ||
-      typeof record.sessionId !== 'string' ||
-      record.kind !== kind ||
-      record.sessionId !== sessionId ||
-      recordFileName(record.id) !== name
-    ) {
-      fail('CIEL_RECORD_IDENTITY', 'stored record does not belong to the requested identity')
-    }
-    if (!hasOwnValue(record)) {
-      fail('CIEL_RECORD_CORRUPT', 'record envelope is missing its value')
-    }
-  } catch (error) {
-    if (error instanceof RecordStoreError) {
-      // Add only the hashed filename; never the body.
-      throw new RecordStoreError(error.code, error.message + ' [' + name + ']')
-    }
-    throw error
-  }
-  return { id: record.id, name, value: record.value, bytes: read.buffer.length }
-}
-
-/**
- * List every record value of one session, sorted by `id` (code-point order,
- * then filename). The return value is a plain `value[]`; callers must treat
- * values as data, never as array-index identities. Missing session returns [].
- *
- * Limits are explicit failures, never a silently truncated list:
- * more than 200 records, or more than 16 MiB of record bytes, throws. Long
- * sessions must use listRecordsPage instead of raising these hard bounds.
- *
- * @param {string} kind
- * @param {string} sessionId
- * @param {{ home?: string }} [options] home injection for tests only
- * @returns {Promise<unknown[]>}
- */
-export async function listRecords(kind, sessionId, options = {}) {
-  assertKind(kind)
-  assertSessionId(sessionId)
-  const home = homeFromOptions(options)
-  const dir = await locateStoreDir(home, kind, sessionId)
-  if (dir === null) return []
-  const names = await enumerateRecordNames(dir, { maxEntries: Number.MAX_SAFE_INTEGER })
-  if (names === null) return []
-  if (names.length > RECORD_MAX_LIST_RECORDS) {
-    fail('CIEL_RECORD_LIST_LIMIT', 'record list exceeds ' + RECORD_MAX_LIST_RECORDS + ' entries')
-  }
-  const records = []
-  let totalBytes = 0
-  for (const name of names) {
-    const record = await readValidatedRecord(dir, name, kind, sessionId)
-    totalBytes += record.bytes
-    if (totalBytes > RECORD_MAX_LIST_BYTES) {
-      fail('CIEL_RECORD_LIST_BYTES', 'record list exceeds ' + RECORD_MAX_LIST_BYTES + ' bytes')
-    }
-    records.push(record)
-  }
-  records.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-  return records.map(record => record.value)
-}
-
-/**
- * Page through one session's records by stable hashed filename order, for
- * sessions that exceed the listRecords hard bounds.
- *
- * Returns `{ entries, nextCursor, limited }`:
- *   - `entries` is a `{ id, name, value, bytes }[]` in ascending filename order;
- *   - `nextCursor` is the opaque hashed filename of the last returned record
- *     when more records remain, otherwise null (iteration complete);
- *   - `limited` is true exactly when `nextCursor !== null`, i.e. the page is a
- *     bounded partial view, not the whole session.
- *
- * A page holds at most `limit` records (default 100, max 200) and at most
- * 16 MiB of record bytes; when the byte budget binds first the page is cut
- * short with an explicit cursor, never silently completed. Directory
- * enumeration is bounded to RECORD_MAX_ENUMERATED_FILES metadata entries.
- * Corrupt, oversized, mis-owned, symlinked or hard-linked records remain
- * explicit errors and are never skipped.
- *
- * @param {string} kind
- * @param {string} sessionId
- * @param {{ home?: string, cursor?: string|null, limit?: number }} [options]
- * @returns {Promise<{ entries: { id: string, name: string, value: unknown, bytes: number }[], nextCursor: string|null, limited: boolean }>}
- */
-export async function listRecordEntriesPage(kind, sessionId, options = {}) {
-  assertKind(kind)
-  assertSessionId(sessionId)
-  const home = homeFromOptions(options)
-  const limit = assertPageLimit(options.limit)
-  const cursor = assertPageCursor(options.cursor)
-  const dir = await locateStoreDir(home, kind, sessionId)
-  if (dir === null) return { entries: [], nextCursor: null, limited: false }
-  const names = await enumerateRecordNames(dir, { maxEntries: RECORD_MAX_ENUMERATED_FILES })
-  if (names === null) return { entries: [], nextCursor: null, limited: false }
-  // Start strictly after the cursor filename; the cursor is only a sort key.
-  let start = 0
-  if (cursor !== null) {
-    let low = 0
-    let high = names.length
-    while (low < high) {
-      const mid = (low + high) >>> 1
-      if (names[mid] <= cursor) low = mid + 1
-      else high = mid
-    }
-    start = low
-  }
-  const entries = []
-  let totalBytes = 0
-  let lastIncluded = null
-  let index = start
-  for (; index < names.length; index += 1) {
-    if (entries.length >= limit) break
-    const record = await readValidatedRecord(dir, names[index], kind, sessionId)
-    // Per-page byte budget: stop before a record that would exceed it. A single
-    // record is capped at RECORD_MAX_FILE_BYTES < RECORD_MAX_LIST_BYTES, so the
-    // first record of a page always fits.
-    if (entries.length > 0 && totalBytes + record.bytes > RECORD_MAX_LIST_BYTES) break
-    totalBytes += record.bytes
-    entries.push(record)
-    lastIncluded = record.name
-  }
-  const hasMore = lastIncluded !== null && index < names.length
-  const nextCursor = hasMore ? lastIncluded : null
-  return { entries, nextCursor, limited: nextCursor !== null }
-}
-
-/**
- * The value-only projection of `listRecordEntriesPage`. Kept as a separate
- * public function so existing callers keep the exact `{ values, ... }` shape;
- * callers that must verify `value` against the stored id use the entry form.
- *
- * @param {string} kind
- * @param {string} sessionId
- * @param {{ home?: string, cursor?: string|null, limit?: number }} [options]
- * @returns {Promise<{ values: unknown[], nextCursor: string|null, limited: boolean }>}
- */
-export async function listRecordsPage(kind, sessionId, options = {}) {
-  const page = await listRecordEntriesPage(kind, sessionId, options)
-  return { values: page.entries.map((entry) => entry.value), nextCursor: page.nextCursor, limited: page.limited }
 }

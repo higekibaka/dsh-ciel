@@ -7,8 +7,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { apply, parseAdvisorItems } from '../index.js'
 import { resolvedConfig } from './config-fixture.js'
 import { prepareAdvisorJev, checkAdvisorWithJev, renderAdvisorJev } from '../jev-advisor.js'
-import { JEV_MODEL } from '../jev-review.js'
-import { isAdvisorJev, parseReviewResult } from '../review-protocol.js'
+import { JEV_MODEL } from '../jev-client.js'
+import { isAdvisorJev, parseAdvisorResult } from '../advisor-protocol.js'
 
 const home = await mkdtemp(join(tmpdir(), 'ciel-advisor-jev-'))
 process.env.DSH_HOME = home
@@ -73,7 +73,7 @@ test('one batch returns all three relations; supplement preserves original advic
   assert.ok(isAdvisorJev(result))
   assert.deepEqual(parseAdvisorItems(renderAdvisorJev(result) + '\n\n' + data.text), parseAdvisorItems(data.text))
   const rpc = { ok: true, advice: { sessionId: 's1', callId: 'c1', text: data.text, jev: result } }
-  parseReviewResult('readAdvice', rpc)
+  parseAdvisorResult('readAdvice', rpc)
   for (const mutate of [
     r => { r.scope = 'verified-facts' }, r => { r.checks[0].id = 'a7' },
     r => { r.checks[0].relation = 'safe' }, r => { r.checks.push(r.checks[0]) },
@@ -81,7 +81,7 @@ test('one batch returns all three relations; supplement preserves original advic
   ]) {
     const copy = structuredClone(rpc); mutate(copy.advice.jev)
     assert.equal(isAdvisorJev(copy.advice.jev), false)
-    assert.throws(() => parseReviewResult('readAdvice', copy))
+    assert.throws(() => parseAdvisorResult('readAdvice', copy))
   }
 })
 
@@ -134,13 +134,13 @@ async function harness(t, overrides = {}, fetchImpl = () => assert.fail('unexpec
   return { tool, requests, disposals,
     call: signal => tool.execute({ question: input().question, context: input().context }, { agent: parent, callId, signal }),
     configure(patch) { Object.assign(config, patch); ctx.emit('loader/volatile-update') },
-    read: () => ctx.get('advisorReview').readAdvice({ sessionId: parent.id, callId: 'tool:' + callId }),
+    read: () => ctx.get('cielAdvisor').readAdvice({ sessionId: parent.id, callId: 'tool:' + callId }),
   }
 }
 
-for (const jevEnabled of [false, true]) test('review toggle ' + jevEnabled + ' never enables advisor checks', async t => {
+test('advisor checks default off and do not request Jev', async t => {
   assert.equal(resolvedConfig({}).advisorJevEnabled, false)
-  const h = await harness(t, { jevEnabled })
+  const h = await harness(t)
   const value = await h.call()
   assert.equal(value.jev, undefined)
   assert.equal(value.text, section().trim())
@@ -167,7 +167,7 @@ test('advisor uses saved shared connection and sees live changes before its opti
 
 test('enabled host persists original reply and returns Jev to the model and presentation metadata', async t => {
   let calls = 0
-  const h = await harness(t, { advisorJevEnabled: true, jevEnabled: false }, async (_url, options) => {
+  const h = await harness(t, { advisorJevEnabled: true }, async (_url, options) => {
     calls++
     const request = JSON.parse(options.body)
     assert.equal(request.state.items.a1.advice, section().trim())
@@ -181,7 +181,7 @@ test('enabled host persists original reply and returns Jev to the model and pres
   assert.ok(h.tool.output.render({}, value)[0].text.endsWith(section().trim()))
   assert.deepEqual(h.tool.output.presentationMeta({}, value).jev, value.jev)
   const saved = await h.read()
-  parseReviewResult('readAdvice', saved)
+  parseAdvisorResult('readAdvice', saved)
   assert.equal(saved.advice.text, section().trim())
   assert.deepEqual(saved.advice.jev, value.jev)
   assert.doesNotMatch(JSON.stringify(saved), /fixture-key|Only one process/)
@@ -197,10 +197,10 @@ test('API failure keeps the advisor answer and a readable error result without r
   assert.equal((await h.read()).advice.text, section().trim())
 })
 
-for (const action of ['advisor-off', 'review-off', 'caller-cancel', 'ciel-off']) test('in-flight control: ' + action, { timeout: 2000 }, async t => {
+for (const action of ['advisor-off', 'caller-cancel', 'ciel-off']) test('in-flight control: ' + action, { timeout: 2000 }, async t => {
   let arrived, finish, transportSignal
   const started = new Promise(resolve => { arrived = resolve })
-  const h = await harness(t, { advisorJevEnabled: true, jevEnabled: true }, (_url, options) => {
+  const h = await harness(t, { advisorJevEnabled: true }, (_url, options) => {
     transportSignal = options.signal; arrived()
     return new Promise(resolve => { finish = () => resolve(Response.json(answer(['a1']))) })
   })
@@ -208,7 +208,6 @@ for (const action of ['advisor-off', 'review-off', 'caller-cancel', 'ciel-off'])
   const pending = h.call(controller.signal)
   await started
   if (action === 'advisor-off') h.configure({ advisorJevEnabled: false })
-  if (action === 'review-off') { h.configure({ jevEnabled: false }); finish() }
   if (action === 'caller-cancel') controller.abort()
   if (action === 'ciel-off') h.configure({ enabled: false })
   if (action.endsWith('-off') && action !== 'ciel-off') {

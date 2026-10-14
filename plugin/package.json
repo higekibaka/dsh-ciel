@@ -1,6 +1,6 @@
 {
   "name": "dsh-ciel",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → 夏尔 Ciel 独立页面可配。",
   "license": "MIT",
   "repository": {
@@ -14,7 +14,6 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
-    "./ptc-runtime": "./ptc-runtime.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -23,31 +22,19 @@
     "README.md",
     "index.js",
     "client.js",
-    "review-corpus.js",
-    "review-runner.js",
-    "review-identity.js",
-    "review-operation.js",
-    "review-errors.js",
-    "review-input.js",
-    "review-evidence.js",
-    "review-evidence-policy.js",
-    "jev-config.js",
-    "jev-review.js",
-    "jev-advisor.js",
-    "record-store.js",
-    "inbox-service.js",
-    "ptc-runtime.js",
-    "ptc-runtime-worker.mjs",
-    "cordis.patch.yml",
-    "model-usage.js",
-    "review-content.js",
+    "advisor-content.js",
+    "advisor-operation.js",
+    "advisor-repository.js",
+    "advisor-protocol.js",
+    "advisor-service.js",
     "advisor-state.js",
-    "review-repository.js",
-    "review-coordinator.js",
-    "review-investigation.js",
-    "review-facts.js",
-    "review-service.js",
-    "review-protocol.js"
+    "sensitive-text.js",
+    "jev-client.js",
+    "jev-advisor.js",
+    "jev-config.js",
+    "record-store.js",
+    "model-usage.js",
+    "cordis.patch.yml"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -62,13 +49,13 @@
     "plugin"
   ],
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.3",
-    "quickjs-emscripten": "0.32.0"
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-subagent": ">=0.1.5-alpha.2",
-    "@deepseek-ai/dsh-llm": ">=0.1.5-alpha.2",
-    "@deepseek-ai/dsh-tools": ">=0.1.5-alpha.2"
+    "@deepseek-ai/dsh-subagent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-subagent": {
@@ -82,8 +69,8 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.5-alpha.1"
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
   },
   "dsh": {
     "client": {
@@ -91,9 +78,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-resources",
-        "@deepseek-ai/dsh-client-ui-sidebar-right",
-        "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     },
     "bundle": {

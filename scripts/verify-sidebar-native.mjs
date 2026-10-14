@@ -109,66 +109,18 @@ try {
   const resourcesPlugin = await load('packages/client/resources/src/client/index.ts')
   const sidebarRightPlugin = await load('packages/client/ui-sidebar-right/src/client/index.ts')
   const { LocaleRuntime } = await load('packages/client/locale/src/client/index.ts')
-  const { dockPaneIds } = await load('packages/client/ui-dockkit/src/index.ts')
   const { Tag } = await load('packages/client/ui-primitives/src/Tag.tsx')
-  const { Button } = await load('packages/client/ui-primitives/src/Button.tsx')
-  const { fileAddressFor, parseFileAddress } = await load('packages/util/workspace-path/src/index.ts')
-  const { textDefinition } = await load('packages/client/ui-sidebar-documentpreview/src/client/definition.ts')
   const ciel = await import(pathToFileURL(join(cielRoot, 'plugin/src/sidebar.js')).href)
 
   // ── the only fixture: Host data RPC ──────────────────────────────────────
-  const REVIEW_A = {
-    reviewId: 'r-a', messageId: 'm-a', status: 'completed', verdict: 'changes', coverage: 'complete',
-    summary: 'A 会话的评审摘要', createdAt: 0,
-    jev: { status: 'completed', model: 'jev-1.13.0', requestCount: 1, elapsedMs: 300,
-      usage: { inputTokens: 150, outputTokens: 10 }, checks: [{ suspectId: 's1', claim: '锚点 A', status: 'completed', relation: 'insufficient', confidence: 0.8, disagreement: true, evidenceRefs: ['e-src'] }] },
-    annotations: [{ severity: 'blocker', title: 'A 批注', anchor: '锚点 A', comment: '评论 A', evidenceRefs: ['e-src'] }],
-  }
-  const REVIEW_B = {
-    reviewId: 'r-b', messageId: 'm-b', status: 'sound', verdict: 'pass', coverage: 'complete',
-    summary: 'B 会话的评审摘要', createdAt: 0, annotations: [],
-  }
-  const REVIEW_TRIAGE = {
-    reviewId: 'r-triage', messageId: 'm-triage', status: 'completed', verdict: 'changes', coverage: 'complete',
-    summary: '分诊恢复', createdAt: 0,
-    triage: { states: { 0: 'accept' } },
-    annotations: [
-      { severity: 'blocker', title: '分诊批注', comment: '评论' },
-      { severity: 'nit', title: '第二条批注', comment: '评论二' },
-    ],
-  }
-  const EVIDENCE = {
-    'e-src': { id: 'e-src', kind: 'source', path: 'src/a.ts', startLine: 10, endLine: 12, content: 'line ten\nline eleven\nline twelve', contentSha256: 'abcdef0123456789', capturedAt: 0, tool: 'read', truncated: false, status: 'available', currentPath: '/work/src/a.ts' },
-    'e-external': { id: 'e-external', kind: 'source', path: '/external-1/notes.md', currentPath: '/external/notes #?.md', startLine: 3, content: 'historical external note', status: 'available' },
-    'e-withheld': { id: 'e-withheld', kind: 'source', path: 'src/secret.ts', startLine: 1, endLine: 1, content: 'SECRET-SNIPPET', capturedAt: 0, tool: 'read', status: 'withheld' },
-    'e-report': { id: 'e-report', kind: 'reported', origin: 'author-tool', content: '', path: '/project/virtual/src/a.ts', capturedAt: 0, tool: 'read', status: 'available' },
-    'e-virtual': { id: 'e-virtual', kind: 'source', path: '/project/virtual/src/a.ts', startLine: 4, endLine: 4, content: 'virtual body', capturedAt: 0, tool: 'read', status: 'available' },
-  }
-  const ADVICE = {
-    'c-a': { callId: 'c-a', kind: 'tool', text: '顾问原始文本', items: [{ tier: 'high', title: '方向一', framing: '框架', pitfalls: '陷阱', verificationTarget: '验证' }], issues: ['问题一'], modelUsage: { used: [{ provider: 'fixture', model: 'fixed' }] }, createdAt: 0 },
-  }
+  const ADVICE = { callId: 'tool:c-a', sessionId: 's-a', kind: 'tool', text: '顾问原始文本', items: [{tier:'high',title:'方向一',framing:'框架',pitfalls:'陷阱',verificationTarget:'验证'}], issues: [], modelUsage:{used:[{provider:'fixture',model:'fixed'}]}, createdAt:0 }
   function createFixture() {
     const calls = []
-    const call = async (method, request) => {
-      calls.push({ method, request })
-      if (method === 'readReview') {
-        if (request.reviewId === 'r-fail') return { ok: false, error: 'fixture review failed' }
-        if (request.sessionId === 's-a' && request.reviewId === 'r-a') return { ok: true, review: REVIEW_A }
-        if (request.sessionId === 's-a' && request.reviewId === 'r-triage') return { ok: true, review: REVIEW_TRIAGE }
-        if (request.sessionId === 's-b' && request.reviewId === 'r-b') return { ok: true, review: REVIEW_B }
-        return { ok: false, error: 'fixture review not found' }
-      }
-      if (method === 'readEvidence') {
-        const evidence = EVIDENCE[request.evidenceId]
-        return evidence === undefined ? { ok: false, error: 'fixture evidence not found' } : { ok: true, evidence }
-      }
-      if (method === 'readAdvice') {
-        const advice = ADVICE[request.callId]
-        return advice === undefined ? { ok: false, error: 'fixture advice not found' } : { ok: true, advice }
-      }
-      return { ok: false, error: 'unknown method ' + method }
-    }
-    return { call, calls }
+    return { calls, async call(method, request) {
+      calls.push({method,request})
+      assert.equal(method, 'readAdvice')
+      return request.sessionId === 's-a' && request.callId === 'tool:c-a' ? {ok:true,advice:ADVICE} : {ok:false,error:'fixture advice missing'}
+    } }
   }
 
   // ── boot: real context + real resources + real sidebar-right + module ────
@@ -210,34 +162,10 @@ try {
     assert.ok(runtime.ctx.sidebarRightTabs, 'real ctx.sidebarRightTabs is provided')
 
     const fixture = createFixture()
-    const prepareCalls = []
-    const triageCalls = []
-    const sidebar = ciel.createCielSidebar({
-      React,
-      Tag,
-      Button,
-      fileAddressFor: (sessionId, path) => fileAddressFor(sessionId, '/work', path),
-    })
-    const uninstall = sidebar.install(runtime.ctx, {
-      call: fixture.call,
-      onPrepareFeedback: async (request) => { prepareCalls.push(request); return { ok: true, count: request.items.length } },
-      onTriage: async (request) => { triageCalls.push(request); return { ok: true } },
-    })
-    // The native viewer a file address resolves to; a fixture type + body, not a
-    // mocked service. It reports the address and the navigation line it received.
-    runtime.ctx.sidebarRightTabs.register({ ...textDefinition(), id: 'fixture/file', kind: 'file', priority: 'builtin' })
-    function FileBody(props) {
-      const info = props.useTabInfo()
-      const params = info.tab.navigation.params
-      return React.createElement('span', {
-        'data-fixture-file': '',
-        'data-address': info.tab.contentId,
-        'data-line': params !== undefined && params !== null && params.line !== undefined ? String(params.line) : '',
-      })
-    }
-    runtime.slots.register({ name: 'sidebar.right.pane.tab', key: 'fixture/file' }, FileBody)
+    const sidebar = ciel.createCielSidebar({ React, Tag })
+    const uninstall = sidebar.install(runtime.ctx, {call:fixture.call})
     sessionReferences.set(runtime, references)
-    return { runtime, feature, sidebar, uninstall, fixture, prepareCalls, triageCalls, selectSession, session: sessions[0] }
+    return { runtime, feature, sidebar, uninstall, fixture, selectSession, session: sessions[0] }
   }
 
   const visible = view => view.container.querySelector('[data-sidebar-right-session]:not([hidden])') || view.container
@@ -250,279 +178,35 @@ try {
   const layoutOf = (runtime, session) => runtime.storeOf('rightbar.session', sessionReferences.get(runtime).get(session)).getSnapshot().bySession[session].layout
   const countCalls = (fixture, method, predicate) => fixture.calls.filter((entry) => entry.method === method && (predicate === undefined || predicate(entry.request))).length
 
-  // ═══ scenario 1: wide room, full native flow ═════════════════════════════
-  {
-    const h = await boot({ sessions: ['s-a', 's-b'], width: 900 })
-    try {
-      const view = h.runtime.renderSlot('rightbar', { width: 420, viewportWidth: 1440, canShow: true })
-      assert.ok(visible(view).querySelector('[data-sidebar-right-panel]'), 'the real RightbarSeat rendered')
-
-      // 1. slot inject reaches the body, and useTabInfo/useResource are assembled.
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
-      const root = visible(view).querySelector('[data-ciel-review]')
-      assert.ok(root, 'the review body rendered through the real slot framework')
-      assert.equal(root.getAttribute('data-ciel-review'), 'r-a')
-      assert.match(visible(view).textContent, /A 会话的评审摘要/)
-      assert.match(visible(view).textContent, /A 批注/)
-      assert.equal(countCalls(h.fixture, 'readReview', (request) => request.sessionId === 's-a' && request.reviewId === 'r-a'), 1, 'the real resource provider read once through the fixture RPC')
-      assert.equal(dom.window.getComputedStyle(root).display, 'flex', 'the injected stylesheet lays the review surface out')
-      ok('slot inject + hook assembly', { body: true, useTabInfo: true, useResource: true })
-      assert.match(root.querySelector('[data-ciel-jev]').textContent, /Jev 证据检查.*证据不足.*与主评审有分歧/)
-      assert.match(root.querySelector('[data-ciel-jev]').textContent, /不代表正确率/)
-      assert.ok(root.querySelector('button[data-ciel-jev-ref="e-src"]'), 'Jev evidence link is a native action button')
-      ok('Jev shadow detail through native resources and Button', { mainVerdict: REVIEW_A.verdict })
-
-      const beforeMain = layoutOf(h.runtime, 's-a')
-      await act(async () => { h.runtime.panelInfo.set({ activePanelId: 'fixture-global-panel' }) })
-      assert.ok(!visible(view).querySelector('[data-sidebar-right-panel]') || visible(view).querySelector('[data-sidebar-right-panel]').closest('[hidden]'), 'a global main panel hides Session sidebar content')
-      assert.equal(h.runtime.ctx.resources.source(ciel.reviewAddress('s-a', 'r-a')).getSnapshot().status, 'live', 'hiding the root keeps tab-owned resources pinned')
-      await act(async () => { h.runtime.panelInfo.set({ activePanelId: null }) })
-      await flush()
-      assert.ok(visible(view).querySelector('[data-ciel-review]'), 'returning to Conversation restores the review')
-      assert.ok(layoutOf(h.runtime, 's-a') === beforeMain, 'main-panel switches retain the Session layout')
-      assert.equal(countCalls(h.fixture, 'readReview', request => request.reviewId === 'r-a'), 1, 'no re-read on main-panel remount')
-      ok('root main-panel switch retains Session sidebar and resource pin')
-
-      // 2. navigation through the real tab domain re-renders and focuses.
-      const tabA = h.runtime.ctx.sidebarRight.active()
-      await act(async () => { h.runtime.ctx.sidebarRight.tabDomain.navigate('s-a', tabA.id, { address: tabA.contentId, params: { annotationIndex: 0 } }) })
-      const focused = visible(view).querySelector('[data-ciel-focus]')
-      assert.ok(focused, 'navigation.params.annotationIndex reached the body through useTabInfo')
-      assert.equal(focused.getAttribute('data-ciel-annotation'), '0')
-      assert.equal(visible(view).querySelector('[data-ciel-review]').getAttribute('data-ciel-focus-index'), '0')
-      assert.equal(visible(view).querySelector('[data-ciel-review]').getAttribute('data-ciel-revision'), '2')
-      ok('useTabInfo navigation subscription')
-
-      // 3. the injected prepareFeedback callback is the one the body calls.
-      await act(async () => { fireEvent.click(visible(view).querySelector('[data-ciel-select="0"]')) })
-      await act(async () => { fireEvent.click(visible(view).querySelector('[data-ciel-submit]')); await settle() })
-      assert.deepEqual(h.prepareCalls, [{ sessionId: 's-a', reviewId: 'r-a', messageId: 'm-a', items: [{ index: 0 }] }], 'inject face reached the body and the request is the review session')
-      assert.match(visible(view).textContent, /已填入输入框/)
-      ok('injected prepareFeedback reaches the body')
-
-      // 3b. Host triage restores the boxes, and a click saves by exact sid/rid.
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-triage'), { kind: 'ciel-review' })
-      const triageBox = visible(view).querySelector('[data-ciel-select="0"]')
-      assert.ok(triageBox, 'the triage review body rendered its annotation')
-      assert.equal(triageBox.checked, true, 'Host triage state accept restored the checkbox')
-      assert.equal(visible(view).querySelector('[data-ciel-select="1"]').checked, false, 'an absent index starts unchecked, never all-selected')
-      assert.match(visible(view).textContent, /已选 1 条/)
-      await act(async () => { fireEvent.click(triageBox); await settle() })
-      assert.deepEqual(h.triageCalls[0], {
-        sessionId: 's-a',
-        reviewId: 'r-a',
-        changes: [{ index: 0, state: 'accept' }],
-        indices: [0],
-      }, 'the earlier prepare-feedback selection also saved triage for its own review')
-      assert.deepEqual(h.triageCalls[h.triageCalls.length - 1], {
-        sessionId: 's-a',
-        reviewId: 'r-triage',
-        changes: [{ index: 0, state: 'dismiss' }],
-        indices: [],
-      }, 'the triage save carries the exact sid/rid/index')
-      assert.equal(visible(view).querySelector('[data-ciel-select="0"]').checked, false)
-      assert.match(visible(view).textContent, /勾选只用于回传，不代表问题成立/)
-      ok('triage restore and save', { restored: 'accept', saved: 'dismiss' })
-
-      // 3c. a real remount: switch to another tab and back. The review resource
-      // stays pinned to its first frame (triage accept), yet the local dismiss
-      // must survive the body's unmount and remount.
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-triage'), { kind: 'ciel-review' })
-      const remounted = visible(view).querySelector('[data-ciel-select="0"]')
-      assert.ok(remounted, 'the triage review body remounted')
-      assert.equal(remounted.checked, false, 'the local dismiss survived a real remount')
-      assert.equal(visible(view).querySelector('[data-ciel-select="1"]').checked, false)
-      assert.match(visible(view).textContent, /已选 0 条/)
-      assert.equal(h.runtime.ctx.resources.source(ciel.reviewAddress('s-a', 'r-triage')).getSnapshot().status, 'live', 'the record stayed pinned and was not re-read')
-      assert.equal(countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-triage'), 1, 'no re-read of the pinned record')
-      ok('triage survives a real remount', { pinned: true, checked: false, reRead: false })
-
-      // 4. a failed read shows the failure and never a stale value.
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-fail'), { kind: 'ciel-review' })
-      const failedPanel = visible(view).querySelector('[data-ciel-state="failed"]')
-      assert.ok(failedPanel, 'the failed body renders the failure panel')
-      assert.match(visible(view).textContent, /fixture review failed/)
-      assert.equal(visible(view).querySelector('[data-ciel-review]'), null, 'no review content under a failure')
-      const failedSnapshot = h.runtime.ctx.resources.source(ciel.reviewAddress('s-a', 'r-fail')).getSnapshot()
-      assert.equal(failedSnapshot.status, 'failed')
-      assert.equal(failedSnapshot.value, undefined, 'the real registry holds no last value for a failed first read')
-      ok('failed read: failure panel, no stale value')
-
-      // 5. session isolation: the address, not the current session, is authority.
-      await h.selectSession('s-b')
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
-      const cross = visible(view).querySelector('[data-ciel-review="r-a"]')
-      assert.ok(cross, "session A's review renders while the current session is B")
-      assert.match(visible(view).textContent, /A 会话的评审摘要/)
-      assert.equal(countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-a' && request.sessionId === 's-a') >= 1, true, 'the read carried the address session')
-      assert.equal(h.fixture.calls.some((entry) => entry.method === 'readReview' && entry.request.sessionId === 's-b' && entry.request.reviewId === 'r-a'), false, 'no read was issued under the current session')
-      await h.selectSession('s-a')
-      ok('session isolation', { addressSession: 's-a', currentSession: 's-b' })
-
-      // 6. per-occurrence pinning: the cross-session tab opened in step 5 still
-      // holds the address after session A's own tab closes; the last close
-      // releases the record, and reopening reads again.
-      const beforeClose = countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-a')
-      const reviewAddress = ciel.reviewAddress('s-a', 'r-a')
-      const findTab = (session) => Object.values(layoutOf(h.runtime, session).tabs).find((tab) => tab.contentId === reviewAddress)
-      const liveTab = findTab('s-a')
-      assert.ok(liveTab, "session A's review tab is still open")
-      assert.equal(h.runtime.ctx.resources.source(reviewAddress).getSnapshot().status, 'live')
-      await act(async () => { h.runtime.ctx.sidebarRight.close(liveTab.id) })
-      await flush()
-      assert.equal(h.runtime.ctx.resources.source(reviewAddress).getSnapshot().status, 'live', "session B's occurrence still pins the address")
-      await h.selectSession('s-b')
-      const otherTab = findTab('s-b')
-      assert.ok(otherTab, "session B's cross-session tab is still open")
-      await act(async () => { h.runtime.ctx.sidebarRight.close(otherTab.id) })
-      await flush()
-      const released = h.runtime.ctx.resources.source(reviewAddress).getSnapshot()
-      assert.notEqual(released.status, 'live', 'the last close released the resource')
-      assert.equal(released.value, undefined)
-      await h.selectSession('s-a')
-      await open(h.runtime, reviewAddress, { kind: 'ciel-review' })
-      assert.equal(countCalls(h.fixture, 'readReview', (request) => request.reviewId === 'r-a'), beforeClose + 1, 'reopening reads again')
-      ok('per-occurrence pinning and release', { heldWhileOtherTabOpen: true, releasedOnLastClose: true })
-
-      // 7. evidence: source lines, withheld content, reported author-tool.
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-src'), { kind: 'ciel-evidence' })
-      assert.match(visible(view).textContent, /line eleven/)
-      assert.deepEqual([...visible(view).querySelectorAll('[data-ciel-line]')].map((node) => node.getAttribute('data-ciel-line')), ['10', '11', '12'])
-      assert.ok(visible(view).querySelector('[data-ciel-open-current]'), 'a trusted currentPath offers the current-file button')
-      assert.equal(dom.window.getComputedStyle(visible(view).querySelector('[data-ciel-evidence]')).display, 'flex')
-      assert.equal(dom.window.getComputedStyle(visible(view).querySelector('[data-ciel-line-text]')).whiteSpace, 'pre-wrap', 'long code lines wrap instead of scrolling sideways')
-      assert.equal(dom.window.getComputedStyle(visible(view).querySelector('[data-ciel-line-number]')).textAlign, 'right')
-      assert.equal(dom.window.getComputedStyle(visible(view).querySelector('[data-ciel-evidence-body]')).overflow, 'auto')
-      ok('evidence source lines')
-
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-withheld'), { kind: 'ciel-evidence' })
-      assert.ok(visible(view).querySelector('[data-ciel-evidence-withheld]'))
-      assert.doesNotMatch(visible(view).textContent, /SECRET-SNIPPET/)
-      assert.equal(visible(view).querySelectorAll('[data-ciel-line]').length, 0)
-      ok('withheld evidence hides content')
-
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-report'), { kind: 'ciel-evidence' })
-      assert.ok(visible(view).querySelector('[data-ciel-evidence-reported]'), 'reported author-tool evidence is labelled')
-      assert.match(visible(view).textContent, /作者报告/)
-      assert.match(visible(view).textContent, /宿主未另行保存内容/)
-      assert.match(visible(view).textContent, /不是本插件的独立读取或核实/)
-      assert.equal(visible(view).querySelectorAll('[data-ciel-line]').length, 0)
-      ok('reported author-tool evidence', { kind: 'reported', origin: 'author-tool' })
-
-      // 8. the current-file button never falls back to a virtual path.
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-virtual'), { kind: 'ciel-evidence' })
-      assert.match(visible(view).textContent, /\/project\/virtual\/src\/a\.ts/, 'the recorded virtual path is displayed')
-      assert.equal(visible(view).querySelector('[data-ciel-open-current]'), null, 'no current-file button without a Host currentPath')
-      assert.equal(visible(view).querySelector('[data-fixture-file]'), null, 'no file tab opened from a virtual path')
-      ok('currentPath-only current-file button')
-
-      // 9. an explicit click opens the live file through the native viewer.
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-src'), { kind: 'ciel-evidence' })
-      await act(async () => { fireEvent.click(visible(view).querySelector('[data-ciel-open-current]')) })
-      await flush()
-      const fileBody = visible(view).querySelector('[data-fixture-file]')
-      assert.ok(fileBody, 'the native file viewer opened')
-      assert.equal(fileBody.getAttribute('data-address'), 'dsh-resource://file/session/s-a/src/a.ts')
-      assert.equal(fileBody.getAttribute('data-line'), '10', 'params.line reached the native viewer')
-      ok('explicit current-file open', { address: fileBody.getAttribute('data-address'), line: 10 })
-
-      assert.equal(textDefinition().canOpen('dsh-resource://file/absolute/external/notes.md'), false, 'the real alpha.2 viewer refuses the legacy address')
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-external'), { kind: 'ciel-evidence' })
-      assert.match(visible(view).querySelector('[data-ciel-current-line-hint]').textContent, /Markdown 渲染视图请切换/)
-      await act(async () => { fireEvent.click(visible(view).querySelector('[data-ciel-open-current]')) })
-      await flush()
-      const external = visible(view).querySelector('[data-fixture-file]')
-      assert.ok(external, 'the native alpha.2 claim accepts a Session-owned external file')
-      assert.deepEqual(parseFileAddress(external.getAttribute('data-address')), { scope: 'session', sessionId: 's-a', path: '/external/notes #?.md' })
-      assert.equal(external.getAttribute('data-line'), '3')
-      ok('external source address and Markdown line guidance')
-
-      // 9b. the explicit compare gesture: the native Button primitive renders
-      // the control, the native split opens a second pane, and the file lands
-      // beside the evidence (a new tab even though the file is already open).
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-src'), { kind: 'ciel-evidence' })
-      const compareButton = visible(view).querySelector('[data-ciel-compare-current]')
-      assert.ok(compareButton, 'the compare control renders')
-      assert.match(compareButton.getAttribute('class') || '', /primary/, 'the native Button primitive rendered the compare control')
-      await act(async () => { fireEvent.click(compareButton); await settle() })
-      await flush()
-      const paneIds = dockPaneIds(layoutOf(h.runtime, 's-a'))
-      assert.equal(visible(view).querySelectorAll('[data-dockkit-pane]').length, 2)
-      assert.equal(paneIds.length, 2, 'the compare gesture split the column')
-      const rightPane = paneIds[paneIds.length - 1]
-      const beside = [...visible(view).querySelectorAll('[data-fixture-file]')].find((node) => {
-        const pane = node.closest('[data-dockkit-pane]')
-        return pane !== null && pane.getAttribute('data-dockkit-pane') === rightPane
-      })
-      assert.ok(beside, 'the file opened in the new pane beside the evidence')
-      assert.equal(beside.getAttribute('data-line'), '10', 'the compare tab carries the snippet line')
-      ok('explicit compare split', { panes: 2, pane: rightPane, line: 10 })
-
-      // 10. advice body: ideas, not verification.
-      await open(h.runtime, ciel.adviceAddress('s-a', 'c-a'), { kind: 'ciel-advice' })
-      assert.ok(visible(view).querySelector('[data-ciel-advice]'))
-      assert.match(visible(view).textContent, /顾问原始文本/)
-      assert.match(visible(view).textContent, /方向一/)
-      assert.match(visible(view).textContent, /不是核实过的证据/)
-      ok('advice body disclaimer')
-
-      // 11. the split gesture opened two panes; at capacity the native control
-      // hides and the API refuses another split.
-      assert.equal(dockPaneIds(layoutOf(h.runtime, 's-a')).length, 2)
-      assert.ok([...visible(view).querySelectorAll('[data-dockkit-split-button]')].every(button => button.disabled), 'at capacity native split controls are absent or disabled')
-      let extraPane
-      await act(async () => { extraPane = h.runtime.ctx.sidebarRight.split() })
-      assert.equal(extraPane, undefined, 'a full column refuses another split')
-      ok('split capacity', { panes: 2, refused: true })
-
-      // 12. dispose removes types, providers, and bodies; it is idempotent.
-      // An open ciel tab first, so the seat's unavailable-kind path is visible.
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
-      await act(async () => { h.sidebar.dispose(); h.sidebar.dispose(); await settle() })
-      assert.equal(h.runtime.ctx.sidebarRightTabs.get('ciel-review'), undefined)
-      assert.equal(h.runtime.ctx.sidebarRightTabs.get('ciel-evidence'), undefined)
-      assert.equal(h.runtime.ctx.sidebarRightTabs.get('ciel-advice'), undefined)
-      assert.equal(h.runtime.ctx.resources.source(ciel.reviewAddress('s-a', 'r-after-dispose')).getSnapshot().status, 'none', 'no provider remains after dispose')
-      assert.ok(visible(view).querySelector('[data-sidebar-right-unavailable]'), 'the open tab now reports an unavailable kind')
-      assert.deepEqual(h.sidebar.openReview('s-a', 'r-a'), { ok: false, error: 'dsh-ciel sidebar is disposed' })
-      assert.throws(() => h.sidebar.install(h.runtime.ctx, { call: h.fixture.call }), /disposed/)
-      ok('dispose idempotent and complete')
-    } finally {
-      await h.runtime.dispose()
-    }
-  }
-
-  // ═══ scenario 2: insufficient room keeps the native split single-column ═══
-  {
-    const h = await boot({ sessions: ['s-a'], width: 100 })
-    try {
-      const view = h.runtime.renderSlot('rightbar', { width: 420, viewportWidth: 1440, canShow: true })
-      await open(h.runtime, ciel.reviewAddress('s-a', 'r-a'), { kind: 'ciel-review' })
-      const split = visible(view).querySelector('[data-dockkit-split-button]')
-      assert.ok(split === null || split.disabled, 'native split is hidden or disabled when halves do not fit')
-      let paneId
-      await act(async () => { paneId = h.runtime.ctx.sidebarRight.split() })
-      assert.equal(paneId, undefined, 'the explicit split refuses')
-      assert.equal(dockPaneIds(layoutOf(h.runtime, 's-a')).length, 1, 'the column stays single')
-      // The same explicit gesture with no room: the split is refused and the
-      // file opens as a tab in the one column.
-      await open(h.runtime, ciel.evidenceAddress('s-a', 'r-a', 'e-src'), { kind: 'ciel-evidence' })
-      await act(async () => { fireEvent.click(visible(view).querySelector('[data-ciel-compare-current]')); await settle() })
-      await flush()
-      assert.equal(dockPaneIds(layoutOf(h.runtime, 's-a')).length, 1, 'no room keeps one column')
-      const singleFile = visible(view).querySelector('[data-fixture-file]')
-      assert.ok(singleFile, 'the file still opens in the single column')
-      assert.equal(singleFile.getAttribute('data-line'), '10')
-      ok('compare without room', { panes: 1, line: 10 })
-      ok('native split insufficient room', { panes: 1, hidden: split === null, refused: true })
-    } finally {
-      await h.runtime.dispose()
-    }
-  }
-
-  assert.equal(networkRequests, 0, 'no network request was made')
-  console.log(JSON.stringify({ passed: true, checks: results.length, results, networkRequests }, null, 1))
+  const h = await boot({sessions:['s-a','s-b']})
+  try {
+    const view = h.runtime.renderSlot('rightbar', {width:420, viewportWidth:1440, canShow:true})
+    const address = ciel.adviceAddress('s-a','tool:c-a')
+    await open(h.runtime,address,{kind:'ciel-advice'})
+    assert.ok(visible(view).querySelector('[data-ciel-advice]'))
+    assert.match(visible(view).textContent,/顾问原始文本/)
+    assert.match(visible(view).textContent,/方向一/)
+    assert.match(visible(view).textContent,/不是核实过的证据/)
+    assert.equal(h.fixture.calls.length,1)
+    ok('native resources and advice body render without model execution')
+    await h.selectSession('s-b')
+    await open(h.runtime,address,{kind:'ciel-advice'})
+    assert.match(visible(view).textContent,/方向一/)
+    assert.ok(h.fixture.calls.every(entry=>entry.request.sessionId==='s-a'))
+    ok('address owns session identity across current-session changes')
+    await open(h.runtime,ciel.adviceAddress('s-a','missing'),{kind:'ciel-advice'})
+    assert.ok(visible(view).querySelector('[data-ciel-state="failed"]'))
+    assert.equal(visible(view).querySelector('[data-ciel-advice]'),null)
+    ok('failed resource never shows stale advice')
+    await open(h.runtime,address,{kind:'ciel-advice'})
+    await act(async()=>{h.sidebar.dispose();h.sidebar.dispose();await settle()})
+    assert.equal(h.runtime.ctx.sidebarRightTabs.get('ciel-advice'),undefined)
+    assert.equal(h.runtime.ctx.resources.source(ciel.adviceAddress('s-a','after')).getSnapshot().status,'none')
+    assert.equal(h.sidebar.openAdvice('s-a','tool:c-a').ok,false)
+    ok('disposal releases resource provider, tab and body')
+  } finally { await h.runtime.dispose() }
+  assert.equal(networkRequests,0)
+  console.log(JSON.stringify({passed:true,results,networkRequests},null,1))
 } finally {
   globalThis.fetch = originalFetch
   disposeHooks()

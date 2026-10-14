@@ -1,16 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { loadClientFactory } from './review-ui.harness.js'
+import { loadClientFactory } from './advisor-ui.harness.js'
 
-const DEFAULTS = {
-  provider: 'kimi-coding', model: 'kimi-for-coding', maxTokens: 4096, maxCallsPerTurn: 3,
-  requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true,
-  reasoningEffort: 'provider', guidanceEnabled: true, criticProvider: 'google',
-  criticModel: 'gemini-3.8-flash', criticEffort: 'medium', criticExploreEnabled: true,
-  enabled: true, jevEnabled: false, advisorJevEnabled: false, criticTimeoutSeconds: 180,
-  criticMaxTokens: 16384, advisorTimeoutSeconds: 180,
-  criticAdditionalRoots: [], jevApiKey: '', jevEndpoint: 'https://api.typesafe.ai/v1/systemone', jevModel: 'jev-1.13.0',
-}
+const DEFAULTS = { provider: 'kimi-coding', model: 'kimi-for-coding', maxTokens: 4096, maxCallsPerTurn: 3, requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true, reasoningEffort: 'provider', guidanceEnabled: true, enabled: true, advisorJevEnabled: false, advisorTimeoutSeconds: 180, jevApiKey: '', jevEndpoint: 'https://api.typesafe.ai/v1/systemone', jevModel: 'jev-1.13.0' }
 
 function settingsCard(overrides = {}) {
   let state = []
@@ -31,7 +23,7 @@ function settingsCard(overrides = {}) {
     useEffect() {},
   }
   const plugin = loadClientFactory().factory(React)
-  const value = { ...DEFAULTS, criticExploreBudget: 20, ...overrides }
+  const value = { ...DEFAULTS, ...overrides }
   const user = { ...overrides }
   const writes = []
   const cleanups = []
@@ -47,7 +39,7 @@ function settingsCard(overrides = {}) {
         for (const op of ops) {
           const key = op.path[0]
           if (op.op === 'set') { writes.push(['set', key, op.value]); value[key] = op.value; user[key] = op.value }
-          else { writes.push(['unset', key]); value[key] = key === 'criticExploreBudget' ? 20 : DEFAULTS[key]; delete user[key] }
+          else { writes.push(['unset', key]); value[key] = DEFAULTS[key]; delete user[key] }
         }
         revision++
         if (loseResponse) { loseResponse = false; throw new Error('synthetic lost response') }
@@ -192,25 +184,6 @@ test('a lost save response can be acknowledged without sending a duplicate write
   assert.equal(rt.mutations.length, 1)
 })
 
-test('additional source roots are explicit, staged, validated and saved as an array', async (t) => {
-  const rt = settingsCard(); t.after(() => rt.dispose())
-  let tree = open(rt)
-  nodes(tree).find((n) => n.type === 'button' && text(n).startsWith('高级设置')).props.onClick()
-  tree = rt.render()
-  const label = rt.api.fieldDefinition('criticAdditionalRoots').label
-  input(tree, label).props.onChange({ target: { value: '/opt/project-one\n/opt/framework' } })
-  tree = rt.render()
-  assert.deepEqual(rt.writes, [])
-  assert.equal(button(tree, '保存').props.disabled, false)
-  await button(tree, '保存').props.onClick()
-  assert.deepEqual(rt.writes, [['set', 'criticAdditionalRoots', ['/opt/project-one', '/opt/framework']]])
-  tree = rt.render()
-  input(tree, label).props.onChange({ target: { value: '/opt/project/../private' } })
-  tree = rt.render()
-  assert.equal(input(tree, label).props['aria-invalid'], true)
-  assert.equal(button(tree, '保存').props.disabled, true)
-})
-
 test('settings retain all baseline defaults and exactly one editor per configuration key', (t) => {
   const rt = settingsCard(); t.after(() => rt.dispose())
   assert.deepEqual(rt.api.defaults, DEFAULTS)
@@ -219,42 +192,14 @@ test('settings retain all baseline defaults and exactly one editor per configura
   assert.deepEqual(rt.writes, [])
 })
 
-test('global switch is first; common controls open and advanced/model groups stay collapsed', (t) => {
+test('settings keep the global switch first and only advisor controls', t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
-  const tree = open(rt)
-  assert.equal(tree.type, 'section')
-  const controls = nodes(tree).filter((n) => n.type === 'input' || n.type === 'select' || n.props.role === 'switch')
+  const tree = open(rt), controls = nodes(tree).filter(n => n.type === 'input' || n.type === 'select' || n.props.role === 'switch')
   assert.equal(controls[0].props['aria-label'], '启用 Ciel')
   assert.equal(controls[0].props['aria-checked'], true)
-  assert.equal(controls[0].props['data-fixture-native'], 'Switch')
-  const hint = rt.api.fieldDefinition('enabled').hint
-  for (const part of ['保存后', 'ask_advisor', '批注评审', '新的批注回传', '取消正在进行', '既有结果仍可查看']) assert.ok(hint.includes(part), part)
-  const groups = nodes(tree).filter((n) => n.type === 'button' && n.props['aria-expanded'] !== undefined)
-  assert.equal(groups.find((n) => text(n).includes('常用设置')).props['aria-expanded'], true)
-  for (const name of ['高级设置（通常保持默认）', '顾问管道', '批评者（批注评审）路由']) {
-    assert.equal(groups.find((n) => text(n).includes(name)).props['aria-expanded'], false)
-  }
-  assert.match(text(tree), /顾问.*批评者/)
+  assert.doesNotMatch(text(tree), /批注评审|批评者|允许评审时查文件/)
   assert.match(text(tree), /以下修改均在点击「保存」后生效/)
-  assert.ok(!text(tree).includes('启用批评者评审'))
   assert.equal(button(tree, '保存').props.disabled, true)
-  for (const control of controls) {
-    assert.ok(control.props['aria-label'])
-    if (control.props.role === 'switch') assert.ok(control.props.title)
-    else assert.ok(nodes(tree).some((n) => n.props.id === control.props['aria-describedby']))
-  }
-})
-
-test('settings explain time-only reviews and preserve separate advisor quotas', (t) => {
-  const rt = settingsCard(); t.after(() => rt.dispose())
-  const hint = (key) => rt.api.fieldDefinition(key).hint
-  assert.equal(rt.api.fieldDefinition('criticExploreBudget'), undefined)
-  assert.equal(rt.api.fieldDefinition('criticMaxRequests'), undefined)
-  assert.match(hint('criticTimeoutSeconds'), /不限制查询次数或模型请求次数/)
-  assert.match(hint('maxCallsPerTurn'), /实际 turn.*不等于.*规划阶段/)
-  for (const key of ['advisorTimeoutSeconds', 'criticTimeoutSeconds']) assert.match(hint(key), /不是费用上限/)
-  assert.match(hint('guidanceEnabled'), /保存后/)
-  assert.doesNotMatch(hint('criticExploreEnabled'), /保密|公开|世界可碰/)
 })
 
 test('global toggle and numeric edits stay staged, discard restores, one save writes original keys', async (t) => {
@@ -280,51 +225,19 @@ test('global toggle and numeric edits stay staged, discard restores, one save wr
   assert.equal(button(rt.render(), '保存').props.disabled, true)
 })
 
-test('Jev is opt-in and its staged toggle saves, survives remount and resets to off', async t => {
-  const rt = settingsCard(); t.after(() => rt.dispose())
-  let tree = open(rt)
-  assert.equal(input(tree, '启用 Jev 证据检查').props['aria-checked'], false)
-  assert.match(text(tree), /TypeSafe.*额外 API 用量/)
-  assert.match(text(tree), /TYPESAFE_API_KEY/)
-  input(tree, '启用 Jev 证据检查').props.onClick()
-  rt.remount()
-  assert.equal(input(rt.render(), '启用 Jev 证据检查').props['aria-checked'], true)
-  assert.deepEqual(rt.writes, [])
-  await button(rt.render(), '保存').props.onClick()
-  assert.deepEqual(rt.writes, [['set', 'jevEnabled', true]])
-  rt.remount()
-  tree = rt.render()
-  assert.equal(input(tree, '启用 Jev 证据检查').props['aria-checked'], true)
-  button(tree, '重置').props.onClick()
-  await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.jevEnabled, false)
-  assert.deepEqual(rt.writes[1], ['unset', 'jevEnabled'])
-})
-
-test('advisor Jev defaults off and saves independently of review Jev', async t => {
+test('advisor Jev remains opt-in and survives staged remount and reset', async t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
   const label = '启用顾问建议检查（Jev）'
   assert.equal(input(open(rt), label).props['aria-checked'], false)
-  input(rt.render(), label).props.onClick()
-  rt.remount()
+  input(rt.render(), label).props.onClick(); rt.remount()
   assert.equal(input(rt.render(), label).props['aria-checked'], true)
   assert.deepEqual(rt.writes, [])
   await button(rt.render(), '保存').props.onClick()
   assert.deepEqual(rt.writes, [['set', 'advisorJevEnabled', true]])
-  assert.equal(rt.value.jevEnabled, false)
-  rt.remount()
-  assert.equal(input(rt.render(), label).props['aria-checked'], true)
-  input(rt.render(), '启用 Jev 证据检查').props.onClick()
-  await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.advisorJevEnabled, true)
-  input(rt.render(), '启用 Jev 证据检查').props.onClick()
-  await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.advisorJevEnabled, true)
-  // Reset belongs to a field, so select the advisor field's second reset.
-  nodes(rt.render()).filter(n => n.type === 'button' && text(n) === '重置')[1].props.onClick()
+  const field = nodes(rt.render()).find(n => n.props['data-ciel-setting'] === 'advisorJevEnabled')
+  button(field, '重置').props.onClick()
   await button(rt.render(), '保存').props.onClick()
   assert.equal(rt.value.advisorJevEnabled, false)
-  assert.equal(rt.value.jevEnabled, false)
 })
 
 test('numeric reset stages a renderable default, can discard, and only unsets on save', async (t) => {
@@ -364,16 +277,6 @@ test('model route groups preserve their labels, defaults, catalog choices, and c
 })
 
 
-test('Jev evidence control follows file checking while advisor checking remains independent',t=>{
- const rt=settingsCard({jevEnabled:true,advisorJevEnabled:true});t.after(()=>rt.dispose())
- input(open(rt),'允许评审时查文件').props.onClick()
- const tree=rt.render()
- assert.equal(input(tree,'启用 Jev 证据检查').props.disabled,true)
- assert.equal(input(tree,'启用 Jev 证据检查').props['aria-checked'],true)
- assert.equal(input(tree,'启用顾问建议检查（Jev）').props.disabled,false)
- assert.match(text(tree),/原有偏好仍保留/)
- assert.deepEqual(rt.writes,[])
-})
 test('provider change clears a previously staged model reset and saves the new model atomically',async t=>{
  const rt=settingsCard({model:'custom-old'});t.after(()=>rt.dispose())
  rt.api.getSettingsEditor().set('catalog',{status:'ready',groups:[{id:'kimi-coding',models:[{id:'kimi-for-coding'}]},{id:'google',models:[{id:'gemini-3.8-flash',name:'Gemini'}]}]})

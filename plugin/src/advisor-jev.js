@@ -1,4 +1,4 @@
-import { isAdvisorJev } from '../review-protocol.js'
+import { isAdvisorJev } from '../advisor-protocol.js'
 
 const statusLabels = { completed: '已完成', partial: '部分完成', skipped: '已跳过', error: '不可用', cancelled: '已取消' }
 const reasons = {

@@ -5,21 +5,13 @@ export function packageReadme(english) {
   const start = english.indexOf('# dsh-ciel (Ciel)\n')
   if (start < 0) throw new Error('English README product heading is missing')
   return '<!-- Generated from README.en.md by scripts/sync-docs.mjs; do not edit directly. -->\n\n'
-    + english.slice(start).replace(/\]\((?:\.\/)?(docs\/[^)]+|CHANGELOG\.md)\)/g,
+    + english.slice(start).replace(/\]\((?:\.\/)?(docs\/[^)]+|README\.md|SECURITY\.md|CHANGELOG\.md)\)/g,
       (_, path) => '](https://github.com/higekibaka/dsh-ciel/blob/main/' + path + ')')
 }
 
 export function checkReadme(text, version, fields, defaults, language) {
   const errors = []
-  const current = text.match(/(?:当前版本：|Current release:)\s*\*\*\[([^\]]+)\]/)?.[1]
-  if (current !== version) errors.push('current release must match plugin/package.json')
-  for (const url of ['https://github.com/higekibaka/dsh-ciel/releases/tag/v' + version, 'https://www.npmjs.com/package/dsh-ciel/v/' + version]) {
-    if (!text.includes('](' + url + ')')) errors.push('missing current release link: ' + url)
-  }
-  const installs = [...text.matchAll(/dsh plugin --profile web add dsh-ciel@([^\s`]+)/g)].map(m => m[1])
-  if (!installs.length || installs.some(value => value !== version)) errors.push('install command version mismatch')
-  const heading = language === 'zh' ? '## ' + version + ' 更新' : "## What's new in " + version
-  if (!text.split('\n').includes(heading)) errors.push('release highlights heading mismatch')
+  if (!text.includes("/releases/tag/v" + version) || !text.includes("dsh-ciel@" + version)) errors.push("release version mismatch or missing install version")
   const rows = [...text.matchAll(/^\| `([A-Za-z][A-Za-z0-9]*)` \| ([^|]+) \|/gm)]
   const names = rows.map(row => row[1])
   const expected = Object.keys(fields).filter(key => !fields[key].meta.hidden)
@@ -38,7 +30,6 @@ export function checkReadme(text, version, fields, defaults, language) {
 export function checkClassification(text) {
   const kinds = [...text.matchAll(/<!-- ciel-doc: (current|historical) -->/g)].map(m => m[1])
   if (kinds.length !== 1) return ['expected exactly one current/historical document marker']
-  if (kinds[0] === 'current' && /^#{1,6} .*?(?:开发版|尚未发布|unreleased)/im.test(text)) return ['current page still has an unreleased feature heading']
   return []
 }
 

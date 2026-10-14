@@ -6,10 +6,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   createModelUsage, captureModelUsage, modelUsageSnapshot,
-  persistCallModelUsage, readCallModelUsage, readReviews,
+  persistCallModelUsage, readCallModelUsage,
 } from '../index.js'
 import { recordRoot } from '../record-store.js'
-import { reviewHarness } from './host-harness.js'
 
 const previousHome = process.env.DSH_HOME
 const home = await mkdtemp(join(tmpdir(), 'ciel-model-usage-'))
@@ -52,47 +51,29 @@ test('unrelated or malformed source data cannot manufacture a model badge', () =
   assert.deepEqual(modelUsageSnapshot({ requested: {}, used: [{ provider: 'a', model: 'b' }, { provider: 'a', model: 'b' }] }), { used: [{ provider: 'a', model: 'b' }] })
 })
 
-test('command and tool identities are persisted independently, including requested-only failures', async () => {
+test('tool identities retain requested-only failures and reject retired command usage', async () => {
   const usage = createModelUsage('provider-a', 'model-a')
   await persistCallModelUsage('session-test', 'tool', 'same-id', usage)
-  captureModelUsage(usage, runWith([sourceEvent('provider-b', 'model-b')]))
-  await persistCallModelUsage('session-test', 'command', 'same-id', usage)
   assert.deepEqual((await readCallModelUsage('session-test', 'tool', 'same-id')).used, [])
-  assert.deepEqual((await readCallModelUsage('session-test', 'command', 'same-id')).used, [{ provider: 'provider-b', model: 'model-b' }])
-  assert.equal(await readCallModelUsage('session-test', 'command', 'legacy-id'), null)
-  assert.equal(await readCallModelUsage('../escape', 'command', 'same-id'), null)
+  captureModelUsage(usage, runWith([sourceEvent('provider-b', 'model-b')]))
+  assert.equal(await persistCallModelUsage('session-test', 'command', 'same-id', usage), false)
+  assert.equal(await readCallModelUsage('session-test', 'command', 'same-id'), null)
+  assert.equal(await readCallModelUsage('session-test', 'tool', 'legacy-id'), null)
+  assert.equal(await readCallModelUsage('../escape', 'tool', 'same-id'), null)
   assert.equal(await persistCallModelUsage('session-test', 'invalid', 'id', usage), false)
 })
 
 test('latest same-key usage record wins atomically without a stale fallback', async () => {
   const usage = createModelUsage('p', 'm')
-  await persistCallModelUsage('usage-tail', 'command', 'id', usage)
-  assert.deepEqual((await readCallModelUsage('usage-tail', 'command', 'id')).used, [])
+  await persistCallModelUsage('usage-tail', 'tool', 'id', usage)
+  assert.deepEqual((await readCallModelUsage('usage-tail', 'tool', 'id')).used, [])
   captureModelUsage(usage, runWith([sourceEvent('actual', 'resolved')]))
-  await persistCallModelUsage('usage-tail', 'command', 'id', usage)
-  assert.equal((await readCallModelUsage('usage-tail', 'command', 'id')).used[0].model, 'resolved')
+  await persistCallModelUsage('usage-tail', 'tool', 'id', usage)
+  assert.equal((await readCallModelUsage('usage-tail', 'tool', 'id')).used[0].model, 'resolved')
 })
 
 test('provenance read failure is not silently treated as a legacy missing record', async () => {
   await persistCallModelUsage('unreadable', 'tool', 'id', createModelUsage('p', 'm'))
   await writeFile(callRecordFile('unreadable', 'tool', 'id'), '{"torn"')
   await assert.rejects(readCallModelUsage('unreadable', 'tool', 'id'), (error) => error.code === 'CIEL_RECORD_CORRUPT')
-})
-
-test('review metadata freezes selected route and survives later configuration changes', async (t) => {
-  const h = await reviewHarness(['## suspects'], { criticProvider: 'selected-provider', criticModel: 'selected-model' })
-  t.after(() => h.dispose())
-  const result = await h.start()
-  h.configure({ criticProvider: 'new-provider', criticModel: 'new-model' })
-  assert.deepEqual(result.review.modelUsage, { requested: { provider: 'selected-provider', model: 'selected-model' }, used: [] })
-  assert.deepEqual((await readReviews(h.sid))[0].modelUsage, result.review.modelUsage)
-  assert.deepEqual(await h.service.callModelUsage({ sessionId: h.sid, kind: 'command', id: 'old' }), { modelUsage: null })
-})
-
-test('review spawn failure stores requested-only provenance rather than claiming execution', async (t) => {
-  const h = await reviewHarness([{ spawnError: new Error('fixture spawn failure') }], { criticProvider: 'p', criticModel: 'm' })
-  t.after(() => h.dispose())
-  const result = await h.start()
-  assert.equal(result.ok, false)
-  assert.deepEqual(result.review.modelUsage, { requested: { provider: 'p', model: 'm' }, used: [] })
 })

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRuntime, flush, loadClientFactory } from './review-ui.harness.js'
+import { createRuntime, flush, loadClientFactory } from './advisor-ui.harness.js'
 
 const recorded = { requested: { provider: 'requested-p', model: 'requested-m' }, used: [{ provider: 'actual-p', model: 'actual-m' }] }
 const api = loadClientFactory().factory({ createElement() {}, useState() {}, useEffect() {} }).__test
@@ -68,12 +68,6 @@ test('PTC advisor content without meta still renders structured items', async t 
   const body = text(rt.runner.render(rt.moduleExports.__test.AdvisorToolView, props))
   assert.match(body, /顾问建议 · 1 条/)
   assert.match(body, /PTC direction.*useful idea.*bounded risk.*verify locally/)
-})
-
-test('new callModelUsage Remote descriptor is registered alongside existing review methods', () => {
-  for (const name of ['list', 'start', 'feedback', 'triage', 'progress', 'cancel', 'callModelUsage']) {
-    assert.ok(api.remoteMethodNames.includes(name), name)
-  }
 })
 
 test('structured advisor items and parse issues remain visible; model label survives collapse', async (t) => {
@@ -153,35 +147,4 @@ test('late tool lookup cannot relabel a different tool identity', async (t) => {
   const body = text(rt.runner.render(View, props('next')))
   assert.match(body, /请求模型：next \/ next-m（未确认执行）/)
   assert.doesNotMatch(body, /actual-p/)
-})
-
-test('review panels preserve result facts for legacy, partial, unverified, and error records', async (t) => {
-  const settingsValue = { criticProvider: 'current', criticModel: 'current-m' }
-  const rt = await createRuntime({}, { settingsValue }); t.after(() => rt.dispose())
-  const doc = docStub()
-  for (const status of ['sound', 'incomplete', 'unverified', 'error', 'cancelled', 'completed-unparsed']) {
-    const entry = { status, error: 'failed', annotations: [], modelUsage: recorded,
-      ...(status === 'incomplete' ? { verdict: 'pass', coverage: 'partial' } : {}),
-      ...(status === 'unverified' ? { verdict: 'pass', coverage: 'not-verified' } : {}),
-    }
-    const before = domText(rt.runtime.buildPanel(doc, entry))
-    settingsValue.criticProvider = 'changed'; settingsValue.criticModel = 'changed-m'
-    assert.equal(domText(rt.runtime.buildPanel(doc, entry)), before)
-    assert.match(before, /本次模型：actual-p \/ actual-m/)
-    assert.doesNotMatch(before, /current|changed/)
-    if (['incomplete', 'unverified'].includes(status)) assert.doesNotMatch(before, /✓ 整体成立/)
-    if (status === 'error') assert.match(before, /批注评审失败：failed/)
-    assert.match(domText(rt.runtime.buildPanel(doc, { ...entry, modelUsage: undefined })), /本次模型：未记录/)
-  }
-  const budgetPanel = domText(rt.runtime.buildPanel(doc, {
-    status: 'error', annotations: [], modelUsage: recorded,
-    error: 'budget exceeded; no recoverable cited dossier, salvage skipped',
-    modelRequests: 12, diagnostics: { phase: 2, budget: 10, toolCalls: 10, toolBudgetExceeded: true },
-  }))
-  assert.match(budgetPanel, /批注评审未完成：读取\/检索次数已达上限（10\/10）/)
-  assert.match(budgetPanel, /本次模型请求：12 次/)
-  assert.match(budgetPanel, /本次模型：actual-p \/ actual-m/)
-  assert.doesNotMatch(budgetPanel, /整体成立|budget exceeded|current|changed/)
-  const multi = rt.runtime.buildPanel(doc, { status: 'sound', annotations: [], modelUsage: { used: [...recorded.used, { provider: 'fallback', model: 'next' }] } })
-  assert.match(domText(multi), /本次模型：actual-p \/ actual-m；fallback \/ next/)
 })

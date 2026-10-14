@@ -6,6 +6,26 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-14
+
+### Breaking changes and compatibility
+
+- Ciel 现在是纯顾问插件：移除批注评审、批评者、评审收件箱、证据/文件快照、反馈草稿、评审专用 RPC 和私有 QuickJS/PTC 运行时及包导出。需要这些能力的用户应暂缓升级。
+- 本版要求 DSH **0.2.0-rc.2**，peer 版本精确匹配；Node.js 要求 **^22.19.0 || >=24.0.0**。不声明支持旧宿主，不建议绕过版本检查。
+- 旧 review/evidence/feedback/inbox 数据保留但不再读取、迁移或删除。已保存的可寻址顾问建议和工具调用来源记录继续可读；无历史列表或自动清理。
+
+### Retained and fixed
+
+- 保留 ask_advisor、既有顾问协议/提醒、模型来源、设置、独立可选 Jev 检查、工具卡片和原生建议侧栏。
+- 移除与宿主网络重试冲突的底层请求次数限制，首次 fetch failed 后可按提供方策略重试；所有尝试共享同一咨询时限，Ciel 不叠加重试循环。
+- 修复设置保存栏底部透出正文与误点区域，统一按钮布局，保存/放弃逻辑不变。
+- 中英文及 npm 文档同步纯顾问范围、升级要求、Jev 检查覆盖范围和平台相关存储安全边界；旧版文档链接固定到历史标签。
+
+### Upgrade and verification
+
+- 升级前备份 profile 配置，使用当前 DSH 的 bundle 管理器安装到目标 profile；遵循安装结果的重启要求并刷新界面。不要另启 Web profile 更新 Desktop。旧评审配置不会自动清理；保留仍使用的顾问和共用 Jev 连接配置。
+- 可复现验证入口包括单元测试、文档契约、生成客户端一致性、发布包隐私扫描，以及 DSH 0.2.0-rc.2 离线重试、协议、设置和侧栏集成检查，见 [验证命令](docs/index.md)。这些检查不代表真实模型准确率或所有平台的视觉验收。
+
 ## [0.20.1] - 2026-10-03
 
 ### Documentation
@@ -25,8 +45,8 @@ All notable changes to dsh-ciel are documented here. The format follows
 - Jev 证据检查与顾问建议检查：两个独立开关，默认关闭；结果展示支持、矛盾、依据不足、用量与分歧，不改主裁决或顾问原文。顾问检查只核对传入背景的一致性，不独立查证事实。缺钥、敏感输入、超限、接口失败与超时均有明确状态。
 - **Jev API 配置**：API Key、完整 HTTPS 接口地址和模型 ID；顾问/评审共用。密钥通过宿主 secret 字段脱敏，留空保留、输入替换、显式清除覆盖。官方地址保留 TYPESAFE_API_KEY 回退，自定义服务须另填密钥；保存对后续检查生效。
 - 每个提名疑点独立受限调查，至多 8 项并发，共享原总时限和不可变资料；保存逐项结论、受阻说明、查询和请求计数。单项失败不抹掉其他结果，不能引用未收到的兄弟回执。并发会增加模型用量，不增加文件权限。
-- 历史宿主事实与有界工具输出证据：读取目标回复之前的模型路由、权限/审批枚举、工具名称与原文回执，保留来源和时间，不用当前配置填补历史；受限根目录清单与源码容量分离。见 [历史事实证据](docs/host-fact-evidence.md)。
-- DSH 0.1.7 的引用配置、Profile 设置与 Session V4 兼容，以及升级前设置迁移工具；见 [兼容性说明](docs/compatibility-017.md)。独立 Jev 实验默认零网络预演，真实请求需显式 --live；见 [Jev 说明](docs/jev-evidence-experiment.md)。
+- 历史宿主事实与有界工具输出证据：读取目标回复之前的模型路由、权限/审批枚举、工具名称与原文回执，保留来源和时间，不用当前配置填补历史；受限根目录清单与源码容量分离。见 [历史事实证据](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/host-fact-evidence.md)。
+- DSH 0.1.7 的引用配置、Profile 设置与 Session V4 兼容，以及升级前设置迁移工具；见 [兼容性说明](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/compatibility-017.md)。独立 Jev 实验默认零网络预演，真实请求需显式 --live；见 [Jev 说明](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/jev-evidence-experiment.md)。
 
 ### Changed
 
@@ -43,7 +63,7 @@ All notable changes to dsh-ciel are documented here. The format follows
 ### Verification and upgrade notes
 
 - 本地 703 项单元测试、57 个 DSH 0.2.0-rc.2 真实执行链场景、Registry/Gateway 协议、22 项原生侧栏、原生设置、Profile 持久化/密钥脱敏/清除及设置迁移验证通过。执行链和配置验证使用脚本模型，未调用外部付费 API。
-- 本轮 Jev API 配置未完成日常 GUI 在线验收（浏览器需认证）；既有 UI 验证范围见 [界面接入说明](docs/ui-redesign-20260930.md)。不代表真实模型准确率或 Windows Desktop 验证。
+- 本轮 Jev API 配置未完成日常 GUI 在线验收（浏览器需认证）；既有 UI 验证范围见 [界面接入说明](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/ui-redesign-20260930.md)。不代表真实模型准确率或 Windows Desktop 验证。
 - 更新插件后须重启 DSH 并刷新页面；后续配置保存无需再次重启。密钥存于本机 DSH 配置，不是加密保险库。旧宿主没有安全密钥元数据时禁用 API 编辑区，官方接口仍可使用进程环境变量。
 
 ## [0.19.0] - 2026-09-19
@@ -71,10 +91,10 @@ All notable changes to dsh-ciel are documented here. The format follows
 ### Added
 
 - 提取 ReviewCoordinator / ReviewRepository、顾问咨询状态、内容解析、Client ReviewState / progress scheduler 和 DOM 锚点模块；保持私有受限运行时、宿主证据回执及原有取消提交点。仓储支持注入 I/O 故障，不需要修改全局 fs。
-- 增加当前 DSH Registry/Gateway 协议回归 `scripts/verify-protocol.mjs`，以及 [架构现状](docs/architecture.md) 和 [容量/部署/恢复决策](docs/architecture-decisions.md)。
+- 增加当前 DSH Registry/Gateway 协议回归 `scripts/verify-protocol.mjs`，以及 [架构现状](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/architecture.md) 和 [容量/部署/恢复决策](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/architecture-decisions.md)。
 - CI 固定到本轮验证的 DSH 0.1.6-alpha.2，检查共享 peer 身份和实际协议；原生侧栏验证脚本使用当前会话保留接口。
 
-- [架构检查与演进方向](docs/architecture.md)：记录消息身份、终态提交、错误与资源所有权约束，以及后续职责拆分和容量策略。
+- [架构检查与演进方向](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/architecture.md)：记录消息身份、终态提交、错误与资源所有权约束，以及后续职责拆分和容量策略。
 - **夏尔收件箱首版**（原生左栏入口/中央面板、后端服务、RPC 与测试；不含 GUI 验收结论）。新增独立 `inbox` 记录类型与 `advisorReview.inboxList` / `advisorReview.inboxSetIntent` 两个严格 Remote 描述符：列表读取既有评审记录并返回有界投影（默认且最多每页 25 条；计数与筛选仅针对当前页），每条批注带 `pending`（待判断）/ `planned`（准备处理）/ `rejected`（暂不采纳）意向。
 - 意向是收件箱自己的标记，**不是修复动作**：不驱动模型、不修改输入草稿，也不复用旧的 accept/dismiss 勾选；旧 `feedback` 状态既不迁移也不读取。
 - 意向写入以服务端内容指纹 `reviewFingerprint` 加每条评审的 `revision` 做比较并交换；存量指纹与当前评审不一致时，读取与写入都显式失败（`fingerprint_mismatch`），不做隐式重置或落基。
@@ -106,7 +126,7 @@ All notable changes to dsh-ciel are documented here. The format follows
 ### Added
 
 - 可选 peer 依赖 `@deepseek-ai/dsh-tools >= 0.1.5-alpha.2`（受限 PTC 用），插件依赖固定 `quickjs-emscripten 0.32.0`。
-- 交接文档 [受限 PTC 评审](docs/ptc-review.md)。
+- 交接文档 [受限 PTC 评审](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/ptc-review.md)。
 
 ### Verification
 
@@ -129,7 +149,7 @@ All notable changes to dsh-ciel are documented here. The format follows
 - 390 个单元测试通过，包括跨阶段共用时限、资料准备超时、超时后的工具拒绝和旧配置兼容。
 - 22 个真实 DSH 离线执行链场景通过：75次批量读取、70次连续查询/72次模型请求越过旧次数值后仍完成，10秒总时限到后中断且不追加模型。
 - 22 项 Chromium 原生服务夹具检查及真实 SettingsRoot 回归通过；执行链测试使用脚本模型，未做真实 A/B。宿主变更需用户重启 DSH 后生效。
-- 详情见 [只限时评审交接](docs/time-only-review.md)。
+- 详情见 [只限时评审交接](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/time-only-review.md)。
 
 ## [0.16.1] - 内部里程碑（未发布 npm）
 
@@ -148,7 +168,7 @@ All notable changes to dsh-ciel are documented here. The format follows
 - Chromium 夹具统一使用自有浏览器启动器，明确关闭自有 CDP 浏览器并清理 profile 后才保存成功报告。实际 GUI 检查新增升级版本前置门，默认等到 alpha.2 才允许继续。
 - 隔离验证通过：381 个单元测试、23 个真实执行链场景（含占位符放行与真令牌拒绝各一）、21 项原生侧栏检查、19 项真实 Chromium 夹具检查，另通过原生设置页回归；模型验收请求为 0。CI 固定 alpha.2 commit `b2e3b2a0125854567a4a5fcba75782e42fe84901`。
 - 用户手动升级到 alpha.2 后，另用隔离 `DSH_HOME` 的第二实例完成真实浏览器检查：正常 token→cookie 认证与刷新、Ciel 激活、只读分页 RPC、设置页原生控件、空白会话的原生右侧栏挂载、`/advise` 命令注册通过，页面错误与模型 prompt 均为 0。它使用合成记录与隔离状态，**不是正式实例验收**；其 CLI 启动按惯例重写了 `profiles` 模板文件，但正式设置、凭据与会话未被写入。
-- 正式实例、真实会话数据上的批注/证据/当前文件交互仍需人工或后续授权验收；这些路径由离线执行链、真实原生服务夹具与 Chromium 完整客户端夹具覆盖，但不等于正式数据验收。详情见 [alpha.2 兼容性说明](docs/upgrade-dsh-0.1.5-alpha.2.md)。
+- 正式实例、真实会话数据上的批注/证据/当前文件交互仍需人工或后续授权验收；这些路径由离线执行链、真实原生服务夹具与 Chromium 完整客户端夹具覆盖，但不等于正式数据验收。详情见 [alpha.2 兼容性说明](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/upgrade-dsh-0.1.5-alpha.2.md)。
 
 ## [0.16.0] - 内部里程碑（未发布 npm）
 
@@ -336,8 +356,8 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 探索型批评者：从「凭直觉下裁决的判官」升级为「先调查取证、再下裁决的
 判官」（契约 v3，计划与验收见
-[docs/iteration-critic-ux.md](docs/iteration-critic-ux.md)，A/B 报告见
-[docs/ab/ab-comparison-0.13.0.md](docs/ab/ab-comparison-0.13.0.md)）。
+[docs/iteration-critic-ux.md](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/iteration-critic-ux.md)，A/B 报告见
+[docs/ab/ab-comparison-0.13.0.md](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/ab/ab-comparison-0.13.0.md)）。
 
 ### Added
 
@@ -383,7 +403,7 @@ All notable changes to dsh-ciel are documented here. The format follows
 ## [0.12.0] - 2026-09-05
 
 批评者体验的换代迭代（计划见
-[docs/iteration-critic-ux.md](docs/iteration-critic-ux.md)），外加 DSH 0.1.3
+[docs/iteration-critic-ux.md](https://github.com/higekibaka/dsh-ciel/blob/v0.20.1/docs/iteration-critic-ux.md)），外加 DSH 0.1.3
 适配与一个宿主级死循环修复。
 
 ### Added

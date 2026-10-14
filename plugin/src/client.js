@@ -1,22 +1,12 @@
-import { createMarkSupervisor, clearOwned, findChatRoot, markTurn } from './review-marks.js'
-import { createReviewState, isListResultLoaded, shouldReplace, loadReviewPages, entryTime, entryRank } from './review-state.js'
-import { createReviewProgress } from './review-progress.js'
-import { REVIEW_REMOTE as ADVISOR_REMOTE } from '../review-protocol.js'
-import { createReviewTransport } from './review-transport.js'
-import { reviewMessageKey } from '../review-identity.js'
+import { ADVISOR_REMOTE } from '../advisor-protocol.js'
 import { createCielSidebar } from './sidebar.js'
 import { advisorJevPanel, advisorJevSummary } from './advisor-jev.js'
 import { JEV_MODEL, JEV_ENDPOINT, validJevEndpoint, validJevModel, validJevKey } from '../jev-config.js'
 import SIDEBAR_CSS from './sidebar.css'
-import { INBOX_PANEL_ID, createCielInbox, currentSessionId } from './inbox.js'
-import INBOX_CSS from './inbox.css'
 import SETTINGS_CSS from './settings.css'
-import { createCielDecisionPrompt, hasSettledReviewItems } from './presentation.js'
-import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 // dsh-ciel browser half: a dedicated Settings → 夏尔 Ciel page editing the
-// existing `ciel` namespace. Native controls come from DSH alpha.2's shared
-// platform module table; they are neither copied nor separately bundled.
+// existing `ciel` namespace. Local controls use the host theme tokens.
 // The hand-written module factory remains the package's browser artifact.
 //
 // The dedicated page retains staged edits with one atomic Save, per-field
@@ -34,18 +24,27 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     const React = require('react')
-    const { createPortal } = require('react-dom')
-    const { Switch, Tag, Button, Modal } = require('@deepseek-ai/dsh-client-ui-primitives')
-    if (typeof Switch !== 'function' || typeof Tag !== 'function' || typeof createPortal !== 'function') {
-      throw new Error('Ciel 的原生设置界面需要 DSH 0.1.5-alpha.2 或更新版本；请升级并刷新页面。')
-    }
     const { useState, useEffect } = React
     const h = React.createElement
 
+    // Keep these small controls local: the host palette is the only UI dependency.
+    function Switch({ checked, onChange, label, disabled = false, title }) {
+      return h('button', { type: 'button', role: 'switch', 'aria-checked': checked,
+        'aria-label': label, title, disabled, className: 'ciel-switch',
+        onClick: () => { if (!disabled) onChange(!checked) } }, h('span', { className: 'ciel-switch-thumb' }))
+    }
+    function Tag({ tone = 'outline', className = '', children }) {
+      return h('span', { className: 'ciel-tag ' + className, 'data-tone': tone }, children)
+    }
+    function Button({ variant = 'ghost', size = 'md', icon, className = '', children, ...rest }) {
+      return h('button', { type: 'button', ...rest, className: 'ciel-button ciel-button-' + variant + ' ciel-button-' + size + ' ' + className },
+        icon == null ? null : h('span', { className: 'ciel-button-icon', 'aria-hidden': true }, icon), children)
+    }
+
     // Navigation is a filled, full-size action, not a readonly status chip.
-    const navigationButton = (props, label) => h(Button || 'button', {
+    const navigationButton = (props, label) => h(Button, {
       type: 'button',
-      ...(Button ? { variant: 'primary', size: 'md', icon: h('span', { 'aria-hidden': true }, '→') } : {}),
+      variant: 'primary', size: 'md', icon: h('span', { 'aria-hidden': true }, '→'),
       'data-ciel-action': '',
       ...props,
     }, label)
@@ -75,20 +74,12 @@ window.__ModuleLoader__.load({
       planReminderEnabled: true,
       reasoningEffort: 'provider',
       guidanceEnabled: true,
-      criticProvider: 'google',
-      criticModel: 'gemini-3.8-flash',
-      criticEffort: 'medium',
-      criticExploreEnabled: true,
-      jevEnabled: false,
       advisorJevEnabled: false,
       jevApiKey: '',
       jevEndpoint: JEV_ENDPOINT,
       jevModel: JEV_MODEL,
       enabled: true,
-      criticTimeoutSeconds: 180,
-      criticMaxTokens: 16384,
       advisorTimeoutSeconds: 180,
-      criticAdditionalRoots: [],
     }
     const MAX_TOKENS_MIN = 256
     const MAX_TOKENS_MAX = 32768
@@ -121,25 +112,22 @@ window.__ModuleLoader__.load({
     const FIELD_DEFS = [
       {
         kind: 'check', key: 'enabled', label: '启用 Ciel',
-        hint: '关闭并保存后，停止顾问咨询（ask_advisor）、批注评审和新的批注回传，并取消正在进行的 Ciel 请求；既有结果仍可查看。重新开启也须保存。',
+        hint: '关闭并保存后，停止顾问咨询（ask_advisor），并取消正在进行的 Ciel 请求；既有结果仍可查看。重新开启也须保存。',
       },
       {
         kind: 'group', key: 'common', label: '常用设置', defaultOpen: true,
-        summarize: (staged) => `文件核查${staged.criticExploreEnabled ? '开' : '关'} · 最多 ${staged.criticTimeoutSeconds} 秒`,
+        summarize: (staged) => `每回合最多 ${staged.maxCallsPerTurn} 次 · 最多 ${staged.advisorTimeoutSeconds} 秒`,
         children: [
-          { kind: 'check', key: 'criticExploreEnabled', label: '允许评审时查文件', hint: '需要核对代码或文件依据时开启：批评者可用允许的 read/grep/glob 工具，在允许范围内查阅资料，不修改文件。关闭后仍会调用模型分析，但不做这一步文件核查。' },
-          { kind: 'check', key: 'jevEnabled', label: '启用 Jev 证据检查', hint: '评审后将主张原文和引用证据发给 TypeSafe 检查，产生额外 API 用量。证据可含源码、历史模型名/权限/工具声明、经敏感检查的工具输出及受限目录清单；不发送密钥或完整历史。结果和分歧显示在评审详情，不自动改裁决。需要开启文件核查，在下方 Jev API 配置中填写密钥，或让 DSH 启动进程继承 TYPESAFE_API_KEY。开关保存后生效，关闭会取消在途 Jev 检查。' },
-          { kind: 'check', key: 'advisorJevEnabled', label: '启用顾问建议检查（Jev）', hint: '顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。独立于评审开关，默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥与评审共用下方 Jev API 配置；关闭并保存会取消在途检查。' },
+          { kind: 'check', key: 'advisorJevEnabled', label: '启用顾问建议检查（Jev）', hint: '顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥在下方 Jev API 配置中填写；关闭并保存会取消在途检查。' },
           { kind: 'number', key: 'maxCallsPerTurn', label: '每个代理回合最多咨询几次', min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: '限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。' },
           { kind: 'number', key: 'advisorTimeoutSeconds', label: '顾问最多等多久（秒）', min: 10, max: 600, hint: '一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。' },
-          { kind: 'number', key: 'criticTimeoutSeconds', label: '评审最多等多久（秒）', min: 10, max: 600, hint: '只按总时间控制评审：默认180秒，包含准备资料、分析和核查。每个疑点独立调查，至多8项并发共享总时限，用量高于整批核查。时间内不限制查询次数或模型请求次数；时间到立即停止，不额外延时重试。文件权限和敏感资料保护照旧；不是费用上限。' },
         ],
       },
       {
         kind: 'group', key: 'jevApi', label: 'Jev API 配置', defaultOpen: true,
         summarize: staged => staged.jevModel,
         children: [
-          { kind: 'secret', key: 'jevApiKey', label: 'Jev API Key', hint: '顾问与评审共用。留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。' },
+          { kind: 'secret', key: 'jevApiKey', label: 'Jev API Key', hint: '留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。' },
           { kind: 'text', key: 'jevEndpoint', label: 'Jev 接口地址', fallback: JEV_ENDPOINT, hint: '完整 HTTPS 地址（含 /v1/systemone 或代理对应路径），不会自动追加路径；必须兼容 TypeSafe systemone 协议，不是 OpenAI 接口。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送环境变量密钥。不允许 URL 内凭据、查询参数、片段或重定向。' },
           { kind: 'text', key: 'jevModel', label: 'Jev 模型 ID', fallback: JEV_MODEL, hint: '默认 jev-1.13.0，可填写接口支持的其他模型 ID；不经过「设置 → 模型」路由。保存后下一次 Jev 检查使用，正在进行的请求不变。' },
         ],
@@ -158,25 +146,10 @@ window.__ModuleLoader__.load({
         ],
       },
       {
-        kind: 'group', key: 'critic', label: '批评者（批注评审）路由', defaultOpen: false,
-        summarize: (staged) => `${staged.criticProvider} / ${staged.criticModel} · ${staged.criticEffort}`,
-        children: [
-          { kind: 'route', key: 'criticProvider', label: '批评者提供方', options: 'provider', hint: '评审子代理的 provider 路由；跨家族纠错收益最大。独立于上面的顾问管道。' },
-          { kind: 'route', key: 'criticModel', label: '批评者模型', options: 'criticModel', hint: 'gemini-3.8-flash 过载时可临时切走（如 deepseek flash）。' },
-          {
-            kind: 'effort', key: 'criticEffort', label: '批评者思考深度', opts: 'critic', fallback: 'medium',
-            hintReady: '注入评审子代理的每个请求；跟随提供方默认则不注入。选项与所选模型声明的档位一致（gemini-3.8-flash 仅 low/medium/high）。',
-            hintFallback: '注入评审子代理的每个请求；跟随提供方默认则不注入。模型目录不可用，未校验档位支持。',
-          },
-        ],
-      },
-      {
         kind: 'group', key: 'advanced', label: '高级设置（通常保持默认）', defaultOpen: false,
-        summarize: () => '资料范围、回答长度与咨询提醒',
+        summarize: () => '回答长度与咨询提醒',
         children: [
-          { kind: 'paths', key: 'criticAdditionalRoots', label: '额外允许查看的源码目录（可选）', hint: '默认只查看当前项目。确需核查外部库或框架源码时，每行填写一个绝对目录路径，最多 16 个；不要填写主目录、凭据或会话目录。目录内仍只收录允许的源码与文档，保存后只影响后续评审。' },
           { kind: 'number', key: 'maxTokens', label: '顾问每次请求最多输出多少（tokens）', min: MAX_TOKENS_MIN, max: MAX_TOKENS_MAX, hint: 'tokens 是模型的文本计量单位，不等于汉字数。顾问回复经常被截断时可调高；这是每次模型请求的输出长度上限，不是整次咨询的费用上限。' },
-          { kind: 'number', key: 'criticMaxTokens', label: '评审每次请求最多输出多少（tokens）', min: 256, max: 32768, hint: '评审回复经常被截断时可调高。限制每次模型请求的输出长度，不是整次评审的总字数或费用；调高可能增加等待和用量。' },
           { kind: 'check', key: 'requireExploration', label: '首次咨询前先了解现场', hint: '开启后，本会话第一次 ask_advisor 之前必须先用过一次其他工具，例如读取、搜索或运行命令；否则拒绝咨询。只在确实不需要先查现场时关闭；这项检查不判断查得是否充分。' },
           { kind: 'check', key: 'enforceFollowupGap', label: '再次咨询前先做一点工作', hint: '开启后，同一代理回合内两次 ask_advisor 之间须至少调用一次其他工具；否则拒绝追问。想避免连续空问时保持开启，确需连续讨论时才关闭。' },
           { kind: 'check', key: 'planReminderEnabled', label: '开始规划时提醒咨询顾问', hint: '主代理本回合尚未咨询、但调用 todo_write 或 exit_plan_mode 时，下一步提醒一次。它不判断任务是否需要顾问，也不自动咨询；觉得提醒多余时可关闭。' },
@@ -219,7 +192,6 @@ window.__ModuleLoader__.load({
       }
     }
     let settingsEditor = createSettingsEditor()
-    let draftDecisions = createCielDecisionPrompt({ React, Modal, Button })
     function useSettingsField(key) {
       const editor = settingsEditor
       const [, tick] = useState(0)
@@ -367,12 +339,9 @@ window.__ModuleLoader__.load({
 
     const SHORT_HINTS = {
       enabled: '保存后生效；停用时已有结果仍可查看。',
-      criticExploreEnabled: '只读查阅允许范围内的资料，不修改文件。',
-      jevEnabled: '对照主张与引用证据；会产生额外 API 用量。',
       advisorJevEnabled: '独立检查建议与本次背景是否一致；会产生额外 API 用量。',
       maxCallsPerTurn: '每个代理回合最多咨询次数，包含追问。',
       advisorTimeoutSeconds: '等待上限，不是费用上限。',
-      criticTimeoutSeconds: '整次评审时限，不是费用上限。',
     }
     function settingHelp(key, hint, brief) {
       const short = brief || SHORT_HINTS[key]
@@ -391,7 +360,6 @@ window.__ModuleLoader__.load({
         const def = FIELD_DEF_BY_KEY[key], value = snapshot.value?.[key]
         if (def.kind === 'secret') return Boolean(draft[key])
         if (def.kind === 'number') return String(draft[key]).trim() === '' || Number(draft[key]) !== value
-        if (def.kind === 'paths') return JSON.stringify(String(draft[key] || '').split('\n').map(p => p.trim()).filter(Boolean)) !== JSON.stringify(value || [])
         return def.kind === 'check' ? draft[key] !== Boolean(value) : draft[key] !== String(value ?? def.fallback ?? '')
       })
     }
@@ -481,22 +449,12 @@ window.__ModuleLoader__.load({
         planReminderEnabled: Boolean(value.planReminderEnabled),
         reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
-        criticProvider: String(value.criticProvider ?? ''),
-        criticModel: String(value.criticModel ?? ''),
-        criticEffort: String(value.criticEffort ?? 'medium'),
-        criticExploreEnabled: Boolean(value.criticExploreEnabled ?? true),
-        jevEnabled: Boolean(value.jevEnabled ?? false),
         advisorJevEnabled: Boolean(value.advisorJevEnabled ?? false),
         jevApiKey: '', // Never copy a saved secret (even from a legacy snapshot).
         jevEndpoint: String(value.jevEndpoint ?? JEV_ENDPOINT),
         jevModel: String(value.jevModel ?? JEV_MODEL),
-        criticExploreBudget: String(value.criticExploreBudget ?? '20'),
         enabled: Boolean(value.enabled ?? true),
-        criticTimeoutSeconds: String(value.criticTimeoutSeconds ?? ''),
-        criticMaxRequests: String(value.criticMaxRequests ?? ''),
-        criticMaxTokens: String(value.criticMaxTokens ?? ''),
         advisorTimeoutSeconds: String(value.advisorTimeoutSeconds ?? ''),
-        criticAdditionalRoots: Array.isArray(value.criticAdditionalRoots) ? value.criticAdditionalRoots.join('\n') : '',
       }
       // Pristine pages follow the latest snapshot; first edit captures the
       // revision. Unsaved drafts live in the plugin-owned editor, not this mount.
@@ -512,11 +470,6 @@ window.__ModuleLoader__.load({
         return { parsed, invalid }
       }
 
-      const pathsState = (key) => {
-        const parsed = String(staged[key] || '').split('\n').map((p) => p.trim()).filter(Boolean)
-        const invalid = parsed.length > 16 || new Set(parsed).size !== parsed.length || parsed.some((p) => !p.startsWith('/') || p.length > 4096 || /[\\%:\u0000-\u001f]/.test(p) || p.split('/').includes('..'))
-        return { parsed, invalid }
-      }
       const textInvalid = key => key === 'jevEndpoint' ? !validJevEndpoint(staged[key])
         : key === 'jevModel' ? !validJevModel(staged[key])
           : key === 'jevApiKey' && Boolean(staged[key]) && !validJevKey(staged[key])
@@ -527,7 +480,6 @@ window.__ModuleLoader__.load({
           const { parsed, invalid } = numState(def)
           return invalid ? String(staged[key]) !== String(value[key] ?? '') : parsed !== value[key]
         }
-        if (def && def.kind === 'paths') return JSON.stringify(pathsState(key).parsed) !== JSON.stringify(Array.isArray(value[key]) ? value[key] : [])
         if (def && def.kind === 'check') return staged[key] !== Boolean(value[key])
         if (def && def.kind === 'secret') return Boolean(staged[key])
         return staged[key] !== String(value[key] ?? (def && def.fallback) ?? '')
@@ -537,11 +489,11 @@ window.__ModuleLoader__.load({
       const edit = (key, next) => {
         startDraft()
         const changes = { [key]: next }
-        if (key === 'provider' || key === 'criticProvider') {
+        if (key === 'provider') {
           const group = catalog.groups?.find(group => group.id === next)
           if (Array.isArray(group?.models) && group.models.length > 0) {
-            changes[key === 'provider' ? 'model' : 'criticModel'] = group.models[0].id
-            changes[key === 'provider' ? 'reasoningEffort' : 'criticEffort'] = 'provider'
+            changes.model = group.models[0].id
+            changes.reasoningEffort = 'provider'
           }
         }
         setDrafts({ ...staged, ...changes })
@@ -554,7 +506,7 @@ window.__ModuleLoader__.load({
       }
       const resetField = (key) => {
         startDraft()
-        const next = FIELD_DEF_BY_KEY[key].kind === 'number' ? String(DEFAULTS[key]) : FIELD_DEF_BY_KEY[key].kind === 'paths' ? DEFAULTS[key].join('\n') : DEFAULTS[key]
+        const next = FIELD_DEF_BY_KEY[key].kind === 'number' ? String(DEFAULTS[key]) : DEFAULTS[key]
         setDrafts({ ...staged, [key]: next })
         setResets({ ...resets, [key]: true })
         setSaveFailed(false)
@@ -584,7 +536,7 @@ window.__ModuleLoader__.load({
               ops.push({ op: 'unset', path: [key] })
             } else if (dirtyKey(key)) {
               const def = FIELD_DEF_BY_KEY[key]
-              const parsed = def && def.kind === 'number' ? numState(def).parsed : def && def.kind === 'paths' ? pathsState(key).parsed : undefined
+              const parsed = def && def.kind === 'number' ? numState(def).parsed : undefined
               ops.push({ op: 'set', path: [key], value: parsed !== undefined ? parsed : staged[key] })
             }
           }
@@ -614,21 +566,11 @@ window.__ModuleLoader__.load({
             label: model.name ? `${model.name}（${model.id}）` : model.id,
           }))
         : []
-      // 批评者路由（0.9.1）：独立于顾问路由的第二条子代理管道。
-      const criticGroup = groups.find((group) => group.id === staged.criticProvider)
-      const criticModelOptions = criticGroup && Array.isArray(criticGroup.models)
-        ? criticGroup.models.map((model) => ({
-            value: model.id,
-            label: model.name ? `${model.name}（${model.id}）` : model.id,
-          }))
-        : []
-
       // Reasoning-effort options follow the SELECTED model's declared levels
       // when the catalog advertises them (adapter-supplied names, and the
       // model's own default marked); otherwise the full host-schema set
       // stays offered so the field remains usable without the catalog.
-      // Both routes prepend 跟随提供方默认 — the host pin treats 'provider'
-      // as "leave the request untouched" for advisor and critic alike.
+      // 跟随提供方默认 leaves the advisor request's reasoning setting untouched.
       const effortOptionsFor = (providerKey, modelKey) => {
         const group = groups.find((g) => g.id === staged[providerKey])
         const sel = group && Array.isArray(group.models)
@@ -657,7 +599,6 @@ window.__ModuleLoader__.load({
         }
       }
       const advisorEffort = effortOptionsFor('provider', 'model')
-      const criticEffortOpts = effortOptionsFor('criticProvider', 'criticModel')
 
       const selectStyle = { ...css.input, appearance: 'auto' }
 
@@ -723,12 +664,12 @@ window.__ModuleLoader__.load({
               label,
               title: hint,
               checked: Boolean(staged[key]),
-              disabled: disabled || (key === 'jevEnabled' && !staged.criticExploreEnabled),
+              disabled,
               onChange: (next) => edit(key, next),
             }),
             dirtyKey(key) ? h(Tag, { tone: 'warning' }, '待保存 · ' + (Boolean(staged[key]) ? '已开启' : '已关闭')) : null,
           ),
-          settingHelp(key, hint, key === 'jevEnabled' && !staged.criticExploreEnabled ? '文件核查已关闭：此检查暂不运行，原有偏好仍保留。' : undefined),
+          settingHelp(key, hint),
         )
 
       /** The reasoning-effort dropdown: always a select, options track the model. */
@@ -785,7 +726,7 @@ window.__ModuleLoader__.load({
         const { invalid } = numState(def)
         return h('div', { key: def.key, 'data-ciel-setting': def.key, 'data-ciel-setting-kind': 'number', style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
-            label: def.key === 'advisorTimeoutSeconds' ? '顾问时限（秒）' : def.key === 'criticTimeoutSeconds' ? '评审时限（秒）' : def.label,
+            label: def.key === 'advisorTimeoutSeconds' ? '顾问时限（秒）' : def.label,
             overridden: overridden(def.key) && !resets[def.key],
             disabled,
             onReset: () => resetField(def.key),
@@ -805,15 +746,8 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const pathsField = (def) => {
-        const { invalid } = pathsState(def.key)
-        return h('div', { key: def.key, style: { ...css.field, ...css.fieldBorder } },
-          h(FieldHead, { label: def.label, overridden: overridden(def.key) && !resets[def.key], disabled, onReset: () => resetField(def.key) }),
-          h('textarea', { value: staged[def.key], rows: 3, disabled, style: { ...css.input, height: 'auto', minHeight: '76px', paddingTop: '8px' }, 'aria-label': def.label, 'aria-describedby': 'ciel-setting-hint-' + def.key, 'aria-invalid': invalid || undefined, onChange: (event) => edit(def.key, event.target.value) }),
-          h('p', { id: 'ciel-setting-hint-' + def.key, style: invalid ? css.invalidText : css.hint }, invalid ? '每行填写一个不含上级跳转的绝对目录路径，最多 16 个且不能重复。' : def.hint))
-      }
-      const ROUTE_OPTIONS = { provider: providerOptions, model: modelOptions, criticModel: criticModelOptions }
-      const EFFORT_OPTS = { advisor: advisorEffort, critic: criticEffortOpts }
+      const ROUTE_OPTIONS = { provider: providerOptions, model: modelOptions }
+      const EFFORT_OPTS = { advisor: advisorEffort }
 
       /** Dirty check across a group's whole descendant leaf set. */
       const groupDirty = (def) => def.children.some((child) =>
@@ -830,14 +764,11 @@ window.__ModuleLoader__.load({
             }, h(Chevron, { open }), h('strong', {}, def.label),
             groupDirty(def) ? h(Tag, { tone: 'warning' }, '未保存') : null,
             open ? null : h('span', { 'data-ciel-settings-group-summary': '' }, def.summarize(staged))),
-            open ? h('div', { 'data-ciel-settings-group-body': '' }, ...(def.key === 'common'
-              ? [...def.children.slice(0,4).map(child => renderField(child, depth + 1)), h('div', { key: 'time-limits', 'data-ciel-settings-times': '' }, ...def.children.slice(4).map(child => renderField(child, depth + 1)))]
-              : def.children.map(child => renderField(child, depth + 1)))) : null)
+            open ? h('div', { 'data-ciel-settings-group-body': '' }, ...def.children.map(child => renderField(child, depth + 1))) : null)
         }
         const el = def.kind === 'route' ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options])
           : def.kind === 'effort' ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback)
             : def.kind === 'check' ? checkField(def.key, def.label, def.hint)
-              : def.kind === 'paths' ? pathsField(def)
                 : def.kind === 'text' || def.kind === 'secret' ? textField(def)
                   : numberField(def)
         return el
@@ -849,99 +780,20 @@ window.__ModuleLoader__.load({
         h('header', { 'data-ciel-settings-header': '' },
           h('div', {}, h('div', { 'data-ciel-settings-heading': '' }, h('h2', {}, '夏尔 Ciel'),
             h(Tag, { tone: value.enabled === false ? 'neutral' : 'success' }, value.enabled === false ? '当前已停用' : '当前已启用')),
-            h('p', { 'data-ciel-settings-subtitle': '' }, '顾问提供思路，评审核对依据。')),
+            h('p', { 'data-ciel-settings-subtitle': '' }, '顾问提供方向、先例、陷阱与验证目标。')),
           h('div', { 'data-ciel-settings-enabled': '' }, renderField(FIELD_DEFS[0], 0))),
         h('p', { 'data-ciel-settings-notice': '' }, !snap.writable ? '当前设置为只读。' : dirty
           ? '草稿尚未保存。切换设置页或关闭此窗口仍会保留；保存后才生效。'
           : '以下修改均在点击「保存」后生效；恢复默认值也需要保存。'),
         h('div', { 'data-ciel-settings-groups': '' }, ...FIELD_DEFS.slice(1).map(def => renderField(def, 0))),
-        h('footer', { 'data-ciel-settings-footer': '' },
+        h('footer', { 'data-ciel-settings-footer': '', 'data-dirty': dirty, 'aria-label': '设置保存操作' },
           saveFailed ? h('p', { 'data-ciel-settings-footer-error': '', role: 'status' }, '保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。') : null,
           h('span', { 'data-ciel-settings-footer-status': '', role: 'status' }, saving ? '正在保存…' : blocked && dirty ? '请先修正无效设置' : dirty ? FIELD_KEYS.filter(dirtyKey).length + ' 项未保存的修改' : '没有未保存的修改'),
-          h(Button || 'button', { type: 'button', ...(Button ? { variant: 'toolbar', size: 'md' } : {}), disabled: (!dirty && !saveFailed) || saving, onClick: discard }, '放弃'),
-          h(Button || 'button', { type: 'button', ...(Button ? { variant: 'primary', size: 'md' } : {}), disabled: blocked || !snap.writable, onClick: save }, saving ? '保存中…' : '保存')))
+          h('div', { 'data-ciel-settings-footer-actions': '' },
+            h(Button, { type: 'button', variant: 'toolbar', size: 'md', disabled: (!dirty && !saveFailed) || saving, onClick: discard }, '放弃'),
+          h(Button, { type: 'button', variant: 'primary', size: 'md', disabled: blocked || !snap.writable, onClick: save }, saving ? '保存中…' : '保存'))))
 
     }
-
-    /**
-     * 0.12.0 ①块切分——host 半边的同算法副本（两端无共享打包通道）。
-     * 任何修改必须与 plugin/index.js 的 splitMarkdownBlocks 逐行一致；
-     * 共享夹具 test/blocks.fixtures.js 锁定两端输出。
-     */
-    function splitMarkdownBlocks(text) {
-      const lines = String(text).split('\n')
-      const blocks = []
-      const isBlank = (l) => /^\s*$/.test(l)
-      const isHeading = (l) => /^\s{0,3}#{1,6}\s/.test(l)
-      const fenceMark = (l) => {
-        const m = /^(\s*)(`{3,}|~{3,})/.exec(l)
-        return m ? { ch: m[2][0], len: m[2].length } : null
-      }
-      const isTable = (l) => /^\s*\|/.test(l)
-      const isQuote = (l) => /^\s*>/.test(l)
-      const isListItem = (l) => /^\s*(?:[-*+]|\d{1,9}[.)])\s/.test(l)
-      const isHr = (l) => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(l)
-      const push = (type, start, end) => {
-        const body = lines.slice(start, end).join('\n')
-        if (body.trim() === '') return
-        blocks.push({ id: 'b' + (blocks.length + 1), type, text: body })
-      }
-      let i = 0
-      while (i < lines.length) {
-        if (isBlank(lines[i])) { i += 1; continue }
-        const start = i
-        const fence = fenceMark(lines[i])
-        if (fence) {
-          i += 1
-          while (i < lines.length) {
-            const m = fenceMark(lines[i])
-            if (m && m.ch === fence.ch && m.len >= fence.len) { i += 1; break }
-            i += 1
-          }
-          push('code', start, i)
-          continue
-        }
-        if (isHeading(lines[i])) { push('heading', start, start + 1); i += 1; continue }
-        if (isHr(lines[i])) { push('hr', start, start + 1); i += 1; continue }
-        if (isTable(lines[i])) {
-          i += 1
-          while (i < lines.length && isTable(lines[i])) i += 1
-          push('table', start, i)
-          continue
-        }
-        if (isQuote(lines[i])) {
-          i += 1
-          while (i < lines.length && (isQuote(lines[i]) || (!isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i])))) i += 1
-          push('quote', start, i)
-          continue
-        }
-        if (isListItem(lines[i])) {
-          i += 1
-          for (;;) {
-            while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isHr(lines[i])) i += 1
-            let j = i
-            while (j < lines.length && isBlank(lines[j])) j += 1
-            // 松散列表延续必须以严格前进为前提：j === i 意味着下一行就是边界
-            // （缩进围栏/缩进标题等），i = j 会原地死循环——与 host 副本逐行一致。
-            if (j > i && j < lines.length && (isListItem(lines[j]) || /^\s{2,}\S/.test(lines[j]))) { i = j; continue }
-            break
-          }
-          push('list', start, i)
-          continue
-        }
-        i += 1
-        while (i < lines.length && !isBlank(lines[i]) && !isHeading(lines[i]) && !fenceMark(lines[i]) && !isTable(lines[i]) && !isQuote(lines[i]) && !isListItem(lines[i]) && !isHr(lines[i])) i += 1
-        push('paragraph', start, i)
-      }
-      return blocks
-    }
-
-    /** ── Pure view-model helpers (factored for node tests) ────────────────
-     * These derive coverage/soundness/labels/selection from a review entry and
-     * progress object WITHOUT touching DOM or React, so plugin/test/*.test.js
-     * can assert the exact decisions the review panel makes. Keep in sync with
-     * the host contract in index.js (status/coverage/verdict/explore shapes).
-     */
 
     // Only recorded invocation facts belong on historical cards. Never consult
     // settings here: requested is not proof of execution, and older records may
@@ -955,20 +807,6 @@ window.__ModuleLoader__.load({
       if (used.length > 0) return '本次模型：' + [...new Set(used)].join('；')
       const requested = route(modelUsage && modelUsage.requested)
       return requested ? '请求模型：' + requested + '（未确认执行）' : '本次模型：未记录'
-    }
-
-    // Deduplicate simultaneous mounts, not failed/missing results. A remount
-    // retries the durable lookup; requested-only records can later be completed.
-    /** Whether the user asked for reduced motion (never throws). */
-    function prefersReducedMotion() {
-      try {
-        const win = typeof window !== 'undefined' ? window : undefined
-        if (win === null || win === undefined || typeof win.matchMedia !== 'function') return false
-        const query = win.matchMedia('(prefers-reduced-motion: reduce)')
-        return query !== null && query !== undefined && query.matches === true
-      } catch {
-        return false
-      }
     }
 
     function createModelUsageReader(call) {
@@ -1008,331 +846,27 @@ window.__ModuleLoader__.load({
       return modelUsageLabel(lookup.value)
     }
 
-    // Normalize an entry's coverage. Explicit host field wins; otherwise derive
-    // 'partial' from a legacy salvage marker or unchecked>0 count, else treat a
-    // legacy sound/pass entry as 'complete' (backward compatibility).
-    function deriveCoverage(entry) {
-      if (!entry || typeof entry !== 'object') return 'not-verified'
-      const cov = entry.coverage
-      if (cov === 'complete' || cov === 'partial' || cov === 'not-verified') return cov
-      if (entry.explore && entry.explore.salvaged) return 'partial'
-      if (entry.stats && Number(entry.stats.unchecked) > 0) return 'partial'
-      return 'complete'
-    }
-
-    // A fully covered nonblocking verdict may still contain verified nits.
-    // Completion and severity are separate; unknown/incomplete work never
-    // earns green, while legacy sound/pass records remain readable.
-    function isSoundEntry(entry) {
-      if (!entry || typeof entry !== 'object') return false
-      const status = entry.status
-      if (status === 'error' || status === 'cancelled' || status === 'incomplete' || status === 'unverified' || status === 'completed-unparsed') return false
-      if (status !== 'sound' && entry.verdict !== 'pass') return false
-      if (entry.verdict === 'changes' || (Array.isArray(entry.annotations) && entry.annotations.some((a) => a?.severity === 'blocker'))) return false
-      if (deriveCoverage(entry) !== 'complete') return false
-      if (entry.explore && entry.explore.salvaged) return false
-      if (entry.stats && Number(entry.stats.unchecked) > 0) return false
-      return true
-    }
-
-    function verdictTagTone(entry) {
-      const coverage = deriveCoverage(entry)
-      if (coverage === 'partial') return 'warning'
-      if (coverage === 'not-verified' || entry?.status === 'cancelled') return 'neutral'
-      if (isSoundEntry(entry)) return 'success'
-      return entry?.verdict === 'changes' ? 'danger' : 'neutral'
-    }
-
-    function verdictBadgeText(entry) {
-      if (entry?.status === 'incomplete' || deriveCoverage(entry) === 'partial') return hasSettledReviewItems(entry) ? '◇ 已核查 · 证据受限' : '◇ 部分核实'
-      if (entry?.status === 'unverified' || deriveCoverage(entry) === 'not-verified') return '◇ 未独立核实'
-      if (isSoundEntry(entry)) return '✓ 已核实 · 无阻断'
-      if (entry && entry.verdict === 'changes') return '⚠ 建议修改'
-      if (entry && entry.verdict === 'pass') return '◇ 未独立核实'
-      return '批注评审'
-    }
-
-    /** Capture only the addressed composer's edit capability, never a send verb. */
-    function feedbackDraftTarget(ctx, sessionId) {
-      const sessions = ctx.get('sessions')
-      if (currentSessionId(sessions?.list?.getSnapshot?.()) !== sessionId) throw new Error('会话已切换，未填入；请回到原会话重试')
-      const actx = sessions.scope(sessionId)
-      const input = actx && ctx.get('conversation')?.input?.for(actx)
-      const state = input?.state?.getSnapshot?.()
-      if (!actx || !input || !state || typeof state.draft !== 'string' || !Number.isInteger(state.draftRev)) throw new Error('当前输入框接口不可用，未发送任何内容')
-      if (state.phase !== 'plain' || /^\s*\//.test(state.draft)) throw new Error('输入框正在处理命令或发送，请结束后再填入批注')
-      return { actx, input, draftRev: state.draftRev }
-    }
-
-    function appendFeedbackDraft(ctx, sessionId, text, expected, mode = 'append') {
-      if (!['append', 'replace'].includes(mode)) throw new Error('未知草稿操作，未填入')
-      if (typeof text !== 'string' || text.trim() === '') throw new Error('批注草稿为空')
-      const target = feedbackDraftTarget(ctx, sessionId)
-      if (expected && (target.input !== expected.input || target.draftRev !== expected.draftRev)) throw new Error('输入内容已变化，未填入；请再次点击')
-      const state = target.input.state.getSnapshot()
-      // Exact duplicate still in the draft: do not add it twice. Clearing the
-      // draft allows insertion again; staging never consumes the sent ledger.
-      if (state.draft.includes(text)) return { duplicate: true }
-      if (!Array.isArray(state.occurrences)) throw new Error('无法确认输入框引用位置，未填入')
-      // Native insert spans use detect coordinates: each reference chip is ONE
-      // atomic character, while state.draft expands its clipboard label.
-      let end = state.draft.length
-      let previousEnd = 0
-      for (const occurrence of state.occurrences) {
-        const { offset, length } = occurrence
-        if (!Number.isInteger(offset) || !Number.isInteger(length) || length < 1 || offset < previousEnd || offset + length > state.draft.length) throw new Error('输入框引用位置已变化，未填入')
-        previousEnd = offset + length
-        end -= length - 1
-      }
-      const applied = target.actx.bail(target.actx, 'slash/input-insert-text', {
-        text: (mode === 'replace' || state.draft === '' ? '' : '\n\n') + text,
-        span: { start: mode === 'replace' ? 0 : end, end, draftRev: state.draftRev },
-      })
-      if (applied !== true) throw new Error('输入框未接受批注草稿，未发送；请重试')
-      return { duplicate: false }
-    }
-
-    async function stageFeedbackDraft(ctx, request, call, isCurrent = () => true, choose = undefined) {
-      const target = feedbackDraftTarget(ctx, request.sessionId)
-      // A distinct endpoint prevents an older Host from sending automatically.
-      const res = await call('prepareFeedback', request)
-      if (!isCurrent()) throw new Error('页面或会话已变化，未填入；请重试')
-      if (!res || res.ok !== true) throw new Error(String(res?.error || '无法准备草稿；若刚更新 Ciel，请重载后刷新页面'))
-      if (res.sessionId !== request.sessionId || res.reviewId !== request.reviewId || res.messageId !== request.messageId) throw new Error('批注与会话不匹配，未填入')
-      const current = feedbackDraftTarget(ctx, request.sessionId)
-      if (current.input !== target.input || current.draftRev !== target.draftRev) throw new Error('输入内容已变化，未填入；请再次点击')
-      const state = current.input.state.getSnapshot()
-      let mode = 'append'
-      if (typeof choose === 'function' && state.draft !== '' && !state.draft.includes(res.text)) mode = await choose(state.draft)
-      if (mode === 'cancel') return { cancelled: true }
-      if (!isCurrent()) throw new Error('页面或会话已变化，未填入；请重试')
-      return appendFeedbackDraft(ctx, request.sessionId, res.text, target, mode)
-    }
-
-    function isToolBudgetError(entry) {
-      return entry?.diagnostics?.toolBudgetExceeded === true ||
-        /^(?:budget exceeded(?:;|$)|phase 2 aborted \(budget exceeded\))/i.test(String(entry?.error || ''))
-    }
-
-    function reviewErrorText(entry) {
-      const error = String(entry?.error || 'unknown error')
-      if (error.includes('review timeout')) {
-        const seconds = entry?.limits?.timeoutSeconds
-        return '评审已到总时限' + (Number.isFinite(seconds) ? '（' + seconds + ' 秒）' : '') + '，本次已停止；未完成部分不能视为已核实。'
-      }
-      if (!isToolBudgetError(entry)) return error
-      const d = entry?.diagnostics
-      const counts = Number.isInteger(d?.toolCalls) && Number.isInteger(d?.budget) && d.budget > 0
-        ? '（' + d.toolCalls + '/' + d.budget + '）' : ''
-      const requests = Number.isInteger(entry?.modelRequests) ? ' 本次模型请求：' + entry.modelRequests + ' 次。' : ''
-      return '读取/检索次数已达上限' + counts + '，评审未完成。' +
-        (/no recoverable cited dossier, salvage skipped/i.test(error)
-          ? '中断前没有可恢复的带引用核实结论，因此未追加模型整理，也未生成批注。'
-          : '') + '这不表示原回答有错。' + requests
-    }
-
-    // Button label for a settled (not in-flight) review.
-    function statusButtonLabel(entry) {
-      if (entry === undefined || entry === null) return '批注评审'
-      const count = Array.isArray(entry.annotations) ? entry.annotations.length : 0
-      if (isSoundEntry(entry)) return '✓ 无阻断 (' + count + ')'
-      if (entry.status === 'cancelled') return '已取消 · 重新评审'
-      if (entry.status === 'error') return String(entry.error || '').includes('review timeout') ? '已到时限 · 重试' : isToolBudgetError(entry) ? '读取上限 · 重试' : '评审失败 · 重试'
-      if (entry.status === 'incomplete') return (hasSettledReviewItems(entry) ? '◇ 已核查 · 证据受限 · ' : '◇ 部分核实 · ') + count + ' 条'
-      if (entry.status === 'unverified') return '◇ 未核实 · ' + count + ' 条'
-      if (entry.verdict === 'changes') return '⚠ 批注 ' + count + ' · 复审'
-      // A 'sound' status that failed isSoundEntry (partial/not-verified coverage,
-      // salvaged, unchecked>0) is NOT green — report it neutrally.
-      return '批注 ' + count + ' · 复审'
-    }
-
-    // New reviews show remaining time and query telemetry separately from suspects.
-    // Numeric quotas and phase 3 remain readable for legacy progress/records.
-    function inFlightLabel(prog) {
-      const p = prog && typeof prog === 'object' ? prog : undefined
-      if (!p) return '评审中…'
-      const time = p.limitMode === 'time' && Number.isFinite(p.remainingMs) ? ' · 剩余 ' + Math.ceil(Math.max(0, p.remainingMs) / 1000) + ' 秒' : ''
-      if (!p.explore) return '评审中' + time + '…'
-      const phase = p.phase
-      const phaseLabel = phase === 1 ? '存疑分析' : phase === 2 ? '核验' : phase === 3 ? '抢救' : '评审中'
-      const calls = typeof p.toolCalls === 'number' ? p.toolCalls : 0
-      const budget = typeof p.budget === 'number' ? p.budget : 0
-      let d = p.limitMode === 'time' ? '已查询 ' + calls + ' 次' : '排查 ' + calls + (budget ? '/' + budget : '')
-      if (typeof p.suspects === 'number' && p.suspects > 0) d += ' · 疑点 ' + p.suspects
-      const action = p.action
-      if (action) {
-        if (action.kind === 'tool') d += ' · ' + String(action.name || '') + (action.target ? ' ' + action.target : '')
-        else if (action.last) d += ' · 分析 ' + String(action.last.name || '') + (action.last.target ? ' ' + action.last.target : '') + ' 结果'
-        else d += ' · 分析取证结果'
-      }
-      return '评审中 · ' + phaseLabel + time + ' · ' + d + '…'
-    }
-
-    // Restore selection from a base of all indices minus sent, then apply WAL
-    // accept/dismiss deltas. A filter-only record leaves the selection intact.
-    function restoreSelection(annotationCount, sent, triageStates) {
-      const sel = new Set()
-      for (let i = 0; i < annotationCount; i += 1) if (!sent || !sent.has(i)) sel.add(i)
-      if (triageStates && typeof triageStates === 'object') {
-        for (const [idxText, state] of Object.entries(triageStates)) {
-          const idx = Number(idxText)
-          if (!Number.isInteger(idx) || idx < 0 || idx >= annotationCount) continue
-          if (state === 'accept') sel.add(idx)
-          else if (state === 'dismiss') sel.delete(idx)
-        }
-      }
-      return sel
-    }
-
-    // Build the feedback payload for the given annotation indices.
-    function buildFeedbackItems(annotations, indices) {
-      return indices
-        .filter((i) => annotations[i] !== undefined)
-        .map((i) => {
-          const a = annotations[i]
-          const item = {
-            index: i,
-            severity: a.severity === 'blocker' ? 'blocker' : 'nit',
-            title: String(a.title || ''),
-            anchor: String(a.anchor || ''),
-            comment: String(a.comment || ''),
-          }
-          if (typeof a.block === 'string') item.block = a.block
-          if (typeof a.evidence === 'string' && a.evidence !== '') item.evidence = a.evidence
-          return item
-        })
-    }
-
-    // A list result is "loaded" only when it is a success-shaped envelope with
-    // a reviews array. Malformed / error-shaped returns are NOT loaded — the
-    // caller leaves the session dirty so mount/reconnect retries.
-    // Cancel outcome normalization. A failed request stays retryable and must
-    // NOT clear active state; an accepted request with cancelled:false means
-    // nothing was in flight (already finished/never started) → force refresh.
-    function cancelOutcome(res) {
-      if (res && res.ok === true) {
-        const cancelled = res.cancelled === true
-        return { kind: 'accepted', cancelled, refresh: cancelled !== true }
-      }
-      return { kind: 'failed', error: String((res && res.error) || '取消失败') }
-    }
-
-    // Project ONLY the leaf critic route strings into data-* attrs. Used for the
-    // AB/harness correlation: a script can refuse to click a review that ran
-    // under a different critic route. Never serializes the snapshot — reads two
-    // leaf strings and omits anything non-string/empty so the script "fails
-    // closed" (no route attrs) when the route is unknown.
-    function criticRouteAttrs(snapshotValue) {
-      const out = {}
-      if (!snapshotValue || typeof snapshotValue !== 'object') return out
-      const p = snapshotValue.criticProvider
-      const m = snapshotValue.criticModel
-      if (typeof p === 'string' && p !== '') out['data-ciel-critic-provider'] = p
-      if (typeof m === 'string' && m !== '') out['data-ciel-critic-model'] = m
-      return out
-    }
-
-    /** Review UI stylesheet (dynamic-plugin styles.insert has no bundle twin). */
-    const REVIEW_CSS = [
-      '.dsr-btn{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;opacity:.65;cursor:pointer}',
-      '.dsr-btn:hover{opacity:1}',
-      '.dsr-btn:disabled{cursor:wait;opacity:.45}',
-      '.ciel-model-usage{padding:6px 10px;font-size:12px;opacity:.75;overflow-wrap:anywhere}',
-      '.dsr-tail{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);margin:8px 0 2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;font-size:13px;line-height:1.55}',
-      '.dsr-tail-head{padding:6px 10px;font-size:12px;opacity:.75;border-bottom:1px solid var(--dsw-alias-border-l2);display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
-      '.dsr-item{padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l2)}',
-      '.dsr-item:first-of-type{border-top:none}',
-      '.ciel-native-tag-mount{display:inline-flex;align-items:center;vertical-align:middle}',
-      '.dsr-item .ciel-native-tag-mount{margin-right:6px}',
-      '.dsr-title{font-weight:600}',
-      '.dsr-unanchored{font-size:10.5px;opacity:.6;margin-left:6px}',
-      '.dsr-anchor{margin:5px 0 3px;padding:3px 8px;border-left:2px solid var(--dsw-alias-border-l2);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-comment{opacity:.92;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-raw{padding:8px 10px;white-space:pre-wrap;word-break:break-word;opacity:.85;font-size:12.5px}',
-      '.dsr-error{padding:8px 10px;color:var(--dsw-alias-state-error-primary, #d24949);font-size:12.5px;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-mark{cursor:pointer;border-radius:2px}',
-      '.dsr-mark-blocker{text-decoration:underline wavy var(--dsw-alias-state-error-primary, #d24949) 1.5px;text-underline-offset:3px;background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 7.000000000000001%, transparent)}',
-      '.dsr-mark-nit{text-decoration:underline wavy var(--dsw-alias-state-warn-primary, #b77700) 1.5px;text-underline-offset:3px;background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7.000000000000001%, transparent)}',
-      '.dsr-badge{display:inline-block;font-size:9.5px;font-family:ui-monospace,monospace;line-height:1.4;padding:0 3px;border-radius:3px;margin-left:2px;vertical-align:super;cursor:pointer;user-select:none}',
-      '.dsr-badge-blocker{color:var(--dsw-alias-state-error-primary, #d24949);border:1px solid var(--dsw-alias-state-error-primary, #d24949)}',
-      '.dsr-badge-nit{color:var(--dsw-alias-state-warn-primary, #b77700);border:1px solid var(--dsw-alias-state-warn-primary, #b77700)}',
-      '.dsr-pop{position:fixed;z-index:99999;max-width:420px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.55;box-shadow:0 10px 32px rgba(0,0,0,.4);background:var(--dsw-alias-bg-layer-1, #fff);color:var(--dsw-alias-label-primary, #24292f)}',
-      '.dsr-pop-head{margin-bottom:5px}',
-      '.dsr-pop-anchor{margin:6px 0 4px;padding:3px 8px;border-left:2px solid var(--dsw-alias-border-l2);font-family:ui-monospace,monospace;font-size:11.5px;opacity:.7;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-pop-comment{white-space:pre-wrap;word-break:break-word}',
-      '.dsr-item{cursor:pointer;border-radius:4px}',
-      '.dsr-item:hover{background:var(--dsw-alias-interactive-bg-hover)}',
-      '.dsr-flash{animation:dsrFlash 1.4s ease}',
-      '@keyframes dsrFlash{0%{outline:2px solid var(--dsw-alias-state-warn-primary, #b77700);outline-offset:1px}100%{outline:2px solid transparent;outline-offset:5px}}',
-      // ── 回传（annfbk 原型移植）：勾选框、发送按钮、状态注记、已回传置灰
-      '.dsrf-box{margin-right:7px;vertical-align:1px;accent-color:var(--dsw-alias-state-success-primary, #238636);cursor:pointer}',
-      '.dsrf-send{margin-left:10px;padding:2px 10px;font-size:11.5px;border:1px solid var(--dsw-alias-state-success-primary, #238636);border-radius:4px;background:transparent;color:var(--dsw-alias-state-success-primary, #238636);cursor:pointer;font-family:inherit}',
-      '.dsrf-send:disabled{opacity:.45;cursor:default}',
-      '.dsrf-note{margin-left:8px;font-size:11px;opacity:.75}',
-      '.dsr-item.dsrf-sent{opacity:.55}',
-      '.dsr-item.dsrf-sent .dsrf-box{pointer-events:none}',
-      // ── 0.12.0 ①裁决卡 + 块级 gutter（demo: prototypes/verdict-card-demo.html）
-      '.dsr-tail.dsr-verdict{border-left:3px solid var(--dsw-alias-border-l2)}',
-      '.dsr-tail.dsr-verdict-pass{border-left-color:var(--dsw-alias-state-success-primary, #238636)}',
-      '.dsr-tail.dsr-verdict-changes{border-left-color:var(--dsw-alias-state-warn-primary, #b77700)}',
-      '.dsr-tail.dsr-verdict-neutral{border-left-color:var(--dsw-alias-label-tertiary, #737980)}',
-      '.dsr-tail.dsr-rise{animation:dsrRise .3s ease}',
-      '@keyframes dsrRise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
-      '.dsr-vsum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75;font-size:12.5px}',
-      '.dsr-vchips{display:inline-flex;gap:6px;flex-wrap:wrap;max-width:100%;flex:none}',
-      // 停止控制（评审在途时的取消按钮）
-      '.dsr-cancel{font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:4px;background:transparent;color:var(--dsw-alias-state-error-primary, #d24949);opacity:.8;cursor:pointer}',
-      '.dsr-cancel:hover{opacity:1}',
-      '.dsr-cancel:disabled{cursor:wait;opacity:.45}',
-      '.dsr-cancel.dsr-cancel-failed{color:var(--dsw-alias-state-warn-primary, #b77700);border-style:dashed}',
-      '.dsr-evidence{margin:4px 0 2px;padding:3px 8px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 50%, transparent);font-size:11.5px;opacity:.85;white-space:pre-wrap;word-break:break-word}',
-      '.dsr-downgraded{font-size:10px;font-family:ui-monospace,monospace;color:var(--dsw-alias-state-business-primary, #4176e6);border:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent);border-radius:4px;padding:0 5px;margin-left:6px;white-space:nowrap;cursor:help}',
-      '.dsr-vcaret{flex:none;width:14px;opacity:.55;font-size:11px;transition:transform .18s}',
-      '.dsr-tail.dsr-collapsed .dsr-vcaret{transform:rotate(-90deg)}',
-      '.dsr-tail.dsr-collapsed>.dsr-details{display:none}',
-      '.dsr-vtoggle{display:flex;align-items:center;flex:1;min-width:0;flex-wrap:wrap;gap:8px;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}',
-      '.dsr-vtoggle:focus-visible{outline:2px solid currentColor;outline-offset:3px;border-radius:3px}',
-      '.dsr-blk{position:relative}',
-      '.dsr-gutter{position:absolute;left:-24px;top:2px;display:flex;flex-direction:column;gap:4px;z-index:2}',
-      // 代码块（pre 横向 overflow 会裁掉左外侧徽章）→ 收进右上内沿，横排。
-      'pre.dsr-blk>span.dsr-gutter{left:auto;right:6px;top:6px;flex-direction:row}',
-      'button.dsr-gmark,button.dsr-badge{padding:0;appearance:none}',
-      'button.dsr-gmark:focus-visible,button.dsr-badge:focus-visible{outline:2px solid var(--dsw-alias-border-focus, currentColor);outline-offset:3px}',
-      'button.dsr-badge{padding:0 3px;background:transparent}',
-      '.dsr-gmark{width:17px;height:17px;border-radius:4px;font-size:10px;font-family:ui-monospace,monospace;line-height:15px;text-align:center;cursor:pointer;user-select:none;border:1px solid}',
-      '.dsr-gmark-blocker{color:var(--dsw-alias-state-error-primary, #d24949);border-color:var(--dsw-alias-state-error-primary, #d24949);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)}',
-      '.dsr-gmark-nit{color:var(--dsw-alias-state-warn-primary, #b77700);border-color:var(--dsw-alias-state-warn-primary, #b77700);background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent)}',
-      '.dsr-blk-hl{outline:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent);outline-offset:2px;border-radius:4px;background:color-mix(in srgb, var(--dsw-alias-state-business-primary) 6%, transparent)}',
-      '.dsr-blocktag{font-size:10px;font-family:ui-monospace,monospace;opacity:.5;margin-left:6px}',
-      '.dsrf-filter{display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden;margin-left:10px}',
-      '.dsrf-filter button{appearance:none;background:none;border:none;color:inherit;opacity:.6;padding:2px 9px;font-size:11px;cursor:pointer;font-family:inherit}',
-      '.dsrf-filter button.on{opacity:1;background:var(--dsw-alias-interactive-bg-active)}',
-      '.dsrf-blockers{margin-left:6px;padding:2px 10px;font-size:11px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;background:transparent;color:inherit;opacity:.8;cursor:pointer;font-family:inherit}',
-      '.dsrf-blockers:hover{opacity:1}',
-    ].join('\n')
-
-    // ═══════════════ M3-④ 顾问输出卡片（advcrd 原型 v2 移植） ═══════════════
-    // ask_advisor 的 keyed tool view：结构化条目直读 tool/result.meta（② 的
-    // presentationMeta 通道），tier 色左边条 + 实色胶囊徽章 + 字段标签 chip；
-    // 未解析回退原文——任何状态都不比通用卡片差。边框/背景走主题 token 自适应
-    // 亮暗，rgba 为兜底。
     const ADVISOR_CARD_CSS = [
-      '.adv-card{--ciel-advisor-inset:14px;color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.22));border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2, rgba(255,255,255,.018))}',
-      '.adv-head{padding:9px var(--ciel-advisor-inset);display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2, rgba(130,130,130,.16))}',
+      '.ciel-model-usage{padding:6px 10px;font-size:12px;opacity:.75;overflow-wrap:anywhere}',
+      '.adv-card{--ciel-advisor-inset:14px;color:var(--dsw-alias-label-primary);margin:8px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;overflow:hidden;font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-layer-2)}',
+      '.adv-head{padding:9px var(--ciel-advisor-inset);display:flex;gap:10px;align-items:center;cursor:pointer;user-select:none;background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l2)}',
+      '.adv-navigation-error{margin:0;padding:6px var(--ciel-advisor-inset);color:var(--dsw-alias-state-error-primary)}',
+      '.adv-disclosure{width:100%;border:0;text-align:left;color:inherit;font:inherit}',
+      '.adv-disclosure:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}',
       '.adv-head:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.adv-caret{flex:none;width:14px;opacity:.55;font-size:11px}',
       '.adv-head-icon{flex:none;font-size:13px}',
       '.adv-head-title{font-weight:600;font-size:13px;white-space:nowrap;flex:none}',
       '.adv-chips{display:inline-flex;gap:6px;align-items:center;margin-left:2px;flex:none}',
       '.adv-chip{font-size:10.5px;font-family:ui-monospace,monospace;font-weight:600;line-height:16px;padding:0 8px;border-radius:999px}',
-      '.adv-chip-high{color:var(--dsw-alias-state-success-primary, #238636);background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent)}',
-      '.adv-chip-mid{color:var(--dsw-alias-state-warn-primary, #b77700);background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 13%, transparent)}',
-      '.adv-chip-low{color:var(--dsw-alias-label-tertiary, #737980);background:var(--dsw-alias-bg-layer-3)}',
+      '.adv-chip-high{color:var(--dsw-alias-state-success-primary);background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent)}',
+      '.adv-chip-mid{color:var(--dsw-alias-state-warn-primary);background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 13%, transparent)}',
+      '.adv-chip-low{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3)}',
       '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}',
       '.adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
-      '.adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary, #b77700);font-family:ui-monospace,monospace;flex:none}',
+      '.adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary);font-family:ui-monospace,monospace;flex:none}',
       // Summary, Jev and model metadata share the card's content edge. Keep
-      // these selectors card-scoped: review panels/sidebars own their spacing.
+      // these selectors card-scoped: sidebars own their spacing.
       '.adv-card .adv-head[data-ciel-summary-head]{padding-inline:var(--ciel-advisor-inset)}',
       '.adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}',
       '.adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}',
@@ -1341,18 +875,18 @@ window.__ModuleLoader__.load({
       '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}',
       '.adv-item:first-of-type{border-top:none}',
       '.adv-badge{flex:none;margin-top:2px;font-size:10px;font-family:ui-monospace,monospace;font-weight:700;line-height:15px;padding:0 6px;border-radius:4px;border:1px solid}',
-      '.adv-badge-high{color:var(--dsw-alias-state-success-primary, #238636);border-color:var(--dsw-alias-state-success-primary, #238636)}',
-      '.adv-badge-mid{color:var(--dsw-alias-state-warn-primary, #b77700);border-color:var(--dsw-alias-state-warn-primary, #b77700)}',
-      '.adv-badge-low{color:var(--dsw-alias-label-tertiary, #737980);border-color:var(--dsw-alias-label-tertiary, #737980)}',
+      '.adv-badge-high{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
+      '.adv-badge-mid{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
+      '.adv-badge-low{color:var(--dsw-alias-label-tertiary);border-color:var(--dsw-alias-label-tertiary)}',
       '.adv-item-content{flex:1;min-width:0}',
       '.adv-item-title{font-weight:600;font-size:13.5px;margin-bottom:6px}',
       '.adv-frow{display:flex;gap:8px;margin-bottom:5px;font-size:12.5px}',
       '.adv-frow:last-child{margin-bottom:0}',
       '.adv-flabel{flex:none;width:56px;font-size:11.5px;opacity:.6;padding-top:1px}',
       '.adv-fval{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;opacity:.88}',
-      '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:var(--dsw-alias-state-warn-primary, #b77700);border:1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent);border-radius:8px;background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, transparent)}',
+      '.adv-issues{margin-top:10px;padding:6px 10px;font-size:12px;color:var(--dsw-alias-state-warn-primary);border:1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent);border-radius:8px;background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, transparent)}',
       '.adv-raw{white-space:pre-wrap;word-break:break-word;opacity:.92;font-size:12.5px;padding-top:8px}',
-      '.adv-err{color:var(--dsw-alias-state-error-primary, #d24949);font-size:12.5px;white-space:pre-wrap;word-break:break-word;padding-top:8px}',
+      '.adv-err{color:var(--dsw-alias-state-error-primary);font-size:12.5px;white-space:pre-wrap;word-break:break-word;padding-top:8px}',
       '.adv-ctx{margin-top:10px;font-size:12px;opacity:.7}',
       '.adv-ctx summary{cursor:pointer;opacity:.8}',
       '.adv-ctx-body{margin-top:4px;white-space:pre-wrap;word-break:break-word;font-style:normal}',
@@ -1434,6 +968,7 @@ window.__ModuleLoader__.load({
         ? meta.issues.map(String)
         : []
       const [open, setOpen] = useState(true)
+      const [navigationError, setNavigationError] = useState('')
 
       // In-flight: tool/call seen, result not yet.
       if (!settled) {
@@ -1465,19 +1000,23 @@ window.__ModuleLoader__.load({
         const callId = props.callId ? 'tool:' + props.callId : null
         if (callId) return h('div', { className: 'adv-card ciel-advice-summary' },
           h('div', { className: 'adv-head', 'data-ciel-summary-head': '' }, h('span', { className: 'adv-head-title' }, headText), chips,
-            navigationButton({ onClick: () => sidebar.openAdvice(props.sessionId, callId) }, '在侧栏查看')),
+            navigationButton({ onClick: () => {
+              const result = sidebar.openAdvice(props.sessionId, callId)
+              setNavigationError(result?.ok === false ? String(result.error || '侧栏暂不可用') : '')
+            } }, '在侧栏查看')),
           meta?.jev ? h('p', { 'data-ciel-advisor-jev-summary': '' }, advisorJevSummary(meta.jev)) : null,
-          h('div', { className: 'ciel-model-usage' }, modelLabel))
+          h('div', { className: 'ciel-model-usage' }, modelLabel),
+          navigationError ? h('p', { role: 'status', className: 'adv-navigation-error' }, navigationError) : null)
       }
       return h('div', { className: 'adv-card' },
-        h('div', {
-          className: 'adv-head',
+        h('button', {
+          type: 'button', className: 'adv-head adv-disclosure',
           onClick: () => setOpen(!open),
           'aria-expanded': open,
         },
           h('span', { className: 'adv-caret' }, open ? '▾' : '▸'),
           h('span', { className: 'adv-head-icon' }, '💡'),
-          h('span', { className: 'adv-head-title', style: isError ? { color: 'var(--dsw-alias-state-error-primary, #d24949)' } : undefined }, headText),
+          h('span', { className: 'adv-head-title', style: isError ? { color: 'var(--dsw-alias-state-error-primary)' } : undefined }, headText),
           chips,
           issues.length > 0 ? h('span', { className: 'adv-head-issues' }, '解析问题 ' + issues.length) : null,
           duration !== '' ? h('span', { className: 'adv-head-note', style: { marginLeft: 0 } }, duration) : null,
@@ -1541,10 +1080,6 @@ window.__ModuleLoader__.load({
 
     function mountClient(ctx, settingsForm) {
       settingsEditor = createSettingsEditor()
-      draftDecisions = createCielDecisionPrompt({ React, Modal, Button })
-      const ownedDecisions = draftDecisions
-      ctx.effect(() => () => ownedDecisions.dispose(), 'Ciel: draft decisions')
-      ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'ciel-draft-decisions' }, ownedDecisions.View))
       ctx.slots.inject('settings.action', () => ctx.slots.register({ name: 'settings.action', id: 'ciel-draft-status', order: 30 }, SettingsDraftNotice))
       ctx.effect(() => {
         const beforeUnload = event => { if (hasSettingsDraft()) { event.preventDefault(); event.returnValue = '' } }
@@ -1578,999 +1113,93 @@ window.__ModuleLoader__.load({
         ),
       )
 
-      // ═══════════════ M3-③ 批注评审 UI（annrev 原型移植） ═══════════════
-      // Marks/badges/panel are driven by the per-message button's effect —
-      // deliberately NOT the turnTail chain (winner-take-all, deliverables
-      // wins file-producing turns). Anchors match by proximity: the last
-      // occurrence before the message's own button. Cleanup is owned-spans
-      // only, so one message never disturbs another's marks.
-
-      const styleEl = document.createElement('style')
-      styleEl.textContent = REVIEW_CSS + '\n' + ADVISOR_CARD_CSS + '\n' + SIDEBAR_CSS + '\n' + INBOX_CSS
-      styleEl.textContent += SETTINGS_CSS
-      document.head.appendChild(styleEl)
-      ctx.effect(() => () => styleEl.remove(), 'dsh-advisor: review styles')
-
-      const reviewTransport = createReviewTransport({
-        getRemote: () => ctx.get('remote'),
-        getApi: () => ctx.get('remote.advisorReview'),
-        descriptor: ADVISOR_REMOTE,
-      })
       ctx.effect(() => {
-        void reviewTransport.ready()
-        return () => reviewTransport.dispose()
-      }, 'dsh-advisor: review remote mount')
-      const reviewCall = (method, request) => reviewTransport.call(method, request)
+        const styleEl = document.createElement('style')
+        styleEl.textContent = ADVISOR_CARD_CSS + '\n' + SIDEBAR_CSS + '\n' + SETTINGS_CSS
+        document.head.appendChild(styleEl)
+        return () => styleEl.remove()
+      }, 'Ciel: advisor styles')
 
-      /**
-       * Unwrap one inbox call. The mounted Remote returns a RemoteResult
-       * envelope ({ ok, value } / { ok, error }); the harness and older
-       * callers hand back the business object directly. Both carry an ok
-       * field, so the envelope is recognised by its own value member.
-       */
-      function unwrapInboxResult(res) {
-        if (res === null || typeof res !== 'object') return { ok: false, code: 'store_error', error: '收件箱返回格式无效' }
-        if (res.ok === true) {
-          if (!Object.prototype.hasOwnProperty.call(res, 'value')) return res
-          const value = res.value
-          return value !== null && typeof value === 'object' ? value : { ok: false, code: 'store_error', error: '收件箱返回格式无效' }
-        }
-        if (res.ok === false) {
-          if (typeof res.code === 'string' || typeof res.error === 'string') return res
-          const error = res.error
-          if (error !== null && typeof error === 'object') {
-            return { ok: false, code: typeof error.code === 'string' ? error.code : 'store_error', error: String(error.message || error.code || '远程调用失败') }
-          }
-          return { ok: false, code: 'store_error', error: '远程调用失败' }
-        }
-        return res
+      // One owned, lazy Remote mount. No model invocation is exposed by this UI.
+      let active = true, mountedOn, pendingMount, disposeMount
+      const identity = remote => remote?.[Symbol.for('cordis.original')] ?? remote
+      async function ready() {
+        if (!active) throw new Error('顾问界面已关闭')
+        if (pendingMount) return pendingMount
+        const remote = getRemote()
+        if (mountedOn && mountedOn === identity(remote)) return
+        pendingMount = (async () => {
+          const release = disposeMount
+          disposeMount = undefined
+          mountedOn = undefined
+          await release?.()
+          if (!remote || typeof remote.$mount !== 'function') throw new Error('顾问连接尚未就绪，请重试')
+          const dispose = await remote.$mount(ADVISOR_REMOTE)
+          if (!active) { await dispose?.(); throw new Error('顾问界面已关闭') }
+          disposeMount = dispose
+          mountedOn = identity(remote)
+        })()
+        try { await pendingMount } finally { pendingMount = undefined }
       }
-
-      /** Business-level inbox RPC; the same mount readiness reviewCall awaits. */
-      async function inboxCall(method, request) {
-        return unwrapInboxResult(await reviewCall(method, request))
-      }
-
-      const sessionRoots = new Map()
-      let clientActive = true
-      ctx.effect(() => () => { clientActive = false; sessionRoots.clear() }, 'Ciel: resource callbacks lifetime')
-      const installSidebar = (sctx) => {
-        const native = createCielSidebar({ React, Tag, Button, fileAddressFor: (sid, path) => fileAddressFor(sid, sessionRoots.get(sid), path) })
-        native.install(sctx, {
-          call: async (method, request) => {
-            const result = await reviewCall(method, request)
-            const root = result?.review?.workspaceRoot || result?.evidence?.workspaceRoot
-            if (clientActive && typeof root === 'string') {
-              sessionRoots.delete(request.sessionId)
-              sessionRoots.set(request.sessionId, root)
-              if (sessionRoots.size > 16) sessionRoots.delete(sessionRoots.keys().next().value)
-            }
-            return result
-          },
-          onTriage: request => reviewCall('triage', request),
-          canPrepareFeedback: () => scope?.getSnapshot?.().value?.enabled !== false,
-          subscribeConfiguration: listener => scope?.subscribe?.(listener) || (() => {}),
-          locateReview: async (sessionId, reviewId) => {
-            const controller = inbox.getController()
-            if (!controller) return { ok: false, error: '收件箱定位暂不可用' }
-            await controller.ensureLoaded()
-            const snapshot = controller.getSnapshot()
-            if (snapshot.sessionId !== sessionId) return { ok: false, error: '请先回到这条评审所属的会话。' }
-            const record = snapshot.reviews.find(review => review.reviewId === reviewId)
-            return record ? controller.locate(record.key) : { ok: false, error: '该记录不在当前收件箱页；请在收件箱找到对应记录后定位。' }
-          },
-          onPrepareFeedback: async (request) => {
-            const result = await stageFeedbackDraft(ctx, request, reviewCall, () => clientActive && scope?.getSnapshot?.().value?.enabled !== false, preview => draftDecisions.ask(preview))
-            return { ok: true, ...result }
-          },
-        })
-        sidebar = native
-        sctx.effect(() => () => { native.dispose(); if (sidebar === native) sidebar = null }, 'Ciel: native sidebar lifetime')
-      }
-      if (typeof ctx.inject === 'function') ctx.inject(['resources', 'sidebarRightTabs', 'sidebarRight'], installSidebar)
-      else if (ctx.get('resources') && ctx.get('sidebarRightTabs') && ctx.get('sidebarRight')) installSidebar(ctx)
-
-      // ── 夏尔收件箱：独立主面板 + 左栏入口（与批注评审共享 advisorReview Remote） ──
-      // Read/write go through inboxCall; every navigation gesture reuses the
-      // native right sidebar (sidebar.openReview/openEvidence) and the native
-      // layout (selectPanel). Nothing here holds model calls or draft access.
-      const getLayout = () => {
-        try { return ctx.get('layout') } catch { return undefined }
-      }
-      const inbox = createCielInbox({ React, Tag, Button })
-      inbox.install(ctx, {
-        call: inboxCall,
-        getSessions: () => {
-          try { return ctx.get('sessions') } catch { return undefined }
-        },
-        openReview: (sessionId, reviewId, options) => (sidebar === null || sidebar === undefined
-          ? { ok: false, error: '原生右栏不可用' }
-          : sidebar.openReview(sessionId, reviewId, options)),
-        openEvidence: (sessionId, reviewId, evidenceId, options) => (sidebar === null || sidebar === undefined
-          ? { ok: false, error: '原生右栏不可用' }
-          : sidebar.openEvidence(sessionId, reviewId, evidenceId, options)),
-        revealConversation: () => {
-          const layout = getLayout()
-          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(null)
-        },
-        revealInbox: () => {
-          const layout = getLayout()
-          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(INBOX_PANEL_ID)
-        },
-        beginNavigation: () => {
-          const layout = getLayout()
-          return layout && typeof layout.beginNavigation === 'function' ? layout.beginNavigation() : undefined
-        },
-      })
-      ctx.effect(() => () => inbox.dispose(), 'dsh-ciel: inbox lifetime')
-      // Root sessions subscription: keeps invalidating in-flight inbox reads on
-      // a session switch even when the panel is unmounted.
-      if (typeof ctx.inject === 'function') {
-        ctx.inject(['sessions'], (sctx) => {
-          try { inbox.bindSessions(sctx.get('sessions')) } catch { /* sessions unavailable */ }
-        })
-      }
-
-      ctx.effect(() => {
-        const reader = createModelUsageReader(reviewCall)
-        readCallModelUsage = reader
-        return () => { if (readCallModelUsage === reader) readCallModelUsage = async () => null }
-      }, 'dsh-ciel: invocation model lookup')
-
-      const listeners = new Set()
-      let panelSerial = 0
-      let tagSerial = 0
-      const panelTags = new WeakMap()
-      // The surrounding ReviewButton owns these portals. Imperative code only
-      // owns each empty mount container, never the Tag's rendered children.
-      const renderPanelTags = (panel) => (panelTags.get(panel) || []).map((tag) =>
-        createPortal(tag.kind === 'button'
-          ? navigationButton({ className: 'ciel-open-review', onClick: tag.onClick }, tag.text)
-          : h(Tag, { tone: tag.tone }, tag.text), tag.target, tag.key))
-      // One document-level mark supervisor for every reviewed message; it is
-      // created with the runtime and disposed with it.
-      const markSupervisor = createMarkSupervisor(document)
-      ctx.effect(() => () => markSupervisor.dispose(), 'dsh-advisor: mark supervisor lifetime')
-      const emit = () => { for (const l of Array.from(listeners)) l() }
-      const reviewState = createReviewState({ call: reviewCall, emit, active: () => clientActive, onEvict: id => sessionRoots.delete(id) })
-      const { store, absorb, hydrate } = reviewState
-      ctx.effect(() => () => { reviewState.dispose(); listeners.clear() }, 'Ciel: review state lifetime')
-      function useStoreTick() {
-        const [, set] = useState(0)
-        useEffect(() => {
-          const tick = () => set((v) => v + 1)
-          listeners.add(tick)
-          return () => { listeners.delete(tick) }
-        }, [])
-      }
-      // Reconnect reconcile: retry sessions that failed to load AND force a
-      // fresh load of already-hydrated sessions — a disconnected start can
-      // finish offscreen, so reconnecting must re-fetch to surface the terminal
-      // entry. Touched-guard + createdAt fence make the refresh non-clobbering.
-      if (typeof clientOn === 'function') {
-        ctx.effect(() => {
-          const dispose = clientOn('connection/reset', () => {
-            void reviewTransport.ready().then(() => retryProgress())
-            const sessions = new Set([...store.hydrated, ...store.retrySessions])
-            for (const sessionId of sessions) void hydrate(sessionId, { force: true })
-          })
-          return () => { dispose() }
-        }, 'dsh-advisor: review reconnect retry')
-      }
-
-      const progressScheduler = createReviewProgress({ reviewCall, store, emit, hydrate, pin: reviewState.pin, document,
-        setInterval: (...args) => setInterval(...args), clearInterval: id => clearInterval(id) })
-      const { subscribeProgress, retryProgress } = progressScheduler
-      ctx.effect(() => () => progressScheduler.dispose(), 'dsh-advisor: review progress poller lifetime')
-
-      const openAnnotation = (event, entry, a, i, doc) => {
-        event.stopPropagation()
-        if (sidebar && entry.sessionId && entry.reviewId) {
-          const result = sidebar.openReview(entry.sessionId, entry.reviewId, { annotationIndex: i })
-          if (result.ok) return
-        }
-        const rect = event.currentTarget.getBoundingClientRect()
-        const docEl = doc.documentElement
-        const maxX = Math.max(12, (docEl ? docEl.clientWidth : 800) - 440)
-      store.popover = {
-        sessionId: entry.sessionId,
-          annotation: a,
-          index: i + 1,
-          x: Math.min(Math.max(12, rect.left), maxX),
-          y: rect.bottom + 6,
-        }
-        emit()
-      }
-
-      // ── the annotation card panel, built as plain DOM and inserted right
-      // before the message's own tail flow item.
-      function appendIndexBadge(doc, parent, sev, n) {
-        const b = doc.createElement('span')
-        b.className = 'dsr-badge dsr-badge-' + sev
-        b.setAttribute('style', 'vertical-align:1px;margin-right:4px')
-        b.textContent = String(n)
-        parent.appendChild(b)
-      }
-      function buildPanel(doc, entry, locate, fb) {
-        const panel = doc.createElement('div')
-        panel.className = 'dsr-tail'
-        const tags = []
-        panelTags.set(panel, tags)
-        const nativeTag = (tone, text, title) => {
-          const target = doc.createElement('span')
-          target.className = 'ciel-native-tag-mount'
-          if (title) target.title = title
-          tags.push({ target, tone, text, key: 'ciel-tag-' + (++tagSerial) })
-          return target
-        }
-        if (sidebar && entry.sessionId && entry.reviewId) {
-          panel.classList.add('ciel-review-summary')
-          const head = doc.createElement('div')
-          head.className = 'dsr-tail-head'
-          head.setAttribute('data-ciel-summary-head', '')
-          head.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)))
-          const summary = doc.createElement('span')
-          summary.setAttribute('data-ciel-summary-copy', '')
-          summary.textContent = entry.status === 'error' ? reviewErrorText(entry) : String(entry.summary || '评审已完成').replace(/(\d+) 项未查/g, '$1 项未核实')
-          head.appendChild(summary)
-          const open = doc.createElement('span')
-          open.setAttribute('data-ciel-summary-action', '')
-          tags.push({ target: open, kind: 'button', key: 'ciel-button-' + (++tagSerial), text: '查看评审与证据', onClick: () => {
-            const result = sidebar.openReview(entry.sessionId, entry.reviewId)
-            if (!result.ok) summary.textContent = '侧栏暂不可用：' + result.error
-          } })
-          head.appendChild(open); panel.appendChild(head)
-          if (entry.coverageNote) {
-            const note = doc.createElement('div'); note.className = 'ciel-model-usage'; note.textContent = entry.coverageNote; panel.appendChild(note)
-          }
-          return panel
-        }
-        const modelInfo = doc.createElement('div')
-        modelInfo.className = 'ciel-model-usage'
-        modelInfo.textContent = modelUsageLabel(entry.modelUsage)
-        if (entry.status === 'error') {
-          const e = doc.createElement('div')
-          e.className = 'dsr-error'
-          e.textContent = (isToolBudgetError(entry) ? '批注评审未完成：' : '批注评审失败：') + reviewErrorText(entry)
-          panel.appendChild(e)
-          panel.appendChild(modelInfo)
-          return panel
-        }
-        const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
-        const stats = entry.markStats
-        // 0.9.3：清单可见性——评审输入是否携带顾问验证目标（③深化），面板头明示；
-        // 旧 entry 无 targetsProvided 字段时什么都不显示（后向兼容）。
-        const targetsNote = typeof entry.targetsProvided === 'number' && entry.targetsProvided > 0
-          ? ' · 含顾问验证清单 ' + entry.targetsProvided + ' 条'
-          : ''
-        // 0.12.0 ①：v2 评审（带 verdict）渲染裁决卡头——verdict 徽标 + 总评 +
-        // 统计 chips + 可折叠；旧 entry 保持纯文本头。绿色「整体成立」仅当
-        // isSoundEntry（verdict pass 且核实完整、无抢救/未查）才出现。
-        const panelVerdict = isSoundEntry(entry) ? 'pass' : entry.verdict === 'changes' ? 'changes' : 'neutral'
-        const isV2 = typeof entry.verdict === 'string'
-        if (isV2) panel.classList.add('dsr-verdict', 'dsr-verdict-' + panelVerdict, 'dsr-rise')
-        const details = doc.createElement('div')
-        details.className = 'dsr-details'
-        details.id = 'ciel-review-details-' + (++panelSerial)
-        const head = doc.createElement('div')
-        head.className = 'dsr-tail-head'
-        if (isV2) {
-          const toggle = doc.createElement('button')
-          toggle.type = 'button'
-          toggle.className = 'dsr-vtoggle'
-          toggle.setAttribute('aria-controls', details.id)
-          const collapseKey = typeof entry.reviewId === 'string' && entry.reviewId !== '' ? entry.reviewId
-            : typeof entry.messageId === 'string' ? entry.messageId : undefined
-          const setCollapsed = (collapsed) => {
-            details.hidden = collapsed
-            panel.classList.toggle('dsr-collapsed', collapsed)
-            toggle.setAttribute('aria-expanded', String(!collapsed))
-            toggle.title = collapsed ? '展开评审详情' : '折叠评审详情'
-            toggle.setAttribute('aria-label', toggle.title)
-            if (collapseKey) {
-              if (collapsed) store.collapsed.add(collapseKey)
-              else store.collapsed.delete(collapseKey)
-            }
-          }
-          setCollapsed(Boolean(collapseKey && store.collapsed.has(collapseKey)))
-          toggle.addEventListener('click', () => setCollapsed(!details.hidden))
-          head.appendChild(toggle)
-          const caret = doc.createElement('span')
-          caret.className = 'dsr-vcaret'
-          caret.textContent = '▾'
-          toggle.appendChild(caret)
-          toggle.appendChild(nativeTag(verdictTagTone(entry), verdictBadgeText(entry)))
-          const sum = doc.createElement('span')
-          sum.className = 'dsr-vsum'
-          sum.textContent = String(entry.summary || '批评者批注 · ' + annotations.length + ' 条').replace(/(\d+) 项未查/g, '$1 项未核实')
-          toggle.appendChild(sum)
-          const blockers = annotations.filter((a) => a && a.severity === 'blocker').length
-          const nits = annotations.length - blockers
-          const chips = doc.createElement('span')
-          chips.className = 'dsr-vchips'
-          if (blockers > 0) chips.appendChild(nativeTag('danger', blockers + ' blocker'))
-          if (nits > 0) chips.appendChild(nativeTag('warning', nits + ' nit'))
-          if (blockers === 0 && nits === 0) chips.appendChild(nativeTag(isSoundEntry(entry) ? 'success' : 'neutral', '0 批注'))
-          // Suspect outcomes and tool-call reservations are different units.
-          // New records are host-counted; legacy records retain their origin.
-          if (entry.stats && typeof entry.stats.checked === 'number') {
-            const text = '疑点 ' + entry.stats.checked + ' · 证伪 ' + entry.stats.confirmed + ' · 排除 ' + entry.stats.excluded
-              + (typeof entry.stats.unchecked === 'number' && entry.stats.unchecked > 0 ? ' · 未核实 ' + entry.stats.unchecked : '')
-            const title = entry.explore ? '工具调用 ' + entry.explore.toolCalls + (Number.isFinite(entry.explore.budget) ? '/' + entry.explore.budget : ' 次') + (entry.outcomes ? '（执行前计数，包含已放行但失败的调用）' : '（旧版事件流采样）') + (entry.explore.salvaged ? '；本卡由熔断后的部分记录恢复' : '') : ''
-            chips.appendChild(nativeTag('info', text, title))
-          } else if (entry.explore) {
-            chips.appendChild(nativeTag('info', '查询 ' + entry.explore.toolCalls + (Number.isFinite(entry.explore.budget) ? '/' + entry.explore.budget : ' 次')))
-          }
-          toggle.appendChild(chips)
-          if (targetsNote !== '') {
-            const tn = doc.createElement('span')
-            tn.className = 'dsrf-note'
-            tn.textContent = targetsNote
-            toggle.appendChild(tn)
-          }
-        } else {
-          head.textContent = (isSoundEntry(entry)
-            ? '✓ 批评者：已核实范围内无阻断'
-            : '批评者批注 · ' + annotations.length + ' 条'
-              + (stats ? ' · 标记 ' + stats.marked + '/' + stats.total : '')
-              + '（点击卡片定位到原文；波浪下划线与角标也可点击）'
-              + (entry.status === 'completed-unparsed' ? '（未解析出结构化批注，原文如下）' : '')
-              + (stats && stats.failures.length > 0 ? '　标记失败：' + stats.failures.join('；') : ''))
-            + targetsNote
-        }
-        // 抢救产出作为显式可见标签（不只 tooltip）：熔断抢救的卡片一眼可辨。
-        if (entry.explore && entry.explore.salvaged) {
-          head.appendChild(nativeTag('warning', '抢救产出', '本卡由熔断后的抢救书写员产出（阶段 2 中断后单次裁决恢复）'))
-        }
-        // ── 回传选中：勾选态/已回传态都在 store.feedback（随重绘重读），
-        // reviewId 直接取自 entry——原型里的 title 匹配猜测链已删除。
-        if (fb && annotations.length > 0) {
-          const sendBtn = doc.createElement('button')
-          sendBtn.className = 'dsrf-send'
-          sendBtn.title = '把勾选批注追加到本会话输入框，保留原稿；由你编辑确认后手动发送'
-          const syncLabel = () => {
-            sendBtn.textContent = fb.sending ? '准备草稿…' : (fb.sel.size > 0 ? '填入输入框 · ' + fb.sel.size + ' 条' : '填入输入框')
-          }
-          syncLabel()
-          sendBtn.disabled = fb.sending
-          sendBtn.addEventListener('click', (event) => { event.stopPropagation(); fb.onSend() })
-          head.appendChild(sendBtn)
-          if (fb.note !== '') {
-            const note = doc.createElement('span')
-            note.className = 'dsrf-note'
-            note.textContent = fb.note
-            head.appendChild(note)
-          }
-          fb._syncLabel = syncLabel
-        }
-        panel.appendChild(head)
-        details.appendChild(modelInfo)
-        if (entry.privacy?.mode === 'restricted-snapshot') {
-          const scopeInfo = doc.createElement('div')
-          scopeInfo.className = 'dsrf-note'
-          scopeInfo.textContent = '读取范围：本次受限源码资料副本；不代表已经核实资料区之外的内容。'
-          details.appendChild(scopeInfo)
-        }
-        if (typeof entry.coverageNote === 'string' && entry.coverageNote !== '') {
-          const note = doc.createElement('div')
-          note.className = 'dsrf-note'
-          note.textContent = entry.coverageNote
-          details.appendChild(note)
-        }
-        const vbody = doc.createElement('div')
-        vbody.className = 'dsr-vbody'
-        annotations.forEach((a, i) => {
-          if (fb && fb.filter === 'blocker' && a.severity !== 'blocker') return
-          const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
-          const item = doc.createElement('div')
-          item.className = 'dsr-item'
-          item.title = '点击定位到原文对应位置'
-          if (typeof locate === 'function') {
-            item.addEventListener('click', () => locate(i))
-          }
-          const row = doc.createElement('div')
-          if (fb) {
-            const isSent = fb.sent.has(i)
-            const cb = doc.createElement('input')
-            cb.type = 'checkbox'
-            cb.className = 'dsrf-box'
-            cb.checked = !isSent && fb.sel.has(i)
-            cb.disabled = fb.sending || isSent
-            cb.title = isSent ? '已回传过' : '取消勾选=剔除误报，不回传给主模型'
-            cb.addEventListener('click', (event) => event.stopPropagation())
-            cb.addEventListener('change', () => {
-              fb.onToggle(i, cb.checked)
-              if (typeof fb._syncLabel === 'function') fb._syncLabel()
-            })
-            row.appendChild(cb)
-            if (isSent) item.classList.add('dsrf-sent')
-          }
-          row.appendChild(nativeTag(sev === 'blocker' ? 'danger' : 'warning', sev))
-          appendIndexBadge(doc, row, sev, i + 1)
-          const title = doc.createElement('span')
-          title.className = 'dsr-title'
-          title.textContent = a.title || '（无标题）'
-          row.appendChild(title)
-          if (typeof a.block === 'string') {
-            const bt = doc.createElement('span')
-            bt.className = 'dsr-blocktag'
-            bt.textContent = '⌖ ' + a.block
-            row.appendChild(bt)
-          }
-          // 0.13.0 契约 v3：探索模式下无证据 blocker 被降为 nit，标记原因。
-          if (a.downgraded === 'evidence-missing') {
-            const dg = doc.createElement('span')
-            dg.className = 'dsr-downgraded'
-            dg.textContent = '缺证据·降级'
-            dg.title = '探索契约要求 blocker 引用本轮只读工具所得证据；该批注未通过核验，已降为 nit'
-            row.appendChild(dg)
-          }
-          if (!a.matched && typeof a.block !== 'string') {
-            const un = doc.createElement('span')
-            un.className = 'dsr-unanchored'
-            un.textContent = '未锚定'
-            row.appendChild(un)
-          }
-          item.appendChild(row)
-          if (a.anchor) {
-            const an = doc.createElement('div')
-            an.className = 'dsr-anchor'
-            an.textContent = a.anchor.length > 220 ? a.anchor.slice(0, 219) + '…' : a.anchor
-            item.appendChild(an)
-          }
-          // 0.13.0 契约 v3：探索取证的证据行（批评者只读核实所得）。
-          if (typeof a.evidence === 'string' && a.evidence !== '') {
-            const ev = doc.createElement('div')
-            ev.className = 'dsr-evidence'
-            ev.textContent = '证据：' + (a.evidence.length > 260 ? a.evidence.slice(0, 259) + '…' : a.evidence)
-            item.appendChild(ev)
-          }
-          const cm = doc.createElement('div')
-          cm.className = 'dsr-comment'
-          cm.textContent = a.comment || ''
-          item.appendChild(cm)
-          vbody.appendChild(item)
-        })
-        if (typeof entry.raw === 'string' && entry.raw !== '') {
-          const raw = doc.createElement('div')
-          raw.className = 'dsr-raw'
-          raw.textContent = entry.raw
-          vbody.appendChild(raw)
-        }
-        // 分诊脚行（v2 + 有批注）：过滤 + 「仅回传 blocker」快捷键。
-        if (isV2 && fb && annotations.length > 0) {
-          const foot = doc.createElement('div')
-          foot.className = 'dsr-tail-head'
-          foot.style.borderBottom = 'none'
-          foot.style.borderTop = '1px solid var(--dsw-alias-border-l2)'
-          const filter = doc.createElement('span')
-          filter.className = 'dsrf-filter'
-          for (const [f, label] of [['all', '全部'], ['blocker', '只看 blocker']]) {
-            const b = doc.createElement('button')
-            b.className = fb.filter === f ? 'on' : ''
-            b.textContent = label
-            b.addEventListener('click', (event) => { event.stopPropagation(); fb.onFilter(f) })
-            filter.appendChild(b)
-          }
-          foot.appendChild(filter)
-          const blockersBtn = doc.createElement('button')
-          blockersBtn.className = 'dsrf-blockers'
-          blockersBtn.textContent = '仅选 blocker'
-          blockersBtn.title = '选中全部 blocker、剔除其余（随后可点「填入输入框」，不会自动发送）'
-          blockersBtn.addEventListener('click', (event) => { event.stopPropagation(); fb.onBlockers() })
-          foot.appendChild(blockersBtn)
-          vbody.appendChild(foot)
-        }
-        details.appendChild(vbody)
-        panel.appendChild(details)
-        return panel
-      }
-
-      function ReviewButton(props) {
-        useStoreTick()
-        const messageId = props.messageId
-        const sessionId = props.sessionId
-        const requestScope = reviewMessageKey(sessionId, messageId)
-        const currentScope = React.useRef(requestScope)
-        currentScope.current = requestScope
-        const [busy, setBusy] = useState(false)
-        // 0.13.0 契约 v3 进展通道 + 在途恢复（修复「点评审后切换会话按钮
-        // 复位」）：busy 是组件内 state，随卸载丢失；挂载即探一次远端
-        // inFlight（host 侧评审可能仍在跑），在途期间每秒轮询，在途消失
-        // 时强制重水合（完成/失败条目此刻已落 sidecar）。无在途时 tick
-        // 空转，不产生远端流量。
-        const [prog, setProg] = useState(null)
-        const progRef = React.useRef(null)
-        const aliveRef = React.useRef(true)
-        const genRef = React.useRef(0)        // 丢弃过期响应（响应乱序）
-        const idleRef = React.useRef(false)    // true 仅当确认无在途（停止轮询）
-        useEffect(() => {
-          aliveRef.current = true
-          // 新代际：复位 idleRef，避免「上一代在途请求未回时初始 probe 被跳过」
-          // 且 idleRef 仍为 true 而导致轮询永久停摆。订阅交给共享轮询器：同
-          // session+message 的探活在 key 上 single-flight，旧代际由 active 标记
-          // 丢弃；busy 期间 keepAlive 保持探活，本地 start 结束后重新挂载。
-          idleRef.current = false
-          const sub = {
-            sessionId,
-            messageId,
-            setProg,
-            progRef,
-            idleRef,
-            keepAlive: busy === true,
-            active: true,
-          }
-          const unsubscribe = subscribeProgress(sub)
-          return () => { aliveRef.current = false; genRef.current += 1; unsubscribe() }
-        }, [busy, messageId, sessionId])
-        // 停止控制：取消本次 session+message 的评审。失败必须保持可见可重试，
-        // 不因请求失败而错误清除在途状态。
-        const [cancelling, setCancelling] = useState(false)
-        const [cancelError, setCancelError] = useState('')
-        const [startError, setStartError] = useState(null)
-        const stillCurrent = () => clientActive && aliveRef.current && currentScope.current === requestScope
-        const cancelStop = () => {
-          if (cancelling || !aliveRef.current) return
-          setCancelling(true)
-          setCancelError('')
-          reviewCall('cancel', { sessionId, messageId })
-            .then((res) => {
-              if (!stillCurrent()) return
-              const o = cancelOutcome(res)
-              if (o.kind === 'accepted') {
-                // 取消请求被接受。若服务端报告无在途（cancelled:false），说明
-                // 评审已结束/未开始——强制刷新一次拿最终形态。
-                if (o.refresh) {
-                  store.hydrated.delete(sessionId)
-                  hydrate(sessionId, { force: true })
-                }
-              } else {
-                // 取消请求失败：保留停止按钮并显示可重试的错误，不清除在途。
-                setCancelError(o.error)
-              }
-            })
-            .catch((error) => {
-              if (!stillCurrent()) return
-              setCancelError(String(error && error.message || '取消失败'))
-            })
-            .finally(() => { if (stillCurrent()) setCancelling(false) })
-        }
-        const rootRef = React.useRef(null)
-        const [portalPanel, setPortalPanel] = useState(null)
-        useEffect(() => { void hydrate(sessionId) }, [sessionId])
-        const entry = store.byMessage.get(reviewMessageKey(sessionId, messageId))
-        // 回传 settle 后的重绘触发器：bump 本消息的 tick → 下面的 effect 重跑。
-        const fbTick = store.feedback.tick.get(reviewMessageKey(sessionId, messageId)) || 0
-        const bumpTick = () => {
-          if (!clientActive) return
-          store.feedback.tick.set(reviewMessageKey(sessionId, messageId), (store.feedback.tick.get(reviewMessageKey(sessionId, messageId)) || 0) + 1)
-          emit()
-        }
-        // One effect owns every visual artifact for this message: inline marks,
-        // badges, and the card panel inserted right before the message's own
-        // tail flow item (the direct child of the chat root on the button's
-        // ancestor path). The paint is imperative DOM surgery, so React can
-        // silently destroy it whenever it rebuilds the message subtree (turn
-        // regrouping when a new turn starts, list re-slicing); a MutationObserver
-        // self-heals by repainting once every owned span has disconnected.
-        useEffect(() => {
-          const el = rootRef.current
-          if (!el || !entry) { setPortalPanel(null); return undefined }
-          const doc = el.ownerDocument
-          let markResult = null
-          let panel = null
-          let painting = false
-          // ── 回传上下文：真实 reviewId 来自 entry 本身（host 落库时生成），
-          // 勾选/已回传/注记全部 store 化，本 effect 的任何重绘都重新读出。
-          const reviewId = typeof entry.reviewId === 'string' ? entry.reviewId : ''
-          let fb
-          if (entry.status !== 'error' && reviewId !== '') {
-            if (!store.feedback.sent.has(reviewId)) store.feedback.sent.set(reviewId, new Set())
-            // 0.12.0 ④默认采纳 + WAL 恢复：从「全部索引减已回传」出发，应用
-            // accept/dismiss 增量；仅 filter 的记录不会清空选择。一旦本地分诊
-            // 过（touched），不再用旧 WAL 重算，避免旧水合覆盖新操作。
-            if (!store.feedback.sel.has(reviewId)) {
-              const anns = Array.isArray(entry.annotations) ? entry.annotations : []
-              const meta = store.feedback.meta.get(reviewId)
-              const sentSet0 = store.feedback.sent.get(reviewId)
-              store.feedback.sel.set(reviewId, restoreSelection(anns.length, sentSet0, meta && meta.triageStates))
-            }
-            const sel = store.feedback.sel.get(reviewId) ?? new Set()
-            if (!store.feedback.sel.has(reviewId)) store.feedback.sel.set(reviewId, sel)
-            const sent = store.feedback.sent.get(reviewId)
-            // 分诊写入：串行化（逐 review 排队），失败注记到头部并保持可重试，
-            // 不再 fire-and-forget 静默吞掉。
-            const sendTriage = (payload) => {
-              const release = reviewState.pin(sessionId)
-              store.feedback.touched.add(reviewId)
-              if (!store.feedback.triageChain.has(reviewId)) store.feedback.triageChain.set(reviewId, Promise.resolve())
-              store.feedback.triageChain.set(reviewId, store.feedback.triageChain.get(reviewId)
-                .then(() => reviewCall('triage', { sessionId, reviewId, ...payload }))
-                .then((res) => {
-                  if (!res || res.ok === false) {
-                    if (!clientActive) return
-                    store.feedback.note.set(reviewId, '分诊保存失败：' + String((res && res.error) || 'unknown'))
-                    bumpTick()
-                  }
-                })
-                .catch((error) => {
-                  if (!clientActive) return
-                  store.feedback.note.set(reviewId, '分诊保存异常：' + String(error && error.message || error))
-                  bumpTick()
-                }).finally(release))
-            }
-            fb = {
-              sel,
-              sent,
-              note: store.feedback.note.get(reviewId) || '',
-              sending: store.feedback.sending.has(reviewId),
-              filter: store.feedback.filter.get(reviewId) || 'all',
-              onToggle: (index, checked) => {
-                if (checked) sel.add(index); else sel.delete(index)
-                sendTriage({ changes: [{ index, state: checked ? 'accept' : 'dismiss' }] })
-              },
-              onFilter: (f) => {
-                store.feedback.filter.set(reviewId, f === 'blocker' ? 'blocker' : 'all')
-                sendTriage({ filter: f === 'blocker' ? 'blocker' : 'all' })
-                bumpTick()
-              },
-              onBlockers: () => {
-                const anns = Array.isArray(entry.annotations) ? entry.annotations : []
-                sel.clear()
-                const changes = []
-                anns.forEach((a, i) => {
-                  const accept = a && a.severity === 'blocker' && !sent.has(i)
-                  if (accept) sel.add(i)
-                  changes.push({ index: i, state: accept ? 'accept' : 'dismiss' })
-                })
-                sendTriage({ changes })
-                store.feedback.note.set(reviewId, '已选全部 blocker，其余剔除')
-                bumpTick()
-              },
-              onSend: () => {
-                if (store.feedback.sending.has(reviewId)) return
-                const indices = Array.from(sel).sort((a, b) => a - b)
-                if (indices.length === 0) {
-                  store.feedback.note.set(reviewId, '先勾选要回传的批注')
-                  bumpTick()
-                  return
-                }
-                const annotations = Array.isArray(entry.annotations) ? entry.annotations : []
-                const items = buildFeedbackItems(annotations, indices)
-                  .filter((item) => !sent.has(item.index))
-                if (items.length === 0) {
-                  store.feedback.note.set(reviewId, '所选批注均已回传过')
-                  bumpTick()
-                  return
-                }
-                const generation = genRef.current
-                const release = reviewState.pin(sessionId)
-                store.feedback.sending.add(reviewId)
-                bumpTick()
-                stageFeedbackDraft(ctx, { sessionId, reviewId, messageId, items: items.map((item) => ({ index: item.index })) }, reviewCall,
-                  () => aliveRef.current && generation === genRef.current && scope?.getSnapshot?.().value?.enabled !== false, preview => draftDecisions.ask(preview))
-                  .then((staged) => {
-                    if (!clientActive) return
-                    store.feedback.note.set(reviewId, staged.cancelled ? '已取消，输入框保持不变。' : staged.duplicate
-                      ? '这些批注已在输入框中，尚未自动发送'
-                      : '✓ 已填入输入框，请编辑确认后手动发送')
-                  })
-                  .catch((error) => {
-                    if (!clientActive) return
-                    store.feedback.note.set(reviewId, '未填入：' + String(error && error.message || error))
-                  })
-                  .finally(() => {
-                    release()
-                    if (!clientActive) return
-                    store.feedback.sending.delete(reviewId)
-                    bumpTick()
-                  })
-              },
-            }
-          }
-          const paint = () => {
-            painting = true
-            try {
-              if (markResult) clearOwned(markResult.created)
-              if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
-              markResult = null
-              panel = null
-              if (entry.status !== 'error') {
-                // Reuse the previous chat root while it still contains the
-                // button: findChatRoot walks and re-texts ancestors, and a
-                // repaint caused by our own chrome must not redo that work.
-                const previousRoot = markResult !== null && markResult.root !== null && markResult.root !== undefined
-                  && markResult.root.isConnected && markResult.root.contains(el) ? markResult.root : undefined
-                markResult = markTurn(el, entry, previousRoot, openAnnotation)
-                entry.markStats = markResult.stats
-              }
-              const root = markResult && markResult.root
-                ? markResult.root
-                : findChatRoot(el, Array.isArray(entry.annotations) ? entry.annotations : [])
-              panel = buildPanel(doc, entry, locate, fb)
-              setPortalPanel(panel)
-              if (root) {
-                let branch = el
-                while (branch.parentElement && branch.parentElement !== root) branch = branch.parentElement
-                root.insertBefore(panel, branch)
-              } else {
-                // Anchor text absent from the DOM (e.g. the critic quoted the
-                // evidence section instead of the draft): the review must not
-                // vanish together with its marks — park the panel right after
-                // the message container reached a few levels up from the button.
-                let host2 = el
-                for (let d = 0; d < 4 && host2.parentElement && host2.parentElement !== doc.body; d += 1) host2 = host2.parentElement
-                if (host2.parentElement) host2.parentElement.insertBefore(panel, host2.nextSibling)
-              }
-            } finally {
-              painting = false
-            }
-          }
-          // Panel card click → smooth-scroll to the annotation's inline mark
-          // and flash it; marks absent (wiped or unmatchable) → repaint once,
-          // then fall back to scrolling the message itself into view.
-          const locate = (index) => {
-            let spans = markResult && markResult.byIndex ? markResult.byIndex.get(index) : undefined
-            let targetEl = spans ? spans.find((s) => s.isConnected) : undefined
-            if (targetEl === undefined) {
-              paint()
-              emit()
-              spans = markResult && markResult.byIndex ? markResult.byIndex.get(index) : undefined
-              targetEl = spans ? spans.find((s) => s.isConnected) : undefined
-            }
-            const reduceMotion = prefersReducedMotion()
-            ;(targetEl || el).scrollIntoView(reduceMotion ? { block: 'center' } : { behavior: 'smooth', block: 'center' })
-            if (targetEl !== undefined && spans && !reduceMotion) {
-              // Batch the animation restart: remove from every span, force ONE
-              // layout read, then re-add, instead of a forced reflow per span.
-              for (const s of spans) s.classList.remove('dsr-flash')
-              void targetEl.offsetWidth
-              for (const s of spans) s.classList.add('dsr-flash')
-            }
-          }
-          paint()
-          emit()
-          let timer = null
-          let deadRepaints = 0
-          let watching = true
-          // One shared document supervisor dispatches every mutation; this
-          // watcher owns only its own 120ms debounce and its own dead count.
-          // The self-heal contract is unchanged: React destroying the message
-          // subtree (turn regrouping, list re-slicing) detaches the marks and
-          // the next quiet mutation repaints them; only a genuinely
-          // unmatchable anchor stops after three dead repaints.
-          const unwatch = markSupervisor.add({
-            onMutations(mutations) {
-              if (!watching || painting || !el.isConnected || timer !== null) return
-              // React owns the native Tag children inside the card. Their
-              // commits are not destroyed source anchors and must not trigger
-              // a repaint.
-              if (panel && mutations.length > 0 && mutations.every((m) => panel.contains(m.target))) return
-              const marksAlive = markResult !== null
-                && markResult.created.some((item) => item.el.isConnected)
-              const panelAlive = panel !== null && panel.parentNode !== null
-              if (marksAlive && panelAlive) return
-              timer = setTimeout(() => {
-                timer = null
-                if (!el.isConnected || !watching) return
-                const before = entry.markStats ? entry.markStats.marked : 0
-                paint()
-                emit()
-                const after = entry.markStats ? entry.markStats.marked : 0
-                deadRepaints = after > 0 || after !== before ? 0 : deadRepaints + 1
-                if (deadRepaints >= 3) {
-                  // Anchor truly unmatchable; stop retrying. The effect cleanup
-                  // still unregisters the watcher.
-                  watching = false
-                  unwatch()
-                }
-              }, 120)
-            },
-          })
-          return () => {
-            watching = false
-            unwatch()
-            if (timer !== null) clearTimeout(timer)
-            if (markResult) clearOwned(markResult.created)
-            if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
-          }
-        }, [entry, fbTick])
-        // 在途 = 本地点击 busy 或远端 inFlight（跨会话/页面生命周期恢复）。
-        const inFlight = busy || (prog !== null && prog.inFlight === true)
-        const label = inFlight ? inFlightLabel(prog) : statusButtonLabel(entry)
-        const onClick = () => {
-          if (inFlight) return
-          setBusy(true)
-          setStartError(null)
-          const release = reviewState.pin(sessionId)
-          reviewCall('start', { sessionId, messageId })
-            .then((res) => {
-              if (!clientActive) return
-              if (res?.review) { absorb(res.review, sessionId); emit() }
-              if (!stillCurrent()) return
-              if (res && res.review) {
-                setStartError(null)
-              } else if (!res || !res.ok) {
-                setStartError({ message: String(res && res.error || 'unknown error'), reviewId: entry?.reviewId })
-                // Server-sided start failure. If the server actually accepted
-                // start (e.g. a disconnect after it began, or an
-                // "already in flight" veto), progress polling will override
-                // this transient entry once inFlight->false force-rehydrates.
-                // Marked `transient:true` so a durable host result (reviewId)
-                // always outranks it regardless of the client wall-clock stamp.
-                absorb({ sessionId, messageId, status: 'error', error: String(res && res.error || 'unknown error'), annotations: [], createdAt: Date.now(), transient: true })
-                if (res && res.error && /already in flight/i.test(String(res.error))) {
-                  store.hydrated.delete(sessionId)
-                  hydrate(sessionId, { force: true })
-                }
-              }
-              if (!res || !res.ok) console.error('review.start failed:', res && res.error)
-              emit()
-            })
-            .catch((error) => {
-              if (!stillCurrent()) return
-              // reviewCall usually converts a thrown call to {ok:false}; a raw
-              // catch here means the process disconnects mid-start. The review
-              // may still be running remotely — leave a transient error and let
-              // polling (force-rehydrate on inFlight->false) surface the truth.
-              setStartError({ message: String(error && error.message || error), reviewId: entry?.reviewId })
-              absorb({ sessionId, messageId, status: 'error', error: String(error && error.message || error), annotations: [], createdAt: Date.now(), transient: true })
-              console.error('review.start call threw:', error && error.message)
-              emit()
-            })
-            .then(() => { if (stillCurrent()) setBusy(false) }).finally(release)
-        }
-        const stats = entry && entry.markStats
-        const tip = entry && entry.status === 'error'
-          ? reviewErrorText(entry)
-          : '让批评者模型对这条回复做锚定批注评审'
-            + (stats ? '（标记 ' + stats.marked + '/' + stats.total + (stats.failures.length > 0 ? '，失败：' + stats.failures.join('；') : '') + '）' : '')
-        const stopButton = inFlight
-          ? h('button', {
-              className: 'dsr-cancel' + (cancelError ? ' dsr-cancel-failed' : ''),
-              title: cancelError ? '取消失败：' + cancelError + '（点此重试）' : '停止本次评审',
-              disabled: cancelling,
-              onClick: cancelStop,
-            }, cancelling ? '停止中…' : (cancelError ? '取消·重试' : '停止'))
-          : null
-        // AB/评审脚本关联：把本消息的 session/message 与（就绪时的）批评者路由
-        // 投影成 data-* 属性。路由只在快照就绪时投影；快照/scope 不可用时省略，
-        // 让脚本「fail closed」（不点/拒绝点击不匹配的评审）。
-        let routeAttrs = {}
+      async function advisorCall(method, request) {
+        const invocation = ADVISOR_REMOTE.descriptors.find(item => item.method === method)
+        if (!invocation) return { ok: false, error: '未知顾问读取操作' }
+        try { invocation.parameters[0].codec.create().parse(request) }
+        catch { return { ok: false, error: '顾问读取参数无效' } }
         try {
-          if (typeof scope !== 'object' || typeof scope.getSnapshot !== 'function') {
-            routeAttrs = {}
-          } else {
-            const snap = scope.getSnapshot()
-            routeAttrs = criticRouteAttrs(snap && snap.status === 'ready' ? snap.value : undefined)
+          await ready()
+          if (!active) throw new Error('顾问界面已关闭')
+          const api = ctx.get('remote.cielAdvisor')
+          if (typeof api?.[method] !== 'function') throw new Error('顾问读取接口不可用，请刷新页面后重试')
+          const response = await api[method](request)
+          if (response?.ok === false && typeof response.error === 'object') {
+            return { ok: false, error: String(response.error?.message || '顾问读取失败') }
           }
-        } catch {
-          routeAttrs = {}
+          const result = response?.ok === true && Object.hasOwn(response, 'value') ? response.value : response
+          invocation.result.create().parse(result)
+          if (result?.ok === true && method === 'readAdvice' &&
+            (result.advice?.sessionId !== request.sessionId || result.advice?.callId !== request.callId)) {
+            throw new Error('顾问记录与请求不匹配')
+          }
+          return result
+        } catch { return { ok: false, error: '顾问记录读取失败；请检查连接并重试。' } }
+      }
+      readCallModelUsage = createModelUsageReader(advisorCall)
+      ctx.effect(() => {
+        void ready().catch(() => {})
+        return async () => {
+          active = false
+          await pendingMount?.catch(() => {})
+          const dispose = disposeMount
+          disposeMount = undefined
+          mountedOn = undefined
+          await dispose?.()
         }
-        return h('span', { style: { display: 'inline-flex', gap: '4px', alignItems: 'center' } },
-          h('button', {
-            className: 'dsr-btn',
-            'data-ciel-session-id': sessionId,
-            'data-ciel-message-id': messageId,
-            ...routeAttrs,
-            onClick,
-            disabled: inFlight,
-            title: tip,
-            ref: rootRef,
-          }, label),
-          stopButton,
-          store.progressErrors.has(reviewMessageKey(sessionId, messageId))
-            ? h('button', { type: 'button', className: 'dsr-progress-retry',
-                title: store.progressErrors.get(reviewMessageKey(sessionId, messageId)),
-                onClick: () => { retryProgress(reviewMessageKey(sessionId, messageId)); void hydrate(sessionId, { force: true }) },
-              }, '进度同步失败 · 重试') : null,
-          store.loadErrors.has(sessionId) ? h('span', { className: 'dsr-load-error', role: 'status', title: store.loadErrors.get(sessionId) }, '评审记录未完整加载 · ' + store.loadErrors.get(sessionId)) : null,
-          startError && (!entry || entry.transient || entry.reviewId === startError.reviewId)
-            ? h('span', { className: 'dsr-start-error', title: startError.message, style: { fontSize: '11px', color: 'var(--dsw-alias-state-warn-primary, #b77700)' } }, '本次请求失败 · 可重试')
-            : null,
-          portalPanel ? renderPanelTags(portalPanel) : null,
-        )
-      }
+      }, 'Ciel: advisor remote lifetime')
+      ctx.on('connection/reset', () => { void ready().catch(() => {}) })
 
-      // ── frame overlay: the annotation popover, positioned at the clicked mark.
-      function PopoverLayer() {
-        useStoreTick()
-        const pop = store.popover
-        useEffect(() => {
-          if (!pop) return undefined
-          const close = () => { store.popover = null; emit() }
-          document.addEventListener('click', close)
-          return () => document.removeEventListener('click', close)
-        }, [pop])
-        if (!pop || !pop.annotation) return null
-        const a = pop.annotation
-        const sev = a.severity === 'blocker' ? 'blocker' : 'nit'
-        return h('div', {
-          className: 'dsr-pop',
-          style: { left: pop.x + 'px', top: pop.y + 'px' },
-          onClick: (event) => event.stopPropagation(),
-        },
-          h('div', { className: 'dsr-pop-head' },
-            h(Tag, { tone: sev === 'blocker' ? 'danger' : 'warning' }, sev),
-            h('span', { className: 'dsr-badge dsr-badge-' + sev, style: { verticalAlign: '1px', marginRight: '5px' } }, String(pop.index)),
-            h('span', { className: 'dsr-title' }, a.title || '（无标题）')),
-          a.anchor ? h('div', { className: 'dsr-pop-anchor' }, a.anchor.length > 220 ? a.anchor.slice(0, 219) + '…' : a.anchor) : null,
-          h('div', { className: 'dsr-pop-comment' }, a.comment || ''))
+      const installSidebar = sctx => {
+        const native = createCielSidebar({ React, Tag })
+        native.install(sctx, { call: advisorCall })
+        sidebar = native
+        sctx.effect(() => () => { native.dispose(); if (sidebar === native) sidebar = null }, 'Ciel: advice sidebar lifetime')
       }
-
-      ctx.slots.inject('conversation.chat.assistant-actions', () =>
-        ctx.slots.register(
-          { name: 'conversation.chat.assistant-actions', id: 'advisor-review', order: 20, label: '批注评审' },
-          (props) => h(ReviewButton, { ...props, key: reviewMessageKey(props.sessionId, props.messageId) }),
-        ),
-      )
-      // ── M3-④: ask_advisor 的 keyed tool view（未占用键，纯增量；通用行兜底不变）
+      ctx.inject(['resources', 'sidebarRightTabs', 'sidebarRight'], installSidebar)
       ctx.slots.inject('tool.call.toolview', () =>
-        ctx.slots.register(
-          { name: 'tool.call.toolview', key: 'ask_advisor' },
-          (props) => h(AdvisorToolView, props),
-        ),
-      )
-      ctx.slots.inject('shell.overlay', () =>
-        ctx.slots.register(
-          { name: 'shell.overlay', id: 'advisor-review-popover' },
-          () => h(PopoverLayer),
-        ),
-      )
-      // Test hook: expose live runtime internals so node integration tests can
-      // drive the actual apply/hydrate/ReviewButton wiring (not helper logic).
-      Object.assign(__runtime, { reviewState, store, hydrate, reviewCall, emit, absorb, ReviewButton, buildPanel, renderPanelTags, inbox })
-      // Clear the test-runtime capture on teardown so a stopped runtime is not
-      // retained (avoids stale store/slots after plugin stop).
+        ctx.slots.register({ name: 'tool.call.toolview', key: 'ask_advisor' }, props => h(AdvisorToolView, props)))
+      Object.assign(__runtime, { advisorCall })
       ctx.effect(() => () => {
-        for (const k of Object.keys(__runtime)) delete __runtime[k]
-      }, 'dsh-advisor: review runtime cleanup')
+        for (const key of Object.keys(__runtime)) delete __runtime[key]
+      }, 'Ciel: advisor runtime cleanup')
     }
 
-    // Test hook: the node test harness loads this factory with a stubbed
-    // ModuleLoader and asserts splitter parity plus the reviewed-UI pure
-    // helpers (coverage/soundness/labels/selection/feedback shaping).
     exports.__test = {
-      loadReviewPages,
-      splitMarkdownBlocks,
-      deriveCoverage,
-      isSoundEntry,
-      verdictTagTone,
-      verdictBadgeText,
-      statusButtonLabel,
-      reviewErrorText,
-      feedbackDraftTarget,
-      appendFeedbackDraft,
-      getDraftDecisions: () => draftDecisions,
-      stageFeedbackDraft,
-      inFlightLabel,
-      restoreSelection,
-      buildFeedbackItems,
-      isListResultLoaded,
-      cancelOutcome,
-      entryTime,
-      shouldReplace,
-      entryRank,
-      criticRouteAttrs,
-      modelUsageLabel,
-      createModelUsageReader,
-      AdvisorCard: CielSettingsSection,
-      CielSettingsSection,
+      modelUsageLabel, createModelUsageReader, CielSettingsSection, AdvisorToolView,
       getSettingsEditor: () => settingsEditor,
-      AdvisorToolView,
-      // live internals captured by apply() (undefined until apply runs)
       runtime: __runtime,
-      // inbox observation surface for browser scripts (no extra behavior)
-      inbox: { panelId: INBOX_PANEL_ID },
-      // descriptor / settings completeness (refresh-free snapshots for tests)
-      remoteMethodNames: ADVISOR_REMOTE.descriptors.map((d) => d.method),
+      remoteMethodNames: ADVISOR_REMOTE.descriptors.map(row => row.method),
       defaults: { ...DEFAULTS },
-      fieldDefinition: (key) => {
-        const def = FIELD_DEF_BY_KEY[key]
-        return def ? { kind: def.kind, min: def.min, max: def.max, label: def.label, hint: def.hint } : undefined
-      },
       fieldKeys: FIELD_KEYS.slice(),
-      hasGroup: (key) => Object.prototype.hasOwnProperty.call(INITIAL_CLOSED_GROUPS, key) && INITIAL_CLOSED_GROUPS[key] === true,
     }
     exports.apply = (ctx) => {
       ctx.inject(['configForms'], child => mountClient(child, child.configForms.get('advisor')))
