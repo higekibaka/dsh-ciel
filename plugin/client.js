@@ -1586,7 +1586,7 @@
             h(
               "div",
               { className: "adv-head", style: { cursor: "default" } },
-              h("span", { className: "adv-head-icon" }, "💡"),
+              h("span", { className: "adv-head-icon", "aria-hidden": true }, "💡"),
               h("span", { className: "adv-head-title", style: { opacity: 0.7 } }, "顾问咨询中…"),
               question !== "" ? h("span", { className: "adv-head-note" }, clipAdv(question, 60)) : null
             )
@@ -1633,8 +1633,8 @@
               onClick: () => setOpen(!open),
               "aria-expanded": open
             },
-            h("span", { className: "adv-caret" }, open ? "▾" : "▸"),
-            h("span", { className: "adv-head-icon" }, "💡"),
+            h("span", { className: "adv-caret", "aria-hidden": true }, open ? "▾" : "▸"),
+            h("span", { className: "adv-head-icon", "aria-hidden": true }, "💡"),
             h("span", { className: "adv-head-title", style: isError ? { color: "var(--dsw-alias-state-error-primary)" } : void 0 }, headText),
             chips,
             issues.length > 0 ? h("span", { className: "adv-head-issues" }, "解析问题 " + issues.length) : null,
