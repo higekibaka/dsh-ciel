@@ -34,6 +34,40 @@ test('advisor check uses complete original sections beyond UI bounds and only th
   assert.match(prepared.request.questions.a1.instructions, /untrusted data/)
 })
 
+test('recognized heading with missing/empty framing yields no-exact-claim', () => {
+  const noFramingData = input(section(1))
+  delete noFramingData.items[0].framing
+  const noFramingPrepared = prepareAdvisorJev(noFramingData)
+  assert.equal(noFramingPrepared.checks[0].reason, 'no-exact-claim')
+
+  const emptyFramingData = input(section(1))
+  emptyFramingData.items[0].framing = ''
+  const emptyFramingPrepared = prepareAdvisorJev(emptyFramingData)
+  assert.equal(emptyFramingPrepared.checks[0].reason, 'no-exact-claim')
+})
+
+test('aggregate 24-KiB request-budget boundaries across individually valid sections', () => {
+  const s1Text = section(1, 'a'.repeat(10 * 1024))
+  const data1 = input(s1Text)
+  const baseSize = Buffer.byteLength(JSON.stringify({ question: data1.question, context: data1.context, items: { a1: { advice: s1Text } } }))
+
+  const MAX_STATE_BYTES = 24 * 1024
+  const baseS2Text = section(2, '')
+  // Calculate overhead of adding a2 object
+  const dualSize = Buffer.byteLength(JSON.stringify({ question: data1.question, context: data1.context, items: { a1: { advice: s1Text }, a2: { advice: baseS2Text } } }))
+  const exactPadding = MAX_STATE_BYTES - dualSize
+
+  const exactData = input(s1Text + section(2, 'b'.repeat(exactPadding)))
+  const exactPrepared = prepareAdvisorJev(exactData)
+  assert.equal(exactPrepared.checks[0].status, 'pending')
+  assert.equal(exactPrepared.checks[1].status, 'pending')
+
+  const overflowData = input(s1Text + section(2, 'b'.repeat(exactPadding + 1)))
+  const overflowPrepared = prepareAdvisorJev(overflowData)
+  assert.equal(overflowPrepared.checks[0].status, 'pending')
+  assert.equal(overflowPrepared.checks[1].reason, 'input-too-large')
+})
+
 test('oversized and sensitive input is skipped explicitly instead of clipped', () => {
   for (const [reason, data] of [
     ['input-too-large', input(section(1, '文'.repeat(9000)))],
@@ -58,6 +92,34 @@ test('checks at most six suggestions and reports missing structured advice', asy
   const result = await check({ prepared: prepareAdvisorJev(input('Unstructured answer.')), fetchImpl: () => assert.fail('must not request') })
   assert.equal(result.reason, 'no-eligible-claims')
   assert.ok(isAdvisorJev(result))
+})
+
+test('renderAdvisorJev output assertions', () => {
+  const result = {
+    status: 'partial',
+    reason: 'timeout',
+    omittedChecks: 2,
+    checks: [
+      { id: 'a1', status: 'completed', relation: 'supports' },
+      { id: 'a2', status: 'completed', relation: 'contradicts' },
+      { id: 'a3', status: 'completed', relation: 'insufficient' },
+      { id: 'a4', status: 'skipped', reason: 'no-exact-claim' }
+    ]
+  }
+  const rendered = renderAdvisorJev(result)
+  assert.match(rendered, /\[Ciel Jev 顾问建议检查：partial\]/)
+  assert.match(rendered, /仅与本次传入的背景核对，未独立验证事实。依据不足不代表建议错误；采用前仍需核实。/)
+  assert.match(rendered, /- 建议 1：背景支持/)
+  assert.match(rendered, /- 建议 2：背景冲突/)
+  assert.match(rendered, /- 建议 3：依据不足/)
+  assert.match(rendered, /- 建议 4：未检查（no-exact-claim）/)
+  assert.match(rendered, /未完成原因：timeout/)
+  assert.match(rendered, /另有 2 条建议未检查。/)
+
+  const cleanResult = { status: 'completed', checks: [], omittedChecks: 0 }
+  const cleanRendered = renderAdvisorJev(cleanResult)
+  assert.doesNotMatch(cleanRendered, /未完成原因/)
+  assert.doesNotMatch(cleanRendered, /未检查。/)
 })
 
 test('one batch returns all three relations; supplement preserves original advice parsing', async () => {
