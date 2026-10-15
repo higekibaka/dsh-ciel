@@ -25,7 +25,17 @@ function text(tree) {
 }
 const button = (tree, label) => nodes(tree).find(node => node.type === 'button' && text(node) === label)
   || nodes(tree).find(node => node.type === 'button' && (node.props['data-ciel-settings-group-head'] === '' || node.props['data-ciel-action'] === '') && text(node).includes(label))
-const input = (tree, label) => nodes(tree).find(node => node.props['aria-label'] === label && (['input', 'select'].includes(node.type) || node.props.role === 'switch'))
+const input = (tree, label) => {
+  // Try to find by aria-label first
+  let el = nodes(tree).find(node => node.props['aria-label'] === label && (['input', 'select'].includes(node.type) || node.props.role === 'switch'))
+  if (el) return el
+  // Try to find the associated label element, then look for the input by id
+  const labelEl = nodes(tree).find(node => node.type === 'label' && text(node) === label)
+  if (labelEl && labelEl.props.htmlFor) {
+    return nodes(tree).find(node => node.props.id === labelEl.props.htmlFor)
+  }
+  return undefined
+}
 const json = value => JSON.parse(JSON.stringify(value))
 const usage = { requested: { provider: 'requested', model: 'planned' }, used: [{ provider: 'actual', model: 'executed' }] }
 const jev = { mode: 'shadow', scope: 'provided-context', requestedModel: 'jev-fixture', status: 'completed', requestCount: 1, elapsedMs: 7, omittedChecks: 0,

@@ -75,7 +75,15 @@ function text(tree) {
   return text(tree.props.children)
 }
 const button = (tree, label) => nodes(tree).find((n) => n.type === 'button' && text(n) === label)
-const input = (tree, label) => nodes(tree).find((n) => (['input', 'select', 'textarea'].includes(n.type) || n.props.role === 'switch') && n.props['aria-label'] === label)
+const input = (tree, label) => {
+  let el = nodes(tree).find(node => node.props['aria-label'] === label && (['input', 'select', 'textarea'].includes(node.type) || node.props.role === 'switch'))
+  if (el) return el
+  const labelEl = nodes(tree).find(node => node.type === 'label' && text(node) === label)
+  if (labelEl && labelEl.props.htmlFor) {
+    return nodes(tree).find(node => node.props.id === labelEl.props.htmlFor)
+  }
+  return undefined
+}
 function open(rt) { return rt.render() }
 
 test('Jev API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
