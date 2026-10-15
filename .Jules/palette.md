@@ -1,0 +1,4 @@
+<!-- ciel-doc: historical -->
+## 2026-10-14 - Add aria-hidden to decorative icons
+**Learning:** Decorative icons and emojis (like carets and lightbulbs) in UI components can be noisy for screen reader users, especially when the state (like expanded/collapsed) is already communicated via attributes like `aria-expanded` on the parent element.
+**Action:** Add `aria-hidden=true` to decorative icons that don't provide unique semantic meaning to prevent screen readers from redundantly announcing them.
