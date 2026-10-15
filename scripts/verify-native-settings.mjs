@@ -114,9 +114,19 @@ try {
   await click(doc.querySelector('[aria-haspopup="dialog"]'))
   assert.deepEqual([...doc.querySelectorAll('nav button')].map(n => n.textContent), ['通用设置', '模型', '插件', 'Agent 预设', '夏尔 Ciel'])
   await click(nav('夏尔 Ciel'))
-  const sw = () => doc.querySelector('button[role="switch"][aria-label="启用 Ciel"]')
+  const findInputByLabel = (label) => {
+    let input = doc.querySelector(`input[aria-label="${label}"], button[role="switch"][aria-label="${label}"]`)
+    if (input) return input
+    const labels = [...doc.querySelectorAll('label')]
+    const labelEl = labels.find(l => l.textContent === label)
+    if (labelEl && labelEl.getAttribute('for')) {
+      return doc.getElementById(labelEl.getAttribute('for'))
+    }
+    return null
+  }
+  const sw = () => findInputByLabel('启用 Ciel')
   assert.equal(sw().getAttribute('aria-checked'), 'true')
-  const advisorJevSwitch = () => doc.querySelector('button[role="switch"][aria-label="启用顾问建议检查（Jev）"]')
+  const advisorJevSwitch = () => findInputByLabel('启用顾问建议检查（Jev）')
   assert.equal(advisorJevSwitch().getAttribute('aria-checked'), 'false')
   await click(sw())
   assert.equal(sw().getAttribute('aria-checked'), 'false')
@@ -143,7 +153,7 @@ try {
   await click(advisorJevSwitch())
   await click(button('保存'))
   assert.equal(value.advisorJevEnabled, false)
-  const keyInput = () => doc.querySelector('input[aria-label="Jev API Key"]')
+  const keyInput = () => findInputByLabel('Jev API Key')
   assert.equal(keyInput().type, 'password')
   assert.equal(keyInput().disabled, false, 'secret metadata comes from the native describe mirror')
   const change = async (node, next) => { await act(async () => {
@@ -151,14 +161,14 @@ try {
     node.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   }) }
   await change(keyInput(), 'native-fixture-secret')
-  await change(doc.querySelector('input[aria-label="Jev 模型 ID"]'), 'jev-native')
+  await change(findInputByLabel('Jev 模型 ID'), 'jev-native')
   await click(button('保存'))
   assert.equal(value.jevApiKey, 'native-fixture-secret')
   assert.equal(value.jevModel, 'jev-native')
   assert.equal(keyInput().value, '', 'saved key is not reflected back into the input')
   assert.match(doc.body.textContent, /已配置密钥/)
   assert.ok(!doc.body.innerHTML.includes('native-fixture-secret'))
-  await change(doc.querySelector('input[aria-label="Jev 接口地址"]'), 'http://invalid.test')
+  await change(findInputByLabel('Jev 接口地址'), 'http://invalid.test')
   assert.equal(button('保存').disabled, true)
   await click(button('放弃'))
   await click(button('清除密钥覆盖'))
