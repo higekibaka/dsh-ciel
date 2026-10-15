@@ -35,6 +35,11 @@ test('advisor check uses complete original sections beyond UI bounds and only th
 })
 
 test('recognized heading with missing/empty framing yields no-exact-claim', () => {
+  const noItemData = input(section(1))
+  delete noItemData.items[0]
+  const noItemPrepared = prepareAdvisorJev(noItemData)
+  assert.equal(noItemPrepared.checks[0].reason, 'no-exact-claim')
+
   const noFramingData = input(section(1))
   delete noFramingData.items[0].framing
   const noFramingPrepared = prepareAdvisorJev(noFramingData)
@@ -49,7 +54,6 @@ test('recognized heading with missing/empty framing yields no-exact-claim', () =
 test('aggregate 24-KiB request-budget boundaries across individually valid sections', () => {
   const s1Text = section(1, 'a'.repeat(10 * 1024))
   const data1 = input(s1Text)
-  const baseSize = Buffer.byteLength(JSON.stringify({ question: data1.question, context: data1.context, items: { a1: { advice: s1Text } } }))
 
   const MAX_STATE_BYTES = 24 * 1024
   const baseS2Text = section(2, '')
@@ -74,6 +78,7 @@ test('oversized and sensitive input is skipped explicitly instead of clipped', (
     ['input-too-large', { ...input(), context: '文'.repeat(9000) }],
     ['sensitive-input', input(section(1, 'safe '.repeat(400) + 'api_key = "' + 's'.repeat(40) + '"'))],
     ['sensitive-input', { ...input(), question: 'api_key = "' + 's'.repeat(40) + '"' }],
+    ['sensitive-input', { ...input(), context: 'api_key = "' + 's'.repeat(40) + '"' }],
   ]) {
     const prepared = prepareAdvisorJev(data)
     assert.equal(prepared.checks[0].reason, reason)

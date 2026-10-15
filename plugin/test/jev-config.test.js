@@ -53,6 +53,9 @@ test('jevConnection resolves default, precedence, spacing and env mapping', () =
   const fallbackSavedKey = jevConnection({ jevApiKey: '   ' }, 'env-key')
   assert.equal(fallbackSavedKey.apiKey, 'env-key')
 
+  const emptySavedKey = jevConnection({ jevApiKey: '' }, 'env-key')
+  assert.equal(emptySavedKey.apiKey, 'env-key')
+
   const customEndpoint = jevConnection({ jevEndpoint: 'https://custom.test' }, 'env-key')
   assert.equal(customEndpoint.apiKey, '')
   assert.equal(customEndpoint.endpoint, 'https://custom.test')
@@ -60,6 +63,10 @@ test('jevConnection resolves default, precedence, spacing and env mapping', () =
   const customWithWhitespaceKey = jevConnection({ jevEndpoint: 'https://custom.test', jevApiKey: '   ' }, 'env-key')
   assert.equal(customWithWhitespaceKey.apiKey, '')
   assert.equal(customWithWhitespaceKey.endpoint, 'https://custom.test')
+
+  const customWithEmptyKey = jevConnection({ jevEndpoint: 'https://custom.test', jevApiKey: '' }, 'env-key')
+  assert.equal(customWithEmptyKey.apiKey, '')
+  assert.equal(customWithEmptyKey.endpoint, 'https://custom.test')
 
   const customWithSaved = jevConnection({ jevEndpoint: 'https://custom.test', jevApiKey: 'custom-key' }, 'env-key')
   assert.equal(customWithSaved.apiKey, 'custom-key')
