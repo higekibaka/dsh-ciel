@@ -28,8 +28,8 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     // Keep these small controls local: the host palette is the only UI dependency.
-    function Switch({ checked, onChange, label, disabled = false, title }) {
-      return h('button', { type: 'button', role: 'switch', 'aria-checked': checked,
+    function Switch({ id, checked, onChange, label, disabled = false, title }) {
+      return h('button', { id, type: 'button', role: 'switch', 'aria-checked': checked,
         'aria-label': label, title, disabled, className: 'ciel-switch',
         onClick: () => { if (!disabled) onChange(!checked) } }, h('span', { className: 'ciel-switch-thumb' }))
     }
@@ -326,9 +326,9 @@ window.__ModuleLoader__.load({
     }
 
     /** Field head row: label plus the override badge and reset link. */
-    function FieldHead({ label, overridden, disabled, onReset }) {
+    function FieldHead({ htmlFor, label, overridden, disabled, onReset }) {
       return h('div', { style: css.head, 'data-ciel-setting-head': '' },
-        h('span', { style: css.label }, label),
+        h(htmlFor ? 'label' : 'span', { htmlFor, style: css.label }, label),
         overridden
           ? h('span', { style: css.badges },
               h(Tag, { tone: 'neutral' }, '已覆盖'),
@@ -604,11 +604,13 @@ window.__ModuleLoader__.load({
 
       /** One dropdown or text fallback field for provider/model. */
       const routeField = (key, label, hint, options) => {
+        const fieldId = 'ciel-setting-' + key
         const selectOptions = options.some((option) => option.value === staged[key])
           ? options
           : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }]
         return h('div', { key, 'data-ciel-setting': key, 'data-ciel-setting-kind': 'route', style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
+            htmlFor: fieldId,
             label,
             overridden: overridden(key) && !resets[key],
             disabled,
@@ -616,19 +618,19 @@ window.__ModuleLoader__.load({
           }),
           options.length > 0
             ? h('select', {
+                id: fieldId,
                 style: selectStyle,
                 value: staged[key],
-                'aria-label': label,
                 'aria-describedby': 'ciel-setting-hint-' + key,
                 disabled,
                 onChange: (event) => edit(key, event.target.value),
               }, selectOptions.map((option) =>
                 h('option', { key: option.value, value: option.value }, option.label)))
             : h('input', {
+                id: fieldId,
                 style: css.input,
                 type: 'text',
                 value: staged[key],
-                'aria-label': label,
                 'aria-describedby': 'ciel-setting-hint-' + key,
                 disabled,
                 onChange: (event) => edit(key, event.target.value),
@@ -651,16 +653,19 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const checkField = (key, label, hint) =>
-        h('div', { key, 'data-ciel-setting': key, 'data-ciel-setting-kind': 'check', style: { ...css.field, ...(key === 'enabled' ? {} : css.fieldBorder) } },
+      const checkField = (key, label, hint) => {
+        const fieldId = 'ciel-setting-' + key
+        return h('div', { key, 'data-ciel-setting': key, 'data-ciel-setting-kind': 'check', style: { ...css.field, ...(key === 'enabled' ? {} : css.fieldBorder) } },
           h(FieldHead, {
+            htmlFor: fieldId,
             label,
             overridden: overridden(key) && !resets[key],
             disabled,
             onReset: () => resetField(key),
           }),
-          h('div', { style: css.checkRow, 'data-ciel-setting-control': '', role: 'group', 'aria-label': label, 'aria-describedby': 'ciel-setting-hint-' + key },
+          h('div', { style: css.checkRow, 'data-ciel-setting-control': '', role: 'group', 'aria-describedby': 'ciel-setting-hint-' + key },
             h(Switch, {
+              id: fieldId,
               label,
               title: hint,
               checked: Boolean(staged[key]),
@@ -671,9 +676,11 @@ window.__ModuleLoader__.load({
           ),
           settingHelp(key, hint),
         )
+      }
 
       /** The reasoning-effort dropdown: always a select, options track the model. */
       const effortField = (key, label, opts, hintReady, hintFallback) => {
+        const fieldId = 'ciel-setting-' + key
         const options = opts.options.some((option) => option.value === staged[key])
           ? opts.options
           : [...opts.options, { value: staged[key], label: `${staged[key]}（自定义）` }]
@@ -684,15 +691,16 @@ window.__ModuleLoader__.load({
           : hintFallback
         return h('div', { key, style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
+            htmlFor: fieldId,
             label,
             overridden: overridden(key) && !resets[key],
             disabled,
             onReset: () => resetField(key),
           }),
           h('select', {
+            id: fieldId,
             style: selectStyle,
             value: staged[key],
-            'aria-label': label,
             'aria-describedby': 'ciel-setting-hint-' + key,
             disabled,
             onChange: (event) => edit(key, event.target.value),
@@ -703,11 +711,12 @@ window.__ModuleLoader__.load({
       }
 
       const textField = ({ key, label, hint, kind }) => {
+        const fieldId = 'ciel-setting-' + key
         const secret = kind === 'secret', invalid = textInvalid(key)
         return h('div', { key, 'data-ciel-setting': key, style: { ...css.field, ...css.fieldBorder } },
-          h(FieldHead, { label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
-          h('input', { style: css.input, type: secret ? 'password' : 'text', value: staged[key],
-            'aria-label': label, 'aria-invalid': invalid, 'aria-describedby': 'ciel-setting-hint-' + key,
+          h(FieldHead, { htmlFor: fieldId, label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+          h('input', { id: fieldId, style: css.input, type: secret ? 'password' : 'text', value: staged[key],
+            'aria-invalid': invalid, 'aria-describedby': 'ciel-setting-hint-' + key,
             autoComplete: secret ? 'new-password' : 'off', spellCheck: false,
             placeholder: secret ? '留空保留；输入以替换' : undefined,
             disabled: disabled || !jevSettingsReady, onChange: event => edit(key, event.target.value) }),
@@ -723,20 +732,22 @@ window.__ModuleLoader__.load({
 
       /** One validated numeric input, driven by its descriptor. */
       const numberField = (def) => {
+        const fieldId = 'ciel-setting-' + def.key
         const { invalid } = numState(def)
         return h('div', { key: def.key, 'data-ciel-setting': def.key, 'data-ciel-setting-kind': 'number', style: { ...css.field, ...css.fieldBorder } },
           h(FieldHead, {
+            htmlFor: fieldId,
             label: def.key === 'advisorTimeoutSeconds' ? '顾问时限（秒）' : def.label,
             overridden: overridden(def.key) && !resets[def.key],
             disabled,
             onReset: () => resetField(def.key),
           }),
           h('input', {
+            id: fieldId,
             style: invalid ? { ...css.input, ...css.inputInvalid } : css.input,
             type: 'text',
             inputMode: 'numeric',
             value: staged[def.key],
-            'aria-label': def.label,
             'aria-describedby': 'ciel-setting-hint-' + def.key,
             disabled,
             'aria-invalid': invalid || undefined,

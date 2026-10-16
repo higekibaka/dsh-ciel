@@ -10,6 +10,7 @@
     "test": "node --test plugin/test/*.test.js"
   },
   "devDependencies": {
+    "@testing-library/user-event": "14.6.1",
     "esbuild": "0.28.1"
   }
 }
