@@ -666,8 +666,9 @@
       const React = require2("react");
       const { useState, useEffect } = React;
       const h = React.createElement;
-      function Switch({ checked, onChange, label, disabled = false, title }) {
+      function Switch({ id, checked, onChange, label, disabled = false, title }) {
         return h("button", {
+          id,
           type: "button",
           role: "switch",
           "aria-checked": checked,
@@ -975,11 +976,11 @@
           strokeLinejoin: "round"
         }));
       }
-      function FieldHead({ label, overridden, disabled, onReset }) {
+      function FieldHead({ htmlFor, label, overridden, disabled, onReset }) {
         return h(
           "div",
           { style: css.head, "data-ciel-setting-head": "" },
-          h("span", { style: css.label }, label),
+          h(htmlFor ? "label" : "span", { htmlFor, style: css.label }, label),
           overridden ? h(
             "span",
             { style: css.badges },
@@ -1214,28 +1215,30 @@
         const advisorEffort = effortOptionsFor("provider", "model");
         const selectStyle = { ...css.input, appearance: "auto" };
         const routeField = (key, label, hint, options) => {
+          const fieldId = "ciel-setting-" + key;
           const selectOptions = options.some((option) => option.value === staged[key]) ? options : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }];
           return h(
             "div",
             { key, "data-ciel-setting": key, "data-ciel-setting-kind": "route", style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
+              htmlFor: fieldId,
               label,
               overridden: overridden(key) && !resets[key],
               disabled,
               onReset: () => resetField(key)
             }),
             options.length > 0 ? h("select", {
+              id: fieldId,
               style: selectStyle,
               value: staged[key],
-              "aria-label": label,
               "aria-describedby": "ciel-setting-hint-" + key,
               disabled,
               onChange: (event) => edit(key, event.target.value)
             }, selectOptions.map((option) => h("option", { key: option.value, value: option.value }, option.label))) : h("input", {
+              id: fieldId,
               style: css.input,
               type: "text",
               value: staged[key],
-              "aria-label": label,
               "aria-describedby": "ciel-setting-hint-" + key,
               disabled,
               onChange: (event) => edit(key, event.target.value)
@@ -1259,45 +1262,52 @@
             )
           );
         };
-        const checkField = (key, label, hint) => h(
-          "div",
-          { key, "data-ciel-setting": key, "data-ciel-setting-kind": "check", style: { ...css.field, ...key === "enabled" ? {} : css.fieldBorder } },
-          h(FieldHead, {
-            label,
-            overridden: overridden(key) && !resets[key],
-            disabled,
-            onReset: () => resetField(key)
-          }),
-          h(
+        const checkField = (key, label, hint) => {
+          const fieldId = "ciel-setting-" + key;
+          return h(
             "div",
-            { style: css.checkRow, "data-ciel-setting-control": "", role: "group", "aria-label": label, "aria-describedby": "ciel-setting-hint-" + key },
-            h(Switch, {
+            { key, "data-ciel-setting": key, "data-ciel-setting-kind": "check", style: { ...css.field, ...key === "enabled" ? {} : css.fieldBorder } },
+            h(FieldHead, {
+              htmlFor: fieldId,
               label,
-              title: hint,
-              checked: Boolean(staged[key]),
+              overridden: overridden(key) && !resets[key],
               disabled,
-              onChange: (next) => edit(key, next)
+              onReset: () => resetField(key)
             }),
-            dirtyKey(key) ? h(Tag, { tone: "warning" }, "待保存 · " + (Boolean(staged[key]) ? "已开启" : "已关闭")) : null
-          ),
-          settingHelp(key, hint)
-        );
+            h(
+              "div",
+              { style: css.checkRow, "data-ciel-setting-control": "", role: "group", "aria-describedby": "ciel-setting-hint-" + key },
+              h(Switch, {
+                id: fieldId,
+                label,
+                title: hint,
+                checked: Boolean(staged[key]),
+                disabled,
+                onChange: (next) => edit(key, next)
+              }),
+              dirtyKey(key) ? h(Tag, { tone: "warning" }, "待保存 · " + (Boolean(staged[key]) ? "已开启" : "已关闭")) : null
+            ),
+            settingHelp(key, hint)
+          );
+        };
         const effortField = (key, label, opts, hintReady, hintFallback) => {
+          const fieldId = "ciel-setting-" + key;
           const options = opts.options.some((option) => option.value === staged[key]) ? opts.options : [...opts.options, { value: staged[key], label: `${staged[key]}（自定义）` }];
           const hint = catalog.status === "ready" ? opts.declared.length > 0 ? hintReady : "所选模型未声明思考档位；显式选择不支持的档位会在运行时报错。" : hintFallback;
           return h(
             "div",
             { key, style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
+              htmlFor: fieldId,
               label,
               overridden: overridden(key) && !resets[key],
               disabled,
               onReset: () => resetField(key)
             }),
             h("select", {
+              id: fieldId,
               style: selectStyle,
               value: staged[key],
-              "aria-label": label,
               "aria-describedby": "ciel-setting-hint-" + key,
               disabled,
               onChange: (event) => edit(key, event.target.value)
@@ -1306,16 +1316,17 @@
           );
         };
         const textField = ({ key, label, hint, kind }) => {
+          const fieldId = "ciel-setting-" + key;
           const secret = kind === "secret", invalid2 = textInvalid(key);
           return h(
             "div",
             { key, "data-ciel-setting": key, style: { ...css.field, ...css.fieldBorder } },
-            h(FieldHead, { label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+            h(FieldHead, { htmlFor: fieldId, label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
             h("input", {
+              id: fieldId,
               style: css.input,
               type: secret ? "password" : "text",
               value: staged[key],
-              "aria-label": label,
               "aria-invalid": invalid2,
               "aria-describedby": "ciel-setting-hint-" + key,
               autoComplete: secret ? "new-password" : "off",
@@ -1332,22 +1343,24 @@
           );
         };
         const numberField = (def) => {
+          const fieldId = "ciel-setting-" + def.key;
           const { invalid: invalid2 } = numState(def);
           return h(
             "div",
             { key: def.key, "data-ciel-setting": def.key, "data-ciel-setting-kind": "number", style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
+              htmlFor: fieldId,
               label: def.key === "advisorTimeoutSeconds" ? "顾问时限（秒）" : def.label,
               overridden: overridden(def.key) && !resets[def.key],
               disabled,
               onReset: () => resetField(def.key)
             }),
             h("input", {
+              id: fieldId,
               style: invalid2 ? { ...css.input, ...css.inputInvalid } : css.input,
               type: "text",
               inputMode: "numeric",
               value: staged[def.key],
-              "aria-label": def.label,
               "aria-describedby": "ciel-setting-hint-" + def.key,
               disabled,
               "aria-invalid": invalid2 || void 0,
@@ -1586,7 +1599,7 @@
             h(
               "div",
               { className: "adv-head", style: { cursor: "default" } },
-              h("span", { className: "adv-head-icon" }, "💡"),
+              h("span", { className: "adv-head-icon", "aria-hidden": true }, "💡"),
               h("span", { className: "adv-head-title", style: { opacity: 0.7 } }, "顾问咨询中…"),
               question !== "" ? h("span", { className: "adv-head-note" }, clipAdv(question, 60)) : null
             )
@@ -1633,8 +1646,8 @@
               onClick: () => setOpen(!open),
               "aria-expanded": open
             },
-            h("span", { className: "adv-caret" }, open ? "▾" : "▸"),
-            h("span", { className: "adv-head-icon" }, "💡"),
+            h("span", { className: "adv-caret", "aria-hidden": true }, open ? "▾" : "▸"),
+            h("span", { className: "adv-head-icon", "aria-hidden": true }, "💡"),
             h("span", { className: "adv-head-title", style: isError ? { color: "var(--dsw-alias-state-error-primary)" } : void 0 }, headText),
             chips,
             issues.length > 0 ? h("span", { className: "adv-head-issues" }, "解析问题 " + issues.length) : null,

@@ -75,7 +75,15 @@ function text(tree) {
   return text(tree.props.children)
 }
 const button = (tree, label) => nodes(tree).find((n) => n.type === 'button' && text(n) === label)
-const input = (tree, label) => nodes(tree).find((n) => (['input', 'select', 'textarea'].includes(n.type) || n.props.role === 'switch') && n.props['aria-label'] === label)
+const input = (tree, label) => {
+  let el = nodes(tree).find(node => node.props['aria-label'] === label && (['input', 'select', 'textarea'].includes(node.type) || node.props.role === 'switch'))
+  if (el) return el
+  const labelEl = nodes(tree).find(node => node.type === 'label' && text(node) === label)
+  if (labelEl && labelEl.props.htmlFor) {
+    return nodes(tree).find(node => node.props.id === labelEl.props.htmlFor)
+  }
+  return undefined
+}
 function open(rt) { return rt.render() }
 
 test('Jev API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
@@ -189,6 +197,32 @@ test('settings retain all baseline defaults and exactly one editor per configura
   assert.deepEqual(rt.api.defaults, DEFAULTS)
   assert.deepEqual([...rt.api.fieldKeys].sort(), Object.keys(DEFAULTS).sort())
   assert.equal(new Set(rt.api.fieldKeys).size, Object.keys(DEFAULTS).length)
+  assert.deepEqual(rt.writes, [])
+})
+
+test('settings labels associate uniquely with every editor in both route modes', t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  const editor = rt.api.getSettingsEditor()
+  editor.set('groupClosed', {})
+  for (const catalog of [
+    { status: 'unavailable', groups: [] },
+    { status: 'ready', groups: [{ id: 'kimi-coding', models: [{ id: 'kimi-for-coding' }] }] },
+  ]) {
+    editor.set('catalog', catalog)
+    const elements = nodes(rt.render())
+    const controls = elements.filter(n => ['input', 'select', 'textarea'].includes(n.type) || n.props.role === 'switch')
+    assert.equal(controls.length, rt.api.fieldKeys.length)
+    for (const key of rt.api.fieldKeys) {
+      const id = 'ciel-setting-' + key
+      const targets = elements.filter(n => n.props.id === id)
+      assert.equal(targets.length, 1, key + ': exactly one target id')
+      assert.ok(controls.includes(targets[0]), key + ': label targets an editor, not a wrapper')
+      const labels = elements.filter(n => n.type === 'label' && n.props.htmlFor === id)
+      assert.equal(labels.length, 1, key + ': exactly one explicit label (no aria-label fallback)')
+      assert.ok(text(labels[0]).trim(), key + ': label has text')
+    }
+    assert.equal(input(rt.render(), '顾问时限（秒）').props.id, 'ciel-setting-advisorTimeoutSeconds')
+  }
   assert.deepEqual(rt.writes, [])
 })
 
