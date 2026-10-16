@@ -124,6 +124,49 @@ try {
     }
     return null
   }
+  // Element.click() in JSDOM does not reproduce label-driven focus. user-event
+  // supplies the interaction sequence; never call focus() on the target editor.
+  const { default: userEvent } = await import('@testing-library/user-event')
+  const interactions = userEvent.setup({ document: doc })
+  const clickLabel = async (caption, key, tagName) => {
+    const labels = [...doc.querySelectorAll('[data-ciel-settings] label')].filter(n => n.textContent === caption)
+    assert.equal(labels.length, 1, caption + ': explicit label exists')
+    const label = labels[0], control = doc.getElementById('ciel-setting-' + key)
+    assert.ok(control, caption + ': editor exists')
+    assert.equal(control.tagName, tagName)
+    assert.ok(label.control === control, caption + ': native for/id association')
+    assert.notEqual(dom.window.getComputedStyle(label.closest('[data-ciel-setting-head]')).display, 'none')
+    doc.activeElement?.blur()
+    assert.ok(doc.activeElement !== control)
+    await act(async () => interactions.click(label))
+    assert.ok(doc.activeElement === control, caption + ': clicking label focuses its editor')
+    return control
+  }
+  const jevCaption = '启用顾问建议检查（Jev）'
+  assert.equal((await clickLabel(jevCaption, 'advisorJevEnabled', 'BUTTON')).getAttribute('aria-checked'), 'true')
+  assert.equal(value.advisorJevEnabled, false, 'label click is staged, not persisted')
+  assert.equal(findInputByLabel('启用 Ciel').getAttribute('aria-checked'), 'true', 'label toggles only its own switch')
+  assert.equal((await clickLabel(jevCaption, 'advisorJevEnabled', 'BUTTON')).getAttribute('aria-checked'), 'false')
+  await click(doc.querySelector('[data-ciel-settings-group="advisor"] [data-ciel-settings-group-head]'))
+  for (const [caption, key, tag] of [
+    ['每个代理回合最多咨询几次', 'maxCallsPerTurn', 'INPUT'],
+    ['顾问时限（秒）', 'advisorTimeoutSeconds', 'INPUT'],
+    ['Jev API Key', 'jevApiKey', 'INPUT'],
+    ['Jev 接口地址', 'jevEndpoint', 'INPUT'],
+    ['Jev 模型 ID', 'jevModel', 'INPUT'],
+    ['提供方路由', 'provider', 'INPUT'],
+    ['顾问模型', 'model', 'INPUT'],
+    ['思考深度', 'reasoningEffort', 'SELECT'],
+  ]) await clickLabel(caption, key, tag)
+  await act(async () => plugin.__test.getSettingsEditor().set('catalog', {
+    status: 'ready', groups: [{ id: 'kimi-coding', models: [{ id: 'kimi-for-coding' }] }],
+  }))
+  await clickLabel('提供方路由', 'provider', 'SELECT')
+  await clickLabel('顾问模型', 'model', 'SELECT')
+  assert.deepEqual(value, plugin.__test.defaults, 'label interactions leave saved values untouched')
+  assert.equal(writes.length, 0, 'label interactions never auto-save')
+  assert.equal(button('保存').disabled, true, 'focus alone does not create dirty settings')
+
   const sw = () => findInputByLabel('启用 Ciel')
   assert.equal(sw().getAttribute('aria-checked'), 'true')
   const advisorJevSwitch = () => findInputByLabel('启用顾问建议检查（Jev）')
@@ -180,7 +223,7 @@ try {
   assert.equal(network, 0)
   assert.equal(modelCalls, 0)
   assert.deepEqual(warnings, [])
-  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), advisorOnly: true, draftSurvivesNavigation: true, atomicSave: true, secretRedaction: true, network, modelCalls }))
+  console.log(JSON.stringify({ passed: true, settingsSidebarOrder: rows.map(r => r.id), advisorOnly: true, draftSurvivesNavigation: true, atomicSave: true, secretRedaction: true, labelClickAndFocus: true, network, modelCalls }))
 } finally {
   if (act) await act(async () => { for (const root of roots) root.unmount(); for (const off of cleanups.reverse()) off() })
   globalThis.fetch = originalFetch

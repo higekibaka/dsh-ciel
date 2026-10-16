@@ -200,6 +200,32 @@ test('settings retain all baseline defaults and exactly one editor per configura
   assert.deepEqual(rt.writes, [])
 })
 
+test('settings labels associate uniquely with every editor in both route modes', t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  const editor = rt.api.getSettingsEditor()
+  editor.set('groupClosed', {})
+  for (const catalog of [
+    { status: 'unavailable', groups: [] },
+    { status: 'ready', groups: [{ id: 'kimi-coding', models: [{ id: 'kimi-for-coding' }] }] },
+  ]) {
+    editor.set('catalog', catalog)
+    const elements = nodes(rt.render())
+    const controls = elements.filter(n => ['input', 'select', 'textarea'].includes(n.type) || n.props.role === 'switch')
+    assert.equal(controls.length, rt.api.fieldKeys.length)
+    for (const key of rt.api.fieldKeys) {
+      const id = 'ciel-setting-' + key
+      const targets = elements.filter(n => n.props.id === id)
+      assert.equal(targets.length, 1, key + ': exactly one target id')
+      assert.ok(controls.includes(targets[0]), key + ': label targets an editor, not a wrapper')
+      const labels = elements.filter(n => n.type === 'label' && n.props.htmlFor === id)
+      assert.equal(labels.length, 1, key + ': exactly one explicit label (no aria-label fallback)')
+      assert.ok(text(labels[0]).trim(), key + ': label has text')
+    }
+    assert.equal(input(rt.render(), '顾问时限（秒）').props.id, 'ciel-setting-advisorTimeoutSeconds')
+  }
+  assert.deepEqual(rt.writes, [])
+})
+
 test('settings keep the global switch first and only advisor controls', t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
   const tree = open(rt), controls = nodes(tree).filter(n => n.type === 'input' || n.type === 'select' || n.props.role === 'switch')
