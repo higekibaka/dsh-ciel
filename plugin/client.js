@@ -985,7 +985,7 @@
             "span",
             { style: css.badges },
             h(Tag, { tone: "neutral" }, "已覆盖"),
-            h("button", { type: "button", style: css.reset, disabled, onClick: onReset }, "重置")
+            h("button", { type: "button", style: css.reset, disabled, onClick: onReset, "aria-label": "重置 " + label }, "重置")
           ) : null
         );
       }
@@ -1427,8 +1427,8 @@
             h(
               "div",
               { "data-ciel-settings-footer-actions": "" },
-              h(Button, { type: "button", variant: "toolbar", size: "md", disabled: !dirty && !saveFailed || saving, onClick: discard }, "放弃"),
-              h(Button, { type: "button", variant: "primary", size: "md", disabled: blocked || !snap.writable, onClick: save }, saving ? "保存中…" : "保存")
+              h(Button, { type: "button", variant: "toolbar", size: "md", disabled: !dirty && !saveFailed || saving, onClick: discard, title: saving ? "正在保存…" : !dirty && !saveFailed ? "没有需要放弃的修改" : void 0 }, "放弃"),
+              h(Button, { type: "button", variant: "primary", size: "md", disabled: blocked || !snap.writable, onClick: save, title: saving ? "正在保存…" : !snap.writable ? "只读模式无法保存" : blocked && dirty ? "请先修正无效设置" : !dirty ? "没有需要保存的修改" : void 0 }, saving ? "保存中…" : "保存")
             )
           )
         );
