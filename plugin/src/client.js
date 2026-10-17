@@ -332,7 +332,7 @@ window.__ModuleLoader__.load({
         overridden
           ? h('span', { style: css.badges },
               h(Tag, { tone: 'neutral' }, '已覆盖'),
-              h('button', { type: 'button', style: css.reset, disabled, onClick: onReset }, '重置'))
+              h('button', { type: 'button', style: css.reset, disabled, onClick: onReset, 'aria-label': '重置 ' + label }, '重置'))
           : null,
       )
     }
@@ -801,8 +801,8 @@ window.__ModuleLoader__.load({
           saveFailed ? h('p', { 'data-ciel-settings-footer-error': '', role: 'status' }, '保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。') : null,
           h('span', { 'data-ciel-settings-footer-status': '', role: 'status' }, saving ? '正在保存…' : blocked && dirty ? '请先修正无效设置' : dirty ? FIELD_KEYS.filter(dirtyKey).length + ' 项未保存的修改' : '没有未保存的修改'),
           h('div', { 'data-ciel-settings-footer-actions': '' },
-            h(Button, { type: 'button', variant: 'toolbar', size: 'md', disabled: (!dirty && !saveFailed) || saving, onClick: discard }, '放弃'),
-          h(Button, { type: 'button', variant: 'primary', size: 'md', disabled: blocked || !snap.writable, onClick: save }, saving ? '保存中…' : '保存'))))
+            h(Button, { type: 'button', variant: 'toolbar', size: 'md', disabled: (!dirty && !saveFailed) || saving, onClick: discard, title: saving ? '正在保存…' : (!dirty && !saveFailed) ? '没有需要放弃的修改' : undefined }, '放弃'),
+          h(Button, { type: 'button', variant: 'primary', size: 'md', disabled: blocked || !snap.writable, onClick: save, title: saving ? '正在保存…' : !snap.writable ? '只读模式无法保存' : blocked && dirty ? '请先修正无效设置' : !dirty ? '没有需要保存的修改' : undefined }, saving ? '保存中…' : '保存'))))
 
     }
 
