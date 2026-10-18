@@ -985,7 +985,7 @@
             "span",
             { style: css.badges },
             h(Tag, { tone: "neutral" }, "已覆盖"),
-            h("button", { type: "button", style: css.reset, disabled, onClick: onReset }, "重置")
+            h("button", { type: "button", style: css.reset, disabled, onClick: onReset, "aria-label": `重置${label}`, title: `重置${label}` }, "重置")
           ) : null
         );
       }
@@ -1254,6 +1254,8 @@
                   type: "button",
                   style: css.reset,
                   disabled,
+                  "aria-label": "重试加载模型目录",
+                  title: "重试加载模型目录",
                   onClick: () => setCatalog({ status: "idle", groups: [] })
                 }, "重试"),
                 " ",
@@ -1315,7 +1317,7 @@
             h("p", { id: "ciel-setting-hint-" + key, style: css.hint }, hint)
           );
         };
-        const textField = ({ key, label, hint, kind }) => {
+        const textField = ({ key, label, hint, kind, fallback }) => {
           const fieldId = "ciel-setting-" + key;
           const secret = kind === "secret", invalid2 = textInvalid(key);
           return h(
@@ -1331,12 +1333,12 @@
               "aria-describedby": "ciel-setting-hint-" + key,
               autoComplete: secret ? "new-password" : "off",
               spellCheck: false,
-              placeholder: secret ? "留空保留；输入以替换" : void 0,
+              placeholder: secret ? "留空保留；输入以替换" : fallback,
               disabled: disabled || !jevSettingsReady,
               onChange: (event) => edit(key, event.target.value)
             }),
             secret ? h("p", { role: "status", style: css.hint }, !jevSettingsReady ? "宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。" : resets[key] ? "待保存：清除密钥覆盖" : staged[key] ? "待保存：替换密钥" : secretSlot.set ? "已配置密钥（原值不回传）" : "未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。") : null,
-            secret ? h("button", { type: "button", style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key) }, "清除密钥覆盖") : null,
+            secret ? h("button", { type: "button", style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), "aria-label": `清除${label}覆盖`, title: `清除${label}覆盖` }, "清除密钥覆盖") : null,
             !secret && key === "jevEndpoint" && staged[key] !== JEV_ENDPOINT ? h("p", { role: "status", style: css.hint }, "自定义服务将收到密钥和原文；请另填该服务的 API Key。") : null,
             invalid2 ? h("p", { role: "alert", style: css.hint }, secret ? "密钥须为 1–4096 个可打印 ASCII 字符，不含空白。" : key === "jevEndpoint" ? "请输入完整 HTTPS 地址，不含凭据、查询参数或片段。" : "请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。") : null,
             settingHelp(key, hint)
@@ -1364,6 +1366,7 @@
               "aria-describedby": "ciel-setting-hint-" + def.key,
               disabled,
               "aria-invalid": invalid2 || void 0,
+              placeholder: String(DEFAULTS[def.key] ?? ""),
               onChange: (event) => edit(def.key, event.target.value)
             }),
             invalid2 ? h("p", { id: "ciel-setting-hint-" + def.key, "data-ciel-setting-help": "", style: css.invalidText, role: "alert" }, `须是 ${def.min}–${def.max} 之间的整数`) : settingHelp(def.key, def.hint)
@@ -1427,8 +1430,8 @@
             h(
               "div",
               { "data-ciel-settings-footer-actions": "" },
-              h(Button, { type: "button", variant: "toolbar", size: "md", disabled: !dirty && !saveFailed || saving, onClick: discard }, "放弃"),
-              h(Button, { type: "button", variant: "primary", size: "md", disabled: blocked || !snap.writable, onClick: save }, saving ? "保存中…" : "保存")
+              h(Button, { type: "button", variant: "toolbar", size: "md", disabled: !dirty && !saveFailed || saving, title: !dirty && !saveFailed ? "没有需要放弃的修改" : saving ? "正在保存中" : void 0, onClick: discard }, "放弃"),
+              h(Button, { type: "button", variant: "primary", size: "md", disabled: blocked || !snap.writable, title: blocked && dirty ? "请先修正无效设置" : !dirty ? "没有需要保存的修改" : !snap.writable ? "当前设置为只读" : void 0, onClick: save }, saving ? "保存中…" : "保存")
             )
           )
         );
