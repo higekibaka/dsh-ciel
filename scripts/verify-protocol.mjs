@@ -2,6 +2,7 @@
 // Current built DSH Registry + Gateway, production Ciel service and transport.
 // In-memory carrier; no HTTP server, network access, keys or model adapter.
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
