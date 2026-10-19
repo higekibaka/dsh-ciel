@@ -32,6 +32,10 @@ const ctx = new Context(), owned = [], outcomes = []
 const invoke = (method, request) => ctx.typertGateway.invoke({ namespace: 'cielAdvisor', method, args: { request } })
 try {
   owned.push(ctx.plugin(Registry)); await owned.at(-1).await()
+  if (existsSync(join(checkout, 'packages/api/remote-access/lib/index.js'))) {
+    const { default: RemoteAccess } = await import(pathToFileURL(join(checkout, 'packages/api/remote-access/lib/index.js')).href)
+    owned.push(ctx.plugin(RemoteAccess)); await owned.at(-1).await()
+  }
   owned.push(ctx.plugin(Gateway)); await owned.at(-1).await()
   owned.push(ctx.plugin({name:'ciel-protocol-under-test',apply:c=>apply(c,Config({}))}));await owned.at(-1).await()
   assert.deepEqual(ADVISOR_METHODS,['readAdvice','callModelUsage'])

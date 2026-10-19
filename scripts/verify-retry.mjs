@@ -67,6 +67,14 @@ const answer = '## [high] Inspect ownership\nframing: Keep one owner.\npitfalls:
 const adapter = new ScriptedAdapter(['Synthetic parent response.',{partial:'DISCARDED_PARTIAL_OUTPUT',failure:new LlmError('fetch failed', 'TRANSPORT')},answer])
 try {
   globalThis.fetch = async () => { networkRequests++; throw new Error('Network forbidden in offline verification') }
+  const workingDirs = new WeakMap()
+  ctx.provide('workingDirectory', {
+    get: session => workingDirs.get(session) ?? session?.header?.cwd ?? home,
+    current: agent => workingDirs.get(agent.session) ?? agent.session?.header?.cwd ?? home,
+    ensure: async (agent, signal) => { signal?.throwIfAborted(); return workingDirs.get(agent.session) ?? agent.session?.header?.cwd ?? home },
+    set: async (agent, targetPath, signal) => { signal?.throwIfAborted(); workingDirs.set(agent.session, targetPath); return targetPath },
+    resolve: async (_agent, targetPath) => targetPath,
+  })
   await ctx.plugin(llmModule.default||llmModule).await()
   for (const mod of modules) await ctx.plugin(mod.default||mod,mod.name==='agent-loop'?{agents:[]}:{}).await()
   const registration = ctx.get('llm').registerAdapter(['fixture'],adapter)
