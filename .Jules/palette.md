@@ -8,3 +8,6 @@
 ## 2024-05-18 - Improve Context of Repeated UI Elements
 **Learning:** In dynamically generated forms like Settings, identical text buttons like "重置" (Reset) or "重试" (Retry) appear multiple times across different inputs, which causes screen reader users to lose the context of *what* is being reset or retried.
 **Action:** Always append dynamic contextual labels via `aria-label` and `title` on identical buttons inside mapping functions to provide context to screen readers and visually-impaired users using tooltips.
+## 2024-05-18 - Improve Screen Reader Context for Disclosure Components
+**Learning:** This app heavily uses native `<button>` tags paired with generic ARIA patterns via `h(button, ...)` for UI interactability. However, complex toggle states (like `adv-disclosure` toggling `adv-body` or settings groups toggling forms) often missed explicit linkage via `aria-controls`, and repetitive generic actions (like "Reset") lacked specific context.
+**Action:** Always link expandable sections to their triggers via `id` and `aria-controls` explicitly when dealing with grouped content or disclosures, especially in custom UI built with `React.createElement`. Ensure generic actions specify their target context.

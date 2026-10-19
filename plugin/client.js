@@ -1378,6 +1378,7 @@
         const renderField = (def, depth) => {
           if (def.kind === "group") {
             const open = groupClosed[def.key] !== true;
+            const bodyId = "ciel-group-" + def.key;
             return h(
               "section",
               { key: def.key, "data-ciel-settings-group": def.key },
@@ -1387,6 +1388,7 @@
                   type: "button",
                   "data-ciel-settings-group-head": "",
                   "aria-expanded": open,
+                  "aria-controls": bodyId,
                   onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open })
                 },
                 h(Chevron, { open }),
@@ -1394,7 +1396,7 @@
                 groupDirty(def) ? h(Tag, { tone: "warning" }, "未保存") : null,
                 open ? null : h("span", { "data-ciel-settings-group-summary": "" }, def.summarize(staged))
               ),
-              open ? h("div", { "data-ciel-settings-group-body": "" }, ...def.children.map((child) => renderField(child, depth + 1))) : null
+              open ? h("div", { id: bodyId, "data-ciel-settings-group-body": "" }, ...def.children.map((child) => renderField(child, depth + 1))) : null
             );
           }
           const el = def.kind === "route" ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options]) : def.kind === "effort" ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback) : def.kind === "check" ? checkField(def.key, def.label, def.hint) : def.kind === "text" || def.kind === "secret" ? textField(def) : numberField(def);
@@ -1638,6 +1640,7 @@
             navigationError ? h("p", { role: "status", className: "adv-navigation-error" }, navigationError) : null
           );
         }
+        const bodyId = props.callId ? "adv-body-" + props.callId : void 0;
         return h(
           "div",
           { className: "adv-card" },
@@ -1647,7 +1650,8 @@
               type: "button",
               className: "adv-head adv-disclosure",
               onClick: () => setOpen(!open),
-              "aria-expanded": open
+              "aria-expanded": open,
+              "aria-controls": bodyId
             },
             h("span", { className: "adv-caret", "aria-hidden": true }, open ? "▾" : "▸"),
             h("span", { className: "adv-head-icon", "aria-hidden": true }, "💡"),
@@ -1660,7 +1664,7 @@
           h("div", { className: "ciel-model-usage" }, modelLabel),
           open ? h(
             "div",
-            { className: "adv-body" },
+            { id: bodyId, className: "adv-body" },
             advisorJevPanel(h, meta?.jev),
             question !== "" ? h("div", { className: "adv-q" }, "咨询：" + clipAdv(question, 300)) : null,
             isError ? h("div", { className: "adv-err" }, body !== "" ? body : "（无错误详情）") : items.length > 0 ? items.map((item, i) => h(AdvisorItem, { key: i, item })) : h("div", { className: "adv-raw" }, body !== "" ? body : "（空回复）"),

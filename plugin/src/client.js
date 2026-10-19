@@ -771,14 +771,15 @@ window.__ModuleLoader__.load({
       const renderField = (def, depth) => {
         if (def.kind === 'group') {
           const open = groupClosed[def.key] !== true
+          const bodyId = 'ciel-group-' + def.key
           return h('section', { key: def.key, 'data-ciel-settings-group': def.key },
             h('button', {
-              type: 'button', 'data-ciel-settings-group-head': '', 'aria-expanded': open,
+              type: 'button', 'data-ciel-settings-group-head': '', 'aria-expanded': open, 'aria-controls': bodyId,
               onClick: () => setGroupClosed({ ...groupClosed, [def.key]: open }),
             }, h(Chevron, { open }), h('strong', {}, def.label),
             groupDirty(def) ? h(Tag, { tone: 'warning' }, '未保存') : null,
             open ? null : h('span', { 'data-ciel-settings-group-summary': '' }, def.summarize(staged))),
-            open ? h('div', { 'data-ciel-settings-group-body': '' }, ...def.children.map(child => renderField(child, depth + 1))) : null)
+            open ? h('div', { id: bodyId, 'data-ciel-settings-group-body': '' }, ...def.children.map(child => renderField(child, depth + 1))) : null)
         }
         const el = def.kind === 'route' ? routeField(def.key, def.label, def.hint, ROUTE_OPTIONS[def.options])
           : def.kind === 'effort' ? effortField(def.key, def.label, EFFORT_OPTS[def.opts], def.hintReady, def.hintFallback)
@@ -1022,11 +1023,15 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ciel-model-usage' }, modelLabel),
           navigationError ? h('p', { role: 'status', className: 'adv-navigation-error' }, navigationError) : null)
       }
+
+      const bodyId = props.callId ? 'adv-body-' + props.callId : undefined
+
       return h('div', { className: 'adv-card' },
         h('button', {
           type: 'button', className: 'adv-head adv-disclosure',
           onClick: () => setOpen(!open),
           'aria-expanded': open,
+          'aria-controls': bodyId,
         },
           h('span', { className: 'adv-caret', 'aria-hidden': true }, open ? '▾' : '▸'),
           h('span', { className: 'adv-head-icon', 'aria-hidden': true }, '💡'),
@@ -1037,7 +1042,7 @@ window.__ModuleLoader__.load({
           question !== '' ? h('span', { className: 'adv-head-q' }, clipAdv(question, 80)) : null),
         h('div', { className: 'ciel-model-usage' }, modelLabel),
         open
-          ? h('div', { className: 'adv-body' },
+          ? h('div', { id: bodyId, className: 'adv-body' },
               advisorJevPanel(h, meta?.jev),
               question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
               isError
