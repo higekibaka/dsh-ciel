@@ -86,3 +86,33 @@
 .ciel-button-ghost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
 .ciel-button-icon{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center}
 @media(prefers-reduced-motion:reduce){.ciel-switch-thumb{transition:none}}
+
+.ciel-reset-button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.ciel-reset-button:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+.ciel-reset-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ciel-reset-button:focus-visible,
+[data-ciel-settings] input:focus-visible,
+[data-ciel-settings] select:focus-visible,
+[data-ciel-setting-help]>details>summary:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+[data-ciel-settings-group-head]:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
