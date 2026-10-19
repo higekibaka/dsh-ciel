@@ -6,6 +6,21 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-19
+
+### Host compatibility (DSH 0.2.1-rc.2)
+
+- 适配 **DSH 0.2.1-rc.2**（peer 依赖精确匹配，`@deepseek-ai/cordis` 升至 `4.0.5`，Node.js 要求 `^22.19.0 || >=24.0.0`）：顾问子代理启动切换至宿主 `subagents.startActivation({ provider: 'spawn', delivery: 'caller', ... })` 契约，在 `agent/created` 钩子中完成无工具子代理的模型路由与输出上限配置。
+- 新增包级图标导出 `./icon`（`plugin/icon.svg`），供宿主插件管理界面展示。
+
+### Accessibility, UX and tests
+
+- 合并设置页与工具卡片无障碍及交互细节优化（PR #4、#5、#7）：
+  - 设置项 `<label htmlFor>` 与表单控件显式绑定，覆盖双路由模式下的全部配置项。
+  - 可折叠设置分组按钮与内容区（`ciel-group-*`）、顾问工具卡片折叠按钮与详情区（`adv-body-*`）建立 `aria-controls` / `id` 关联。
+  - 字段“重置”、模型目录“重试”及“清除密钥覆盖”按钮补充带字段上下文的 `aria-label` 与 `title`；数值与文本输入展示默认值 `placeholder`；禁用态“保存”与“放弃”按钮提供原因 `title` 提示。
+- 补充 `jev-client` 与 `jev-Settings` 边界与回退单元测试（PR #3）以及 `startActivation` 宿主集成与设置卡片无障碍断言测试。
+
 ## [0.21.0] - 2026-10-14
 
 ### Breaking changes and compatibility

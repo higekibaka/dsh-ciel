@@ -8,15 +8,15 @@ An advisor-only plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 ## Install and use
 
-Current release: **[0.21.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.21.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.21.0).
+Current release: **[0.22.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.22.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.22.0).
 
-This release requires **DSH 0.2.0-rc.2** (exact peer versions) and Node.js `^22.19.0 || >=24.0.0`. Keep a matching older plugin on older hosts; do not bypass compatibility checks. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.21.0` through `plugin_manager`. CLI users select the intended profile explicitly:
+This release requires **DSH 0.2.1-rc.2** (exact peer versions) and Node.js `^22.19.0 || >=24.0.0`. Keep a matching older plugin on older hosts; do not bypass compatibility checks. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.22.0` through `plugin_manager`. CLI users select the intended profile explicitly:
 
 ```sh
-dsh plugin --profile <target-profile> add dsh-ciel@0.21.0
+dsh plugin --profile <target-profile> add dsh-ciel@0.22.0
 ```
 
-After a package update, follow the installation result's restart requirement and refresh the UI; hot updates are not guaranteed. **0.21.0 removes annotation review and the inbox; old review files remain but cannot be opened by this version.** Defer upgrading if you still need those features. Keep a profile configuration backup before upgrading. This version does not automatically clean up old review settings; do not delete the shared Jev connection settings. See [upgrade and compatibility notes](docs/compatibility-017.md).
+After a package update, follow the installation result's restart requirement and refresh the UI; hot updates are not guaranteed. **0.21.0+ removes annotation review and the inbox; old review files remain but cannot be opened by this version.** Defer upgrading if you still need those features. Keep a profile configuration backup before upgrading. This version does not automatically clean up old review settings; do not delete the shared Jev connection settings. See [upgrade and compatibility notes](docs/compatibility-017.md).
 
 Install the matching package in your intended DSH profile; do not start a second Web profile alongside Desktop. Choose the advisor's registered provider and model under **Settings → 夏尔 Ciel**, then save. Route defaults do not register credentials or providers.
 

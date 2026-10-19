@@ -1,4 +1,5 @@
 // Ciel: planning advisor, with optional context checks and read-only history.
+import { randomUUID } from 'node:crypto'
 import Schema from '@deepseek-ai/schemastery'
 import { ADVISOR_METHODS, advisorInvocation, ADVISOR_JEV_SCHEMA } from './advisor-protocol.js'
 import { createAdvisorOperation } from './advisor-operation.js'
@@ -288,7 +289,38 @@ export function apply(ctx, config) {
   // agent's durable session log (including the reminder's own marker, so it
   // fires at most once per turn and survives compaction/restart), and the
   // registration unwinds with the agent.
+  const liveAdvisorChildren = new Map()
+  function configureAdvisorChildAgent(agent, childState) {
+    if (!agent || childState.configuredAgent === agent) return
+    childState.configuredAgent = agent
+    childState.localAgent = agent
+    const childTools = agent.ctx?.get?.('tools')
+    if (typeof childTools?.presentAs === 'function') childTools.presentAs('native')
+    if (typeof childTools?.restrict === 'function') childTools.restrict({ allow: [] })
+    const sp = agent.ctx?.get?.('systemPrompt')
+    if (typeof sp?.section === 'function') {
+      const order = typeof sp.getSectionOrder === 'function' ? sp.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') : 0
+      sp.section({ name: 'deployment:persona-prefix', order, text: ADVISOR_PERSONA })
+    }
+    if (typeof agent.ctx?.on === 'function') {
+      agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+        const assembled = await next()
+        return { ...assembled, tools: [] }
+      })
+    }
+    if (typeof agent.ctx?.effect === 'function') {
+      agent.ctx.effect(() => () => {
+        if (childState.modelUsage) captureModelUsage(childState.modelUsage, childState)
+      }, 'Ciel: capture advisor child model usage before disposal')
+    }
+  }
+
   ctx.on('agent/created', ({ agent }) => {
+    const childState = agent && liveAdvisorChildren.get(agent.id)
+    if (childState !== undefined) {
+      configureAdvisorChildAgent(agent, childState)
+      return
+    }
     const sp = agent && agent.ctx && agent.ctx.get('systemPrompt')
     if (sp === undefined) return
     sp.context({
@@ -334,11 +366,11 @@ export function apply(ctx, config) {
   // agent, so one listener can pin the configured effort onto exactly the
   // live advisor children tracked below. `provider` (or an empty value)
   // leaves the request untouched.
-  const liveAdvisorChildren = new Map()
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
-    if (agent === undefined || !liveAdvisorChildren.has(agent.id)) return next()
-    const operation = liveAdvisorChildren.get(agent.id)
+    const childState = agent && liveAdvisorChildren.get(agent.id)
+    if (childState === undefined) return next()
+    const { operation } = childState
     if (current().enabled === false) operation.cancel('Ciel disabled')
     operation.beforeRequest()
     const effort = current().reasoningEffort
@@ -359,8 +391,8 @@ export function apply(ctx, config) {
   ctx.inject(['tools'], tctx => {
     if (typeof tctx.tools.guard !== 'function') return
     tctx.tools.guard(exec => {
-      const operation = liveAdvisorChildren.get(exec.agent?.id)
-      if (operation) { operation.cancel('unexpected tool in advisor'); return 'advisor has no tools' }
+      const childState = liveAdvisorChildren.get(exec.agent?.id)
+      if (childState) { childState.operation.cancel('unexpected tool in advisor'); return 'advisor has no tools' }
     })
     advisorGuardAvailable = true
     tctx.effect(() => () => {
@@ -439,41 +471,56 @@ export function apply(ctx, config) {
         const consultation = `Established facts and constraints:\n${args.context.trim()}\n\nQuestion:\n${args.question}`
         const release = consultationGate.reserve(parent, facts, cfg.maxCallsPerTurn)
         const owned = beginAdvisorCall(exec.signal)
+        const childId = randomUUID()
+        const childState = { id: childId, operation: owned.operation, modelUsage, localAgent: undefined, configuredAgent: undefined }
+        liveAdvisorChildren.set(childId, childState)
         let run
+        let disposalPromise
+        const disposeRun = () => {
+          if (!run || typeof run.dispose !== 'function') return Promise.resolve()
+          disposalPromise ??= Promise.resolve().then(() => run.dispose())
+          return disposalPromise
+        }
+        const onAbort = () => {
+          void disposeRun().catch(() => {})
+        }
         try {
           owned.operation.check()
-          run = await tctx.subagents.start('spawn', {
-          label: 'advisor',
-          parent,
-          signal: owned.operation.signal,
-          prompt: [{ type: 'text', text: consultation }],
-          agentOptions: {
-            provider: cfg.provider,
-            model: cfg.model,
-            maxTokens: cfg.maxTokens,
-          },
-          persona: ADVISOR_PERSONA,
-          // Absolute delegation-depth cap: each start requires the child's
-          // computed depth (caller depth + 1) <= maxDepth. 0 forbids ANY
-          // delegation from a top-level session ("child depth 1 exceeds
-          // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
-          // the advisor's own children (depth 2).
-          maxDepth: 1,
-          // The advisor never touches tools: time-sensitive facts are the
-          // CALLER's job (search first, pass findings in context) — grounding
-          // stays single-owner, and the advisor's diversity is not re-anchored
-          // to the same web consensus the caller would find.
-          toolFilter: { allow: [] },
-        })
-        // The published handle is tracked before its first request.
-        liveAdvisorChildren.set(run.id, owned.operation)
-        const childTools = run.localAgent?.ctx?.get('tools')
-        if (typeof childTools?.presentAs === 'function') childTools.presentAs('native')
+          run = await tctx.subagents.startActivation({
+            provider: 'spawn',
+            label: 'advisor',
+            childId,
+            delivery: 'caller',
+            signal: owned.operation.signal,
+            request: {
+              parent,
+              prompt: [{ type: 'text', text: consultation }],
+              agentOptions: {
+                provider: cfg.provider,
+                model: cfg.model,
+                maxTokens: cfg.maxTokens,
+              },
+              // Absolute delegation-depth cap: each start requires the child's
+              // computed depth (caller depth + 1) <= maxDepth. 0 forbids ANY
+              // delegation from a top-level session ("child depth 1 exceeds
+              // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
+              // the advisor's own children (depth 2).
+              maxDepth: 1,
+            },
+          })
+          if (run?.childId && run.childId !== childId) liveAdvisorChildren.set(run.childId, childState)
+          if (run?.id && run.id !== childId) liveAdvisorChildren.set(run.id, childState)
+          if (run?.localAgent) configureAdvisorChildAgent(run.localAgent, childState)
+          owned.operation.signal.addEventListener('abort', onAbort, { once: true })
+          if (owned.operation.signal.aborted) onAbort()
+          if (!run || typeof run.result?.then !== 'function') {
+            throw new Error('subagents.startActivation did not return a caller result promise')
+          }
           const result = await run.result
           owned.operation.check()
           const text = outputText(result.output)
           if (result.stopReason !== 'completed') {
-            const detail = result.stopReason === 'error' ? childErrorDetail(run) : ''
+            const detail = result.stopReason === 'error' ? childErrorDetail(childState) : ''
             throw new Error(
               `advisor consultation ended with "${result.stopReason}"` +
                 (detail === '' ? '' : `: ${detail}`) +
@@ -482,7 +529,7 @@ export function apply(ctx, config) {
           }
           const answer = text === '' ? 'The advisor returned an empty answer.' : text
           const parsed = parseAdvisorItems(answer)
-          captureModelUsage(modelUsage, run)
+          captureModelUsage(modelUsage, childState)
           let jev
           if (cfg.advisorJevEnabled === true) {
             const controller = new AbortController()
@@ -504,7 +551,12 @@ export function apply(ctx, config) {
           return { text: answer, items: parsed.items, issues: parsed.issues, modelUsage: modelUsageSnapshot(modelUsage), ...(jev ? { jev } : {}) }
         } finally {
           try {
-            if (run) { captureModelUsage(modelUsage, run); liveAdvisorChildren.delete(run.id); await run.dispose() }
+            owned.operation.signal.removeEventListener('abort', onAbort)
+            captureModelUsage(modelUsage, childState)
+            liveAdvisorChildren.delete(childId)
+            if (run?.childId) liveAdvisorChildren.delete(run.childId)
+            if (run?.id) liveAdvisorChildren.delete(run.id)
+            if (run) await disposeRun()
           } finally { owned.finish(); release() }
         }
         } finally {

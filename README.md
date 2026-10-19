@@ -8,15 +8,15 @@
 
 ## 安装与使用
 
-当前版本：**[0.21.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.21.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.21.0)。
+当前版本：**[0.22.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.22.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.22.0)。
 
-本版要求 **DSH 0.2.0-rc.2**（peer 依赖精确匹配），Node.js 为 `^22.19.0 || >=24.0.0`；旧宿主应保留匹配的旧版插件，不要绕过版本校验。桌面版可在当前 GUI 中要求代理通过 `plugin_manager` 安装 `dsh-ciel@0.21.0`。CLI 用户在目标 profile 执行：
+本版要求 **DSH 0.2.1-rc.2**（peer 依赖精确匹配），Node.js 为 `^22.19.0 || >=24.0.0`；旧宿主应保留匹配的旧版插件，不要绕过版本校验。桌面版可在当前 GUI 中要求代理通过 `plugin_manager` 安装 `dsh-ciel@0.22.0`。CLI 用户在目标 profile 执行：
 
 ```sh
-dsh plugin --profile <目标-profile> add dsh-ciel@0.21.0
+dsh plugin --profile <目标-profile> add dsh-ciel@0.22.0
 ```
 
-包更新后按安装结果提示重启 DSH 并刷新界面；不承诺自动热更新。**0.21.0 移除了批注评审及收件箱，旧评审文件保留但本版不能打开**；需要这些功能时先不要升级。升级前保留 profile 配置备份；本版不会自动清理旧评审配置，也不要删除共用的 Jev 连接配置。详见[升级与兼容说明](docs/compatibility-017.md)。
+包更新后按安装结果提示重启 DSH 并刷新界面；不承诺自动热更新。**0.21.0+ 移除了批注评审及收件箱，旧评审文件保留但本版不能打开**；需要这些功能时先不要升级。升级前保留 profile 配置备份；本版不会自动清理旧评审配置，也不要删除共用的 Jev 连接配置。详见[升级与兼容说明](docs/compatibility-017.md)。
 
 在目标 DSH profile 中安装匹配的插件包；使用桌面版时不要并行启动另一个 Web profile。在 **设置 → 夏尔 Ciel** 选择已经注册的顾问提供方和模型并保存。默认路由不会自动配置提供方或凭据。
 

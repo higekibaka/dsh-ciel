@@ -6,7 +6,7 @@ Current docs describe the advisor-only source tree. [CHANGELOG](../CHANGELOG.md)
 
 - [中文](../README.md) / [English](../README.en.md): use, defaults and data retention.
 - [Architecture](architecture.md): current module boundaries.
-- [Settings compatibility](compatibility-017.md): DSH 0.2.0-rc.2 requirement, 0.21.0 upgrade and historical configuration migration.
+- [Settings compatibility](compatibility-017.md): DSH 0.2.1-rc.2 requirement, 0.22.0 upgrade and historical configuration migration.
 - [Security](../SECURITY.md): credential, storage and data-egress boundaries.
 
 ## Offline checks
@@ -16,7 +16,7 @@ Run from this repository after dependencies are available:
 
 default checks: `pnpm test`, `pnpm check:client`, `pnpm check:docs`, `node scripts/check-publication.mjs --include-untracked`, `node scripts/check-publication.mjs --package`.
 
-For a built DSH 0.2.0-rc.2 checkout, export `DSH_CHECKOUT=/path/to/deepseek-harness` explicitly and run:
+For a built DSH 0.2.1-rc.2 checkout, export `DSH_CHECKOUT=/path/to/deepseek-harness` explicitly and run:
 
 ```sh
 node scripts/verify-runtime.mjs

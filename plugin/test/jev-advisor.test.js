@@ -186,9 +186,9 @@ async function harness(t, overrides = {}, fetchImpl = () => assert.fail('unexpec
   let tool
   const provider = ctx.plugin({ name: 'advisor-test-boundary', apply(c) {
     c.provide('tools', { register: definition => { tool = definition }, guard: () => () => {} })
-    c.provide('subagents', { start: async (_backend, spec) => {
+    c.provide('subagents', { startActivation: async (spec) => {
       requests.push(spec)
-      return { id: parent.id + '-child', result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: section().trim() }] }),
+      return { childId: spec.childId ?? (parent.id + '-child'), messageId: 'm-1', result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: section().trim() }] }),
         dispose: async () => { disposals.push(true) } }
     } })
   } })
