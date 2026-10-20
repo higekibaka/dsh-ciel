@@ -30,7 +30,7 @@ const home = await mkdtemp('/tmp/ciel-protocol-dsh-')
 const beforeHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const ctx = new Context(), owned = [], outcomes = []
-const invoke = (method, request) => ctx.typertGateway.invoke({ namespace: 'cielAdvisor', method, args: { request } }, { signal: new AbortController().signal })
+const invoke = (method, request) => ctx.typertGateway.invoke({ namespace: 'cielAdvisor', method, args: { request } })
 try {
   owned.push(ctx.plugin(Registry)); await owned.at(-1).await()
   if (existsSync(join(checkout, 'packages/api/remote-access/lib/index.js'))) {

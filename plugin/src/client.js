@@ -214,6 +214,16 @@ window.__ModuleLoader__.load({
       head: { display: 'flex', alignItems: 'center', gap: '8px' },
       label: { flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 500, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)' },
       badges: { display: 'inline-flex', alignItems: 'center', gap: '8px' },
+      reset: {
+        border: 'none',
+        background: 'none',
+        padding: 0,
+        font: 'inherit',
+        fontSize: '12px',
+        lineHeight: 1.5,
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
+      },
       input: {
         height: '34px',
         padding: '0 12px',
@@ -322,7 +332,7 @@ window.__ModuleLoader__.load({
         overridden
           ? h('span', { style: css.badges },
               h(Tag, { tone: 'neutral' }, '已覆盖'),
-              h('button', { type: 'button', className: 'ciel-reset-button', disabled, onClick: onReset, 'aria-label': `重置${label}`, title: `重置${label}` }, '重置'))
+              h('button', { type: 'button', style: css.reset, disabled, onClick: onReset, 'aria-label': `重置${label}`, title: `重置${label}` }, '重置'))
           : null,
       )
     }
@@ -633,7 +643,7 @@ window.__ModuleLoader__.load({
                     '模型目录不可用，请直接输入 id。',
                     h('button', {
                       type: 'button',
-                      className: 'ciel-reset-button',
+                      style: css.reset,
                       disabled,
                       'aria-label': '重试加载模型目录',
                       title: '重试加载模型目录',
@@ -715,7 +725,7 @@ window.__ModuleLoader__.load({
           secret ? h('p', { role: 'status', style: css.hint }, !jevSettingsReady ? '宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。'
             : resets[key] ? '待保存：清除密钥覆盖' : staged[key] ? '待保存：替换密钥'
               : secretSlot.set ? '已配置密钥（原值不回传）' : '未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。') : null,
-          secret ? h('button', { type: 'button', className: 'ciel-reset-button', disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
+          secret ? h('button', { type: 'button', style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
           !secret && key === 'jevEndpoint' && staged[key] !== JEV_ENDPOINT ? h('p', { role: 'status', style: css.hint }, '自定义服务将收到密钥和原文；请另填该服务的 API Key。') : null,
           invalid ? h('p', { role: 'alert', style: css.hint }, secret ? '密钥须为 1–4096 个可打印 ASCII 字符，不含空白。'
             : key === 'jevEndpoint' ? '请输入完整 HTTPS 地址，不含凭据、查询参数或片段。' : '请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。') : null,
