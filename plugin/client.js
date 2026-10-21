@@ -1581,6 +1581,9 @@
         );
       }
       function AdvisorToolView(props) {
+        const [open, setOpen] = useState(true);
+        const [navigationError, setNavigationError] = useState("");
+        const [localId] = useState(() => "adv-body-local-" + Math.random().toString(36).slice(2));
         const block = props.block;
         const settled = block !== null && typeof block === "object" && "kind" in block;
         const argsRaw = settled ? block.call && typeof block.call.argsRaw === "string" ? block.call.argsRaw : "" : block && typeof block.argsRaw === "string" ? block.argsRaw : "";
@@ -1591,8 +1594,6 @@
         const modelLabel = useCallModelLabel(meta && meta.modelUsage, props.sessionId, "tool", props.callId, settled);
         let items = meta !== null && typeof meta === "object" && meta.v === 1 && Array.isArray(meta.items) ? meta.items.filter((it) => it && typeof it === "object") : [];
         let issues = meta !== null && typeof meta === "object" && Array.isArray(meta.issues) ? meta.issues.map(String) : [];
-        const [open, setOpen] = useState(true);
-        const [navigationError, setNavigationError] = useState("");
         if (!settled) {
           return h(
             "div",
@@ -1636,7 +1637,7 @@
             navigationError ? h("p", { role: "status", className: "adv-navigation-error" }, navigationError) : null
           );
         }
-        const bodyId = props.callId ? "adv-body-" + props.callId : void 0;
+        const bodyId = props.callId ? "adv-body-" + props.callId : localId;
         return h(
           "div",
           { className: "adv-card" },
