@@ -8,7 +8,7 @@ function settingsCard(overrides = {}) {
   let state = []
   let cursor = 0
   let revision = 0
-  let loseResponse = false, refuse = false, legacy = false
+  let loseResponse = false, refuse = false, legacy = false, writable = true
   const mutations = []
   const registrations = []
   const h = (type, props, ...children) => ({ type, props: { ...props, children } })
@@ -29,7 +29,7 @@ function settingsCard(overrides = {}) {
   const cleanups = []
   plugin.apply({
     settingsScope: { bind: () => ({
-      getSnapshot: () => ({ status: 'ready', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision,
+      getSnapshot: () => ({ status: 'ready', writable, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision,
         ...(legacy ? {} : { secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }) }),
       subscribe: () => () => {},
       async mutate(ops, expectedRevision) {
@@ -54,6 +54,7 @@ function settingsCard(overrides = {}) {
     loseNextSaveResponse() { loseResponse = true },
     refuseWrites() { refuse = true },
     legacyHost() { legacy = true },
+    readOnly() { writable = false },
     externalEdit(key, next) { value[key] = next; revision++ },
     remount() { state = []; cursor = 0 },
     render() { cursor = 0; return plugin.__test.CielSettingsSection() },
@@ -85,6 +86,57 @@ const input = (tree, label) => {
   return undefined
 }
 function open(rt) { return rt.render() }
+
+test('reset, retry and secret-clear buttons share focus styling and contextual labels', t => {
+  const rt = settingsCard({ maxCallsPerTurn: 8, jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
+  const editor = rt.api.getSettingsEditor()
+  editor.set('groupClosed', {})
+  editor.set('catalog', { status: 'unavailable', groups: [] })
+  const tree = rt.render()
+  for (const label of ['重置', '重试', '清除密钥覆盖']) {
+    const matches = nodes(tree).filter(n => n.type === 'button' && text(n) === label)
+    assert.ok(matches.length > 0, label)
+    for (const node of matches) {
+      assert.equal(node.props.className, 'ciel-reset-button')
+      assert.ok(node.props['aria-label'].length > label.length)
+      assert.equal(node.props.title, node.props['aria-label'])
+      assert.equal(node.props.style, undefined)
+    }
+  }
+})
+
+test('footer titles prioritize saving, then read-only, then invalid or clean drafts', t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  const editor = rt.api.getSettingsEditor()
+  assert.equal(button(rt.render(), '保存').props.title, '没有需要保存的修改')
+  assert.equal(button(rt.render(), '放弃').props.title, '没有需要放弃的修改')
+  editor.set('saving', true)
+  assert.equal(button(rt.render(), '放弃').props.title, '正在保存中')
+  editor.set('saving', false)
+  input(rt.render(), '启用 Ciel').props.onClick()
+  assert.equal(button(rt.render(), '保存').props.title, undefined)
+  editor.set('saving', true)
+  for (const label of ['保存中…', '放弃']) {
+    assert.equal(button(rt.render(), label).props.title, '正在保存中')
+    assert.equal(button(rt.render(), label).props.disabled, true)
+  }
+  rt.readOnly()
+  assert.equal(button(rt.render(), '保存中…').props.title, '正在保存中')
+  editor.set('saving', false)
+  assert.equal(button(rt.render(), '保存').props.title, '当前设置为只读')
+  button(rt.render(), '放弃').props.onClick()
+  assert.equal(button(rt.render(), '保存').props.title, '当前设置为只读')
+})
+
+test('invalid draft footer explains validation unless read-only takes precedence', t => {
+  const rt = settingsCard(); t.after(() => rt.dispose())
+  input(rt.render(), 'Jev 模型 ID').props.onChange({ target: { value: 'bad model' } })
+  assert.equal(button(rt.render(), '保存').props.title, '请先修正无效设置')
+  assert.equal(button(rt.render(), '保存').props.disabled, true)
+  assert.equal(button(rt.render(), '放弃').props.title, undefined)
+  rt.readOnly()
+  assert.equal(button(rt.render(), '保存').props.title, '当前设置为只读')
+})
 
 test('Jev API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
   const rt = settingsCard({ jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())

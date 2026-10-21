@@ -214,16 +214,6 @@ window.__ModuleLoader__.load({
       head: { display: 'flex', alignItems: 'center', gap: '8px' },
       label: { flex: 1, minWidth: 0, fontSize: '13px', fontWeight: 500, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)' },
       badges: { display: 'inline-flex', alignItems: 'center', gap: '8px' },
-      reset: {
-        border: 'none',
-        background: 'none',
-        padding: 0,
-        font: 'inherit',
-        fontSize: '12px',
-        lineHeight: 1.5,
-        color: 'var(--dsw-alias-label-secondary)',
-        cursor: 'pointer',
-      },
       input: {
         height: '34px',
         padding: '0 12px',
@@ -332,7 +322,7 @@ window.__ModuleLoader__.load({
         overridden
           ? h('span', { style: css.badges },
               h(Tag, { tone: 'neutral' }, '已覆盖'),
-              h('button', { type: 'button', style: css.reset, disabled, onClick: onReset, 'aria-label': `重置${label}`, title: `重置${label}` }, '重置'))
+              h('button', { type: 'button', className: 'ciel-reset-button', disabled, onClick: onReset, 'aria-label': `重置${label}`, title: `重置${label}` }, '重置'))
           : null,
       )
     }
@@ -643,7 +633,7 @@ window.__ModuleLoader__.load({
                     '模型目录不可用，请直接输入 id。',
                     h('button', {
                       type: 'button',
-                      style: css.reset,
+                      className: 'ciel-reset-button',
                       disabled,
                       'aria-label': '重试加载模型目录',
                       title: '重试加载模型目录',
@@ -725,7 +715,7 @@ window.__ModuleLoader__.load({
           secret ? h('p', { role: 'status', style: css.hint }, !jevSettingsReady ? '宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。'
             : resets[key] ? '待保存：清除密钥覆盖' : staged[key] ? '待保存：替换密钥'
               : secretSlot.set ? '已配置密钥（原值不回传）' : '未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。') : null,
-          secret ? h('button', { type: 'button', style: css.reset, disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
+          secret ? h('button', { type: 'button', className: 'ciel-reset-button', disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
           !secret && key === 'jevEndpoint' && staged[key] !== JEV_ENDPOINT ? h('p', { role: 'status', style: css.hint }, '自定义服务将收到密钥和原文；请另填该服务的 API Key。') : null,
           invalid ? h('p', { role: 'alert', style: css.hint }, secret ? '密钥须为 1–4096 个可打印 ASCII 字符，不含空白。'
             : key === 'jevEndpoint' ? '请输入完整 HTTPS 地址，不含凭据、查询参数或片段。' : '请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。') : null,
@@ -805,8 +795,8 @@ window.__ModuleLoader__.load({
           saveFailed ? h('p', { 'data-ciel-settings-footer-error': '', role: 'status' }, '保存未确认，草稿已保留。配置可能已在别处更新，请核对后重试或放弃草稿。') : null,
           h('span', { 'data-ciel-settings-footer-status': '', role: 'status' }, saving ? '正在保存…' : blocked && dirty ? '请先修正无效设置' : dirty ? FIELD_KEYS.filter(dirtyKey).length + ' 项未保存的修改' : '没有未保存的修改'),
           h('div', { 'data-ciel-settings-footer-actions': '' },
-            h(Button, { type: 'button', variant: 'toolbar', size: 'md', disabled: (!dirty && !saveFailed) || saving, title: (!dirty && !saveFailed) ? '没有需要放弃的修改' : saving ? '正在保存中' : undefined, onClick: discard }, '放弃'),
-          h(Button, { type: 'button', variant: 'primary', size: 'md', disabled: blocked || !snap.writable, title: blocked && dirty ? '请先修正无效设置' : !dirty ? '没有需要保存的修改' : !snap.writable ? '当前设置为只读' : undefined, onClick: save }, saving ? '保存中…' : '保存'))))
+            h(Button, { type: 'button', variant: 'toolbar', size: 'md', disabled: (!dirty && !saveFailed) || saving, title: saving ? '正在保存中' : (!dirty && !saveFailed) ? '没有需要放弃的修改' : undefined, onClick: discard }, '放弃'),
+          h(Button, { type: 'button', variant: 'primary', size: 'md', disabled: blocked || !snap.writable, title: saving ? '正在保存中' : !snap.writable ? '当前设置为只读' : blocked && dirty ? '请先修正无效设置' : !dirty ? '没有需要保存的修改' : undefined, onClick: save }, saving ? '保存中…' : '保存'))))
 
     }
 

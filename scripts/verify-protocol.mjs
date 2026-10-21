@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { createRequire, registerHooks } from 'node:module'
 
@@ -26,11 +27,19 @@ const { Config, apply } = await import('../plugin/index.js')
 const { Context } = await import(pathToFileURL(shared['@deepseek-ai/cordis']).href)
 const { default: Registry } = await import(pathToFileURL(join(checkout, 'packages/typert/registry/lib/index.js')).href)
 const { default: Gateway } = await import(pathToFileURL(join(checkout, 'packages/api/gateway/lib/index.js')).href)
-const home = await mkdtemp('/tmp/ciel-protocol-dsh-')
+const home = await mkdtemp(join(tmpdir(), 'ciel-protocol-dsh-'))
 const beforeHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
-const ctx = new Context(), owned = [], outcomes = []
-const invoke = (method, request) => ctx.typertGateway.invoke({ namespace: 'cielAdvisor', method, args: { request } })
+const ctx = new Context(), owned = []
+// The in-memory carrier explicitly owns a live owner PeerScope, just as a
+// connection would. No transport or interactive-answer capability is needed.
+const lifetime = new AbortController()
+const peer = {
+  id: 'ciel-protocol-fixture', ctx, principal: { kind: 'owner' },
+  signal: lifetime.signal, interactions: 'none',
+  async dispose() { lifetime.abort() },
+}
+const invoke = (method, request) => ctx.typertGateway.invoke({ namespace: 'cielAdvisor', method, args: { request }, peer })
 try {
   owned.push(ctx.plugin(Registry)); await owned.at(-1).await()
   if (existsSync(join(checkout, 'packages/api/remote-access/lib/index.js'))) {
@@ -49,8 +58,11 @@ try {
   const result=await invoke('readAdvice',{sessionId:'s',callId:'tool:c'})
   assert.equal(result.ok,true);assert.deepEqual(result.advice,advice)
   await assert.rejects(invoke('start',{sessionId:'s',messageId:'m'}))
+  await peer.dispose()
+  await assert.rejects(invoke('readAdvice',{sessionId:'s',callId:'tool:c'}),{code:'gateway/peer-disposed'})
   console.log(JSON.stringify({ok:true,mode:'actual DSH Registry/Gateway',methods:ADVISOR_METHODS,networkRequests:0,modelCalls:0}))
 } finally {
+  await peer.dispose()
   for(const scope of owned.reverse())await scope.dispose()
   if(beforeHome===undefined)delete process.env.DSH_HOME;else process.env.DSH_HOME=beforeHome
   await rm(home,{recursive:true,force:true})

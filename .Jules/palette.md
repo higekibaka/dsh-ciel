@@ -11,3 +11,7 @@
 ## 2024-05-18 - Improve Screen Reader Context for Disclosure Components
 **Learning:** This app heavily uses native `<button>` tags paired with generic ARIA patterns via `h(button, ...)` for UI interactability. However, complex toggle states (like `adv-disclosure` toggling `adv-body` or settings groups toggling forms) often missed explicit linkage via `aria-controls`, and repetitive generic actions (like "Reset") lacked specific context.
 **Action:** Always link expandable sections to their triggers via `id` and `aria-controls` explicitly when dealing with grouped content or disclosures, especially in custom UI built with `React.createElement`. Ensure generic actions specify their target context.
+
+## 2026-10-20 - Keep keyboard focus visible across settings controls
+**Learning:** Inline reset-button styles cannot express focus-visible, hover, or disabled states, leaving keyboard users without a consistent focus indicator.
+**Action:** Use the shared ciel-reset-button class for reset, retry, and secret-clear actions while preserving contextual aria-label/title attributes. Apply themed focus outlines to settings inputs, selects, help disclosures, and group headings.
