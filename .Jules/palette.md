@@ -15,3 +15,6 @@
 ## 2026-10-20 - Keep keyboard focus visible across settings controls
 **Learning:** Inline reset-button styles cannot express focus-visible, hover, or disabled states, leaving keyboard users without a consistent focus indicator.
 **Action:** Use the shared ciel-reset-button class for reset, retry, and secret-clear actions while preserving contextual aria-label/title attributes. Apply themed focus outlines to settings inputs, selects, help disclosures, and group headings.
+## 2026-10-21 - Guarantee aria-controls linkage for dynamic disclosures
+**Learning:** Disclosure patterns in components like `adv-card` might miss explicit `aria-controls` if the target content lacks an ID (e.g., relying on optional props like `callId`). Screen reader users require this explicit linkage to understand the relationship between the trigger and the content it toggles. Furthermore, manual DOM updates with React.createElement make missing hook invariants easier to overlook.
+**Action:** When a dynamic component lacks a deterministic ID from props, generate a stable local ID using `useState` at the top of the component to guarantee `aria-controls` always correctly references the `adv-body` container. Always place hooks before early returns.

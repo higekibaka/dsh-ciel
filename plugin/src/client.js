@@ -956,6 +956,10 @@ window.__ModuleLoader__.load({
 
     /** The ask_advisor keyed tool view (tool.call.toolview, key 'ask_advisor'). */
     function AdvisorToolView(props) {
+      const [open, setOpen] = useState(true)
+      const [navigationError, setNavigationError] = useState('')
+      const [localId] = useState(() => 'adv-body-local-' + Math.random().toString(36).slice(2))
+
       const block = props.block
       const settled = block !== null && typeof block === 'object' && 'kind' in block
       const argsRaw = settled
@@ -972,8 +976,6 @@ window.__ModuleLoader__.load({
       let issues = meta !== null && typeof meta === 'object' && Array.isArray(meta.issues)
         ? meta.issues.map(String)
         : []
-      const [open, setOpen] = useState(true)
-      const [navigationError, setNavigationError] = useState('')
 
       // In-flight: tool/call seen, result not yet.
       if (!settled) {
@@ -1014,7 +1016,7 @@ window.__ModuleLoader__.load({
           navigationError ? h('p', { role: 'status', className: 'adv-navigation-error' }, navigationError) : null)
       }
 
-      const bodyId = props.callId ? 'adv-body-' + props.callId : undefined
+      const bodyId = props.callId ? 'adv-body-' + props.callId : localId
 
       return h('div', { className: 'adv-card' },
         h('button', {
