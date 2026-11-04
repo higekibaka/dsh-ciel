@@ -6,6 +6,17 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-05
+
+### Host compatibility & accessibility
+
+- 放宽 `engines.dsh` 与 `@deepseek-ai/*` `peerDependencies` 兼容范围至 `>=0.2.0-rc.2`，原生支持 **DSH 0.2.2-rc.1+** 免豁免加载。
+- 合并设置页与工具卡片无障碍与交互细节修复（PR #9）：
+  - 统一设置页重置按钮、输入框、下拉框与分组折叠头的 `:focus-visible` 键盘焦点高亮样式（`.ciel-reset-button`）。
+  - 保存进行中时底部“保存”与“放弃”按钮优先展示 `正在保存…` 状态提示 `title`。
+  - 确保顾问工具卡片折叠按钮 `adv-disclosure` 在初始折叠与展开态下始终通过 `aria-controls` 关联详情容器 `adv-body-*`。
+  - 补齐离线协议与宿主集成验证脚本（`scripts/verify-protocol.mjs`、`scripts/link-harness-peers.mjs`）的 `workingDirectory`、`remoteAccess` 与 `@deepseek-ai/dsh-api-gateway` 夹具支持。
+
 ## [0.22.0] - 2026-10-19
 
 ### Host compatibility (DSH 0.2.1-rc.2)

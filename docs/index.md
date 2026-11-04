@@ -6,7 +6,7 @@ Current docs describe the advisor-only source tree. [CHANGELOG](../CHANGELOG.md)
 
 - [中文](../README.md) / [English](../README.en.md): use, defaults and data retention.
 - [Architecture](architecture.md): current module boundaries.
-- [Settings compatibility](compatibility-017.md): DSH 0.2.1-rc.2 requirement, 0.22.0 upgrade and historical configuration migration.
+- [Settings compatibility](compatibility-017.md): DSH >=0.2.0-rc.2 requirement, 0.22.1 upgrade and historical configuration migration.
 - [Security](../SECURITY.md): credential, storage and data-egress boundaries.
 
 ## Offline checks
