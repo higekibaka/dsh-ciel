@@ -9,22 +9,31 @@ import { createRequire, registerHooks } from 'node:module'
 if (process.argv.length > 2) throw new Error('Offline verification takes no arguments; paid/live mode is not supported')
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT must point to a built DSH checkout')
-// One identity for the shared modules: this script and the plugin must use the
-// TARGET's Cordis and Typert, never a second copy from the plugin workspace.
+// Cordis comes from the target so the replay drives the TARGET's Context. The
+// other two shared packages are deliberately NOT hooked: plugin/runtime.js is
+// the single authority for which copy the plugin loads, and a hook here would
+// hand this script a second, differently-built copy (the CommonJS build, which
+// require() resolution prefers) to compare against. The identity assertions
+// below fail loudly if that ever drifts.
 const targetRequire = createRequire(join(checkout, 'packages/core/tools/package.json'))
 const targetCordis = targetRequire.resolve('@deepseek-ai/cordis')
-const targetSchema = targetRequire.resolve('@deepseek-ai/schemastery')
-const targetTypert = join(checkout, 'packages/typert/protocol/lib/index.js')
 const resolutionHook = registerHooks({ resolve(specifier, context, nextResolve) {
-  if (process.env.CIEL_VERIFY_NATIVE_PEERS === '1') return nextResolve(specifier, context)
   if (specifier === '@deepseek-ai/cordis') return { url: pathToFileURL(targetCordis).href, shortCircuit: true }
-  if (specifier === '@deepseek-ai/schemastery') return { url: pathToFileURL(targetSchema).href, shortCircuit: true }
-  if (specifier === '@deepseek-ai/dsh-typert-protocol') return { url: pathToFileURL(targetTypert).href, shortCircuit: true }
   return nextResolve(specifier, context)
 } })
 const { Context } = await import(pathToFileURL(targetCordis).href)
-// Load the plugin AFTER the hook so its static Typert import gets the target copy.
+const { hostSchemastery, hostTypertProtocol, describeHostModule } = await import(new URL('../plugin/runtime.js', import.meta.url).href)
+const hostSchema = hostSchemastery()
+const hostProtocol = hostTypertProtocol()
+for (const name of ['@deepseek-ai/schemastery', '@deepseek-ai/dsh-typert-protocol']) {
+  const source = describeHostModule(name).source
+  assert.ok(source.startsWith('DSH_CHECKOUT'), name + ' must come from the DSH_CHECKOUT host copy, not ' + source)
+}
 const ciel = await import(new URL('../plugin/index.js', import.meta.url).href)
+// One shared identity each: the plugin's config Schema and its Typert base class
+// must be the very objects the host build provides, never a second copy.
+assert.ok(ciel.Config instanceof hostSchema, 'the plugin builds its config with the host Schema class')
+assert.equal(Object.getPrototypeOf(ciel.AdvisorService), hostProtocol.TypertRemoteService, 'the advisor service extends the host Typert base')
 const load = (relative) => import(pathToFileURL(join(checkout, relative, 'lib/index.js')).href)
 const llmModule = await load('packages/llm/llm')
 const { LlmAdapter, createUserMessage } = llmModule
@@ -70,7 +79,7 @@ try {
   await ctx.plugin(llmModule.default||llmModule).await()
   for (const mod of modules) await ctx.plugin(mod.default||mod,mod.name==='agent-loop'?{agents:[]}:{}).await()
   ctx.get('llm').registerAdapter(['fixture'],adapter)
-  const plugin=ctx.plugin(ciel,{...ciel.configValues(ciel.Config({})),provider:'fixture',model:'fixed',guidanceEnabled:false,planReminderEnabled:false,requireExploration:false,maxCallsPerTurn:1,advisorJevEnabled:false})
+  const plugin=ctx.plugin(ciel,{...ciel.configValues(ciel.Config({})),provider:'fixture',model:'fixed',guidanceEnabled:false,planReminderEnabled:false,requireExploration:false,maxCallsPerTurn:1,advisorDecisionEnabled:false})
   await plugin.await()
   const parent=await ctx.get('agentLoop').create('advisor-native-fixture',{provider:'fixture',model:'fixed'},{cwd:home})
   parent.followup(createUserMessage({content:[{type:'text',text:'Evaluate the fixture options.'}],source:{kind:'user'}}))

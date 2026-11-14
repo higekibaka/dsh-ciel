@@ -13,12 +13,12 @@
   var usage = (value) => object(value) && optional(value.requested, route) && array(value.used, route, 32);
   var probability = (value) => Number.isFinite(value) && value >= 0 && value <= 1;
   var relation = enumOf("supports", "contradicts", "insufficient");
-  var jevReason = enumOf("disabled", "no-eligible-claims", "invalid-config", "missing-key", "time-unavailable", "cancelled", "timeout", "http-error", "invalid-response", "transport-error", "no-exact-claim", "sensitive-input", "no-source-evidence", "limited-evidence", "input-too-large");
-  var advisorJevCheck = (value) => object(value) && /^a[1-6]$/.test(value.id) && (value.status === "skipped" ? jevReason(value.reason) : value.status === "completed" && relation(value.relation) && probability(value.confidence) && object(value.probabilities) && Object.keys(value.probabilities).length === 3 && ["supports", "contradicts", "insufficient"].every((key) => probability(value.probabilities[key])) && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 1e-3);
-  var isAdvisorJev = (value) => object(value) && value.mode === "shadow" && value.scope === "provided-context" && string(value.requestedModel, 128) && enumOf("completed", "partial", "skipped", "error", "cancelled")(value.status) && integer(value.requestCount, 1) && integer(value.elapsedMs) && integer(value.omittedChecks) && array(value.checks, advisorJevCheck, 6) && new Set(value.checks.map((row) => row.id)).size === value.checks.length && optional(value.reason, jevReason) && optional(value.model, (model) => string(model, 128)) && optional(value.usage, (tokens) => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens));
-  var jevCountSchema = { type: "integer" };
-  var jevProbabilitySchema = { type: "number" };
-  var ADVISOR_JEV_SCHEMA = {
+  var decisionReason = enumOf("disabled", "no-eligible-claims", "invalid-config", "missing-key", "time-unavailable", "cancelled", "timeout", "http-error", "invalid-response", "transport-error", "safety-blocked", "no-exact-claim", "sensitive-input", "no-source-evidence", "limited-evidence", "input-too-large");
+  var advisorDecisionCheck = (value) => object(value) && /^a[1-6]$/.test(value.id) && (value.status === "skipped" ? decisionReason(value.reason) : value.status === "completed" && relation(value.relation) && probability(value.confidence) && object(value.probabilities) && Object.keys(value.probabilities).length === 3 && ["supports", "contradicts", "insufficient"].every((key) => probability(value.probabilities[key])) && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 1e-3);
+  var isAdvisorDecision = (value) => object(value) && value.mode === "shadow" && value.scope === "provided-context" && string(value.requestedModel, 128) && enumOf("completed", "partial", "skipped", "error", "cancelled")(value.status) && integer(value.requestCount, 1) && integer(value.elapsedMs) && integer(value.omittedChecks) && array(value.checks, advisorDecisionCheck, 6) && new Set(value.checks.map((row) => row.id)).size === value.checks.length && optional(value.reason, decisionReason) && optional(value.model, (model) => string(model, 128)) && optional(value.usage, (tokens) => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens));
+  var decisionCountSchema = { type: "integer" };
+  var decisionProbabilitySchema = { type: "number" };
+  var ADVISOR_DECISION_SCHEMA = {
     type: "object",
     additionalProperties: false,
     required: ["mode", "scope", "requestedModel", "status", "requestCount", "elapsedMs", "omittedChecks", "checks"],
@@ -29,14 +29,14 @@
       model: { type: "string" },
       reason: { type: "string" },
       status: { type: "string", enum: ["completed", "partial", "skipped", "error", "cancelled"] },
-      requestCount: { ...jevCountSchema, enum: [0, 1] },
-      elapsedMs: jevCountSchema,
-      omittedChecks: jevCountSchema,
+      requestCount: { ...decisionCountSchema, enum: [0, 1] },
+      elapsedMs: decisionCountSchema,
+      omittedChecks: decisionCountSchema,
       usage: {
         type: "object",
         additionalProperties: false,
         required: ["inputTokens", "outputTokens"],
-        properties: { inputTokens: jevCountSchema, outputTokens: jevCountSchema }
+        properties: { inputTokens: decisionCountSchema, outputTokens: decisionCountSchema }
       },
       checks: { type: "array", items: {
         type: "object",
@@ -47,12 +47,12 @@
           status: { type: "string", enum: ["completed", "skipped"] },
           reason: { type: "string" },
           relation: { type: "string", enum: ["supports", "contradicts", "insufficient"] },
-          confidence: jevProbabilitySchema,
+          confidence: decisionProbabilitySchema,
           probabilities: {
             type: "object",
             additionalProperties: false,
             required: ["supports", "contradicts", "insufficient"],
-            properties: { supports: jevProbabilitySchema, contradicts: jevProbabilitySchema, insufficient: jevProbabilitySchema }
+            properties: { supports: decisionProbabilitySchema, contradicts: decisionProbabilitySchema, insufficient: decisionProbabilitySchema }
           }
         }
       } }
@@ -80,7 +80,7 @@
       if (!string(value.error, 4096) || !optional(value.code, (v) => string(v, 128)) || !optional(value.retryable, (v) => typeof v === "boolean")) invalid(method, "response");
       return value;
     }
-    const valid = method === "callModelUsage" ? value.modelUsage === null || usage(value.modelUsage) : value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === "string" && optional(value.advice.modelUsage, usage) && optional(value.advice.jev, isAdvisorJev);
+    const valid = method === "callModelUsage" ? value.modelUsage === null || usage(value.modelUsage) : value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === "string" && optional(value.advice.modelUsage, usage) && optional(value.advice.decision, isAdvisorDecision) && optional(value.advice.jev, isAdvisorDecision);
     if (!valid) invalid(method, "response");
     return value;
   }
@@ -102,42 +102,44 @@
   }
   var ADVISOR_REMOTE = { package: "dsh-advisor", descriptors: ADVISOR_METHODS.map(advisorInvocation) };
 
-  // plugin/src/advisor-jev.js
+  // plugin/src/advisor-decision.js
   var statusLabels = { completed: "已完成", partial: "部分完成", skipped: "已跳过", error: "不可用", cancelled: "已取消" };
   var reasons = {
     disabled: "开关已关闭",
     "no-eligible-claims": "没有可检查的结构化建议",
-    "missing-key": "请在设置 → 夏尔 Ciel → Jev API 配置中填写密钥；官方接口也可使用 TYPESAFE_API_KEY",
-    "invalid-config": "Jev API 配置无效，请检查 HTTPS 地址、模型 ID 和密钥格式",
+    "missing-key": "请在设置 → 夏尔 Ciel → Gemini Decision API 配置中填写密钥；官方接口也可使用 DSH 凭据或 GEMINI_API_KEY / GOOGLE_API_KEY",
+    "invalid-config": "Gemini Decision API 配置无效，请检查 HTTPS 地址、模型 ID 和密钥格式",
     "time-unavailable": "咨询剩余时间不足",
     cancelled: "检查已取消",
     timeout: "检查超时",
     "http-error": "服务请求失败",
     "invalid-response": "服务响应无法解析",
     "transport-error": "服务连接失败",
+    "safety-blocked": "请求被 Gemini 安全策略拦截",
     "no-exact-claim": "建议缺少方向正文",
     "sensitive-input": "输入包含敏感内容",
     "input-too-large": "问题、背景和建议超过单次检查大小限制"
   };
-  function advisorJevSummary(result) {
-    if (!isAdvisorJev(result)) return "Jev 顾问建议检查：结果无法解析";
+  var label = (legacy) => legacy ? "历史 Jev 顾问建议检查（旧版，仅只读）" : "Gemini Decision 顾问建议检查";
+  function advisorDecisionSummary(result, { legacy = false } = {}) {
+    if (!isAdvisorDecision(result)) return label(legacy) + "：结果无法解析";
     const conflicts = result.checks.filter((row) => row.relation === "contradicts").length;
-    return "Jev 顾问建议检查 · " + statusLabels[result.status] + (conflicts ? " · 背景冲突 " + conflicts + " 项" : "");
+    return label(legacy) + " · " + statusLabels[result.status] + (conflicts ? " · 背景冲突 " + conflicts + " 项" : "");
   }
-  function advisorJevPanel(h, result) {
+  function advisorDecisionPanel(h, result, { legacy = false } = {}) {
     if (!result) return null;
-    if (!isAdvisorJev(result)) return h("p", { "data-ciel-advisor-jev": "invalid" }, advisorJevSummary(result));
+    if (!isAdvisorDecision(result)) return h("p", { "data-ciel-advisor-decision": "invalid", "data-ciel-advisor-legacy": legacy ? "" : void 0 }, advisorDecisionSummary(result, { legacy }));
     return h(
       "section",
-      { "data-ciel-advisor-jev": result.status, "aria-label": "Jev 顾问建议检查" },
-      h("strong", {}, advisorJevSummary(result)),
+      { "data-ciel-advisor-decision": result.status, "data-ciel-advisor-legacy": legacy ? "" : void 0, "aria-label": label(legacy) },
+      h("strong", {}, advisorDecisionSummary(result, { legacy })),
       h("p", {}, "仅对照本次传入的背景，未独立查证事实。依据不足不代表建议错误，采用前仍需验证。"),
       result.reason ? h("p", {}, reasons[result.reason] || result.reason) : null,
       result.omittedChecks ? h("p", {}, "另有 " + result.omittedChecks + " 条建议未检查。") : null,
       h("p", {}, (result.model || result.requestedModel) + " · " + result.requestCount + " 次请求 · " + result.elapsedMs + " ms" + (result.usage ? " · 输入 " + result.usage.inputTokens + " / 输出 " + result.usage.outputTokens + " tokens" : "")),
       ...result.checks.map((row) => h(
         "p",
-        { key: row.id, "data-ciel-advisor-jev-check": row.id },
+        { key: row.id, "data-ciel-advisor-decision-check": row.id },
         "建议 " + row.id.slice(1) + "：" + (row.status === "completed" ? { supports: "背景支持", contradicts: "背景冲突", insufficient: "依据不足" }[row.relation] : "未检查（" + (reasons[row.reason] || row.reason) + "）")
       ))
     );
@@ -394,7 +396,7 @@
           usage2 === "" ? null : h("span", { key: "usage", "data-ciel-advice-usage": "" }, "模型：" + usage2)
         ),
         h("p", { key: "disclaimer", "data-ciel-advice-disclaimer": "" }, "以下是顾问的观点与方向，不是核实过的证据；采用前请自行验证。"),
-        advisorJevPanel(h, advice.jev),
+        advisorDecisionPanel(h, advice.decision ?? advice.jev, { legacy: advice.decision === void 0 && advice.jev !== void 0 }),
         // Structured ideas when the Host parsed them; the raw reply then lives
         // behind one collapsed disclosure instead of repeating the full text.
         items.length === 0 ? typeof advice.text === "string" && advice.text !== "" ? h("pre", { key: "text", "data-ciel-advice-text": "" }, advice.text) : null : h(
@@ -476,12 +478,12 @@
       };
       record.uninstall = uninstall;
       installed = record;
-      const own = (label, setup) => {
+      const own = (label2, setup) => {
         const handle = ctx.effect(() => {
           const cleanup = setup();
           return typeof cleanup === "function" ? cleanup : () => {
           };
-        }, label);
+        }, label2);
         cleanups.push(typeof handle === "function" ? handle : () => {
         });
       };
@@ -544,14 +546,14 @@
     return { install, dispose, openAdvice, adviceAddress, parseAddress: parseCielAddress };
   }
 
-  // plugin/jev-config.js
-  var JEV_MODEL = "jev-1.13.0";
-  var JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
-  var JEV_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/;
-  var JEV_KEY_PATTERN = /^[\x21-\x7e]{1,4096}(?![\s\S])/;
-  var JEV_ENDPOINT_PATTERN = /^https:\/\/[^\s\\@?#]+(?![\s\S])/;
-  function validJevEndpoint(value) {
-    if (typeof value !== "string" || value.length > 2048 || !JEV_ENDPOINT_PATTERN.test(value)) return false;
+  // plugin/decision-config.js
+  var DECISION_MODEL = "gemini-decision-1";
+  var DECISION_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/decisions";
+  var DECISION_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/;
+  var DECISION_KEY_PATTERN = /^[\x21-\x7e]{1,4096}(?![\s\S])/;
+  var DECISION_ENDPOINT_PATTERN = /^https:\/\/[^\s\\@?#]+(?![\s\S])/;
+  function validDecisionEndpoint(value) {
+    if (typeof value !== "string" || value.length > 2048 || !DECISION_ENDPOINT_PATTERN.test(value)) return false;
     try {
       const url = new URL(value);
       return url.protocol === "https:" && !!url.hostname && !url.username && !url.password && !url.search && !url.hash;
@@ -559,11 +561,46 @@
       return false;
     }
   }
-  var validJevModel = (value) => typeof value === "string" && JEV_MODEL_PATTERN.test(value);
-  var validJevKey = (value) => typeof value === "string" && JEV_KEY_PATTERN.test(value);
+  var validDecisionModel = (value) => typeof value === "string" && DECISION_MODEL_PATTERN.test(value);
+  var validDecisionKey = (value) => typeof value === "string" && DECISION_KEY_PATTERN.test(value);
+
+  // plugin/advisor-content.js
+  function parseAdvisorItems(text) {
+    const heads = [];
+    const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      heads.push({ tier: m[1], title: (m[2] || "").trim(), at: m.index, end: re.lastIndex });
+    }
+    if (heads.length === 0) return { items: [], issues: [] };
+    const issues = [];
+    if (heads.length > 6) issues.push("item count " + heads.length + " exceeds the 6-item cap");
+    const FIELD_NAMES = ["framing", "pitfalls", "verification_target"];
+    const items = [];
+    for (let i = 0; i < heads.length; i += 1) {
+      const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length);
+      const field = (name) => {
+        const match = new RegExp(
+          "(?:^|\\n)[ \\t]*" + name + "[ \\t]*:[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:" + FIELD_NAMES.join("|") + ")[ \\t]*:|$)"
+        ).exec(body);
+        return match ? match[1].trim() : "";
+      };
+      const item = {
+        tier: heads[i].tier,
+        title: heads[i].title.slice(0, 120),
+        framing: field("framing").slice(0, 1200),
+        pitfalls: field("pitfalls").slice(0, 1200),
+        verificationTarget: field("verification_target").slice(0, 600)
+      };
+      if (item.framing === "") issues.push("item " + (i + 1) + ' ("' + item.title + '") lacks framing');
+      if (item.verificationTarget === "") issues.push("item " + (i + 1) + ' ("' + item.title + '") lacks verification_target');
+      items.push(item);
+    }
+    return { items, issues };
+  }
 
   // plugin/src/sidebar.css
-  var sidebar_default = "/* Ciel advice sidebar and card navigation; theme tokens own every paint. */\n[data-ciel-advice],\n[data-ciel-state] {\n  --ciel-font: 13px;\n  --ciel-font-xs: 12px;\n  --ciel-radius-sm: 6px;\n  --ciel-radius-md: 8px;\n  --ciel-radius-lg: 10px;\n  --ciel-control-h: 36px;\n  --ciel-surface-1: var(--dsw-alias-bg-layer-1);\n  --ciel-surface-2: var(--dsw-alias-bg-layer-2);\n  --ciel-border-soft: var(--dsw-alias-border-l1);\n  --ciel-border: var(--dsw-alias-border-l2);\n  --ciel-text-1: var(--dsw-alias-label-primary);\n  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary));\n  --ciel-text-3: var(--dsw-alias-label-tertiary);\n  --ciel-danger: var(--dsw-alias-state-error-primary);\n  --ciel-warn: var(--dsw-alias-state-warn-primary);\n  --ciel-hover: var(--dsw-alias-interactive-bg-hover);\n}\n\n/* Actions are not status chips: native filled variants, larger hit areas,\n * explicit labels, and a visible keyboard focus ring. Never fade the whole row.\n * Only geometry/type/focus live here — the fill, hover and disabled paints stay\n * with the local Button variant. */\n[data-ciel-action] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  min-height: 36px;\n  height: auto;\n  padding-top: 6px;\n  padding-bottom: 6px;\n  font-weight: 600;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n/* A disabled Ciel action reads as disabled; only the cursor changes here, so\n   the local variant keeps its own disabled opacity and fill. */\n[data-ciel-action]:disabled {\n  cursor: default;\n}\n\n[data-ciel-action]:focus-visible,\n[data-ciel-advice-raw] > summary:focus-visible {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 3px;\n}\n\n[data-ciel-summary-head] {\n  opacity: 1;\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 10px;\n  padding: 10px 12px;\n  cursor: default;\n}\n\n[data-ciel-advice] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 10px;\n  overflow: hidden;\n  color: var(--dsw-alias-label-primary);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  /* The opaque reading surface; contrast never depends on what is behind it. */\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n/* The loading / failed / unavailable / malformed panel: centered copy. It is a\n   full-body state, so it stays plain and opaque rather than materialized. */\n[data-ciel-state] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 6px;\n  justify-content: center;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 12px 10px;\n  overflow: auto;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n[data-ciel-state] > p {\n  margin: 0;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-state='failed'] {\n  color: var(--ciel-danger);\n}\n\n/* The failure reason is the headline of that panel. */\n[data-ciel-state='failed'] > p:first-child {\n  font-weight: 600;\n}\n[data-ciel-advice-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 6px 10px;\n  align-items: center;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n[data-ciel-advice-id],\n[data-ciel-advice-time],\n[data-ciel-advice-usage] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n[data-ciel-advice-item][data-ciel-focus] {\n  background: var(--dsw-alias-state-business-tertiary);\n  border-color: var(--dsw-alias-state-business-primary);\n}\n[data-ciel-advice] {\n  overflow: auto;\n}\n\n[data-ciel-advice-disclaimer] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-bg-module-platform);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-advice-text] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-family: ui-monospace, monospace;\n  font-size: var(--ciel-font-xs);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-advice-items] {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n}\n\n[data-ciel-advice-item] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-advice-item-head] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-advice-item-title] {\n  min-width: 0;\n  font-weight: 500;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-item-framing],\n[data-ciel-advice-item-pitfalls],\n[data-ciel-advice-item-verify] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-issues] {\n  margin: 0;\n  padding-left: 18px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-issues] > li {\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-raw] {\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-raw] > summary {\n  cursor: pointer;\n}\n\n[data-ciel-advisor-jev] {\n  flex-shrink: 0;\n  min-width: 0;\n  overflow-wrap: anywhere;\n  padding: 10px;\n  margin-bottom: 10px;\n  border: 1px solid var(--dsw-alias-border-l1);\n  border-radius: 8px;\n  background: var(--dsw-alias-bg-layer-2);\n}\n\n@container ciel-surface (max-width: 420px) {\n  [data-ciel-advice-head] { gap: 6px; }\n  [data-ciel-advice-item] { padding: 7px; }\n}\n";
+  var sidebar_default = "/* Ciel advice sidebar and card navigation; theme tokens own every paint. */\n[data-ciel-advice],\n[data-ciel-state] {\n  --ciel-font: 13px;\n  --ciel-font-xs: 12px;\n  --ciel-radius-sm: 6px;\n  --ciel-radius-md: 8px;\n  --ciel-radius-lg: 10px;\n  --ciel-control-h: 36px;\n  --ciel-surface-1: var(--dsw-alias-bg-layer-1);\n  --ciel-surface-2: var(--dsw-alias-bg-layer-2);\n  --ciel-border-soft: var(--dsw-alias-border-l1);\n  --ciel-border: var(--dsw-alias-border-l2);\n  --ciel-text-1: var(--dsw-alias-label-primary);\n  --ciel-text-2: var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary));\n  --ciel-text-3: var(--dsw-alias-label-tertiary);\n  --ciel-danger: var(--dsw-alias-state-error-primary);\n  --ciel-warn: var(--dsw-alias-state-warn-primary);\n  --ciel-hover: var(--dsw-alias-interactive-bg-hover);\n}\n\n/* Actions are not status chips: native filled variants, larger hit areas,\n * explicit labels, and a visible keyboard focus ring. Never fade the whole row.\n * Only geometry/type/focus live here — the fill, hover and disabled paints stay\n * with the local Button variant. */\n[data-ciel-action] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  min-height: 36px;\n  height: auto;\n  padding-top: 6px;\n  padding-bottom: 6px;\n  font-weight: 600;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n/* A disabled Ciel action reads as disabled; only the cursor changes here, so\n   the local variant keeps its own disabled opacity and fill. */\n[data-ciel-action]:disabled {\n  cursor: default;\n}\n\n[data-ciel-action]:focus-visible,\n[data-ciel-advice-raw] > summary:focus-visible {\n  outline: 2px solid var(--dsw-alias-state-business-primary);\n  outline-offset: 3px;\n}\n\n[data-ciel-summary-head] {\n  opacity: 1;\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 10px;\n  padding: 10px 12px;\n  cursor: default;\n}\n\n[data-ciel-advice] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 8px;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 10px;\n  overflow: hidden;\n  color: var(--dsw-alias-label-primary);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  /* The opaque reading surface; contrast never depends on what is behind it. */\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n/* The loading / failed / unavailable / malformed panel: centered copy. It is a\n   full-body state, so it stays plain and opaque rather than materialized. */\n[data-ciel-state] {\n  display: flex;\n  flex: 1 1 auto;\n  flex-direction: column;\n  gap: 6px;\n  justify-content: center;\n  box-sizing: border-box;\n  height: 100%;\n  width: 100%;\n  min-width: 0;\n  min-height: 0;\n  padding: 12px 10px;\n  overflow: auto;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font);\n  line-height: 1.6;\n  background: var(--dsw-alias-bg-base, var(--ciel-surface-1));\n  container: ciel-surface / inline-size;\n}\n\n[data-ciel-state] > p {\n  margin: 0;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-state='failed'] {\n  color: var(--ciel-danger);\n}\n\n/* The failure reason is the headline of that panel. */\n[data-ciel-state='failed'] > p:first-child {\n  font-weight: 600;\n}\n[data-ciel-advice-head] {\n  display: flex;\n  flex: 0 0 auto;\n  flex-wrap: wrap;\n  gap: 6px 10px;\n  align-items: center;\n  min-width: 0;\n  padding-bottom: 8px;\n  border-bottom: 1px solid var(--dsw-alias-border-l1);\n}\n[data-ciel-advice-id],\n[data-ciel-advice-time],\n[data-ciel-advice-usage] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n[data-ciel-advice-item][data-ciel-focus] {\n  background: var(--dsw-alias-state-business-tertiary);\n  border-color: var(--dsw-alias-state-business-primary);\n}\n[data-ciel-advice] {\n  overflow: auto;\n}\n\n[data-ciel-advice-disclaimer] {\n  margin: 0;\n  padding: 6px 8px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n  background: var(--dsw-alias-bg-module-platform);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-sm);\n}\n\n[data-ciel-advice-text] {\n  margin: 0;\n  min-width: 0;\n  color: var(--ciel-text-1);\n  font-family: ui-monospace, monospace;\n  font-size: var(--ciel-font-xs);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n[data-ciel-advice-items] {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  min-width: 0;\n}\n\n[data-ciel-advice-item] {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  min-width: 0;\n  padding: 8px;\n  background: var(--ciel-surface-1);\n  border: 1px solid var(--ciel-border-soft);\n  border-radius: var(--ciel-radius-md);\n}\n\n[data-ciel-advice-item-head] {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 6px;\n  align-items: center;\n  min-width: 0;\n}\n\n[data-ciel-advice-item-title] {\n  min-width: 0;\n  font-weight: 500;\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-item-framing],\n[data-ciel-advice-item-pitfalls],\n[data-ciel-advice-item-verify] {\n  margin: 0;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-issues] {\n  margin: 0;\n  padding-left: 18px;\n  color: var(--ciel-text-2);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-issues] > li {\n  overflow-wrap: anywhere;\n}\n\n[data-ciel-advice-raw] {\n  min-width: 0;\n  color: var(--ciel-text-3);\n  font-size: var(--ciel-font-xs);\n}\n\n[data-ciel-advice-raw] > summary {\n  cursor: pointer;\n}\n\n[data-ciel-advisor-decision],\n[data-ciel-advisor-jev] {\n  flex-shrink: 0;\n  min-width: 0;\n  overflow-wrap: anywhere;\n  padding: 10px;\n  margin-bottom: 10px;\n  border: 1px solid var(--dsw-alias-border-l1);\n  border-radius: 8px;\n  background: var(--dsw-alias-bg-layer-2);\n}\n\n@container ciel-surface (max-width: 420px) {\n  [data-ciel-advice-head] { gap: 6px; }\n  [data-ciel-advice-item] { padding: 7px; }\n}\n";
 
   // plugin/src/settings.css
   var settings_default = `/* Ciel-owned surfaces inherit the host's palette and typography. */
@@ -672,13 +709,13 @@
       const React = require2("react");
       const { useState, useEffect } = React;
       const h = React.createElement;
-      function Switch({ id, checked, onChange, label, disabled = false, title }) {
+      function Switch({ id, checked, onChange, label: label2, disabled = false, title }) {
         return h("button", {
           id,
           type: "button",
           role: "switch",
           "aria-checked": checked,
-          "aria-label": label,
+          "aria-label": label2,
           title,
           disabled,
           className: "ciel-switch",
@@ -698,14 +735,14 @@
           children
         );
       }
-      const navigationButton = (props, label) => h(Button, {
+      const navigationButton = (props, label2) => h(Button, {
         type: "button",
         variant: "primary",
         size: "md",
         icon: h("span", { "aria-hidden": true }, "→"),
         "data-ciel-action": "",
         ...props
-      }, label);
+      }, label2);
       let scope = null;
       let settingsDescribe = null;
       let sidebar = null;
@@ -724,10 +761,10 @@
         planReminderEnabled: true,
         reasoningEffort: "provider",
         guidanceEnabled: true,
-        advisorJevEnabled: false,
-        jevApiKey: "",
-        jevEndpoint: JEV_ENDPOINT,
-        jevModel: JEV_MODEL,
+        advisorDecisionEnabled: false,
+        decisionApiKey: "",
+        decisionEndpoint: DECISION_ENDPOINT,
+        decisionModel: DECISION_MODEL,
         enabled: true,
         advisorTimeoutSeconds: 180
       };
@@ -760,21 +797,21 @@
           defaultOpen: true,
           summarize: (staged) => `每回合最多 ${staged.maxCallsPerTurn} 次 · 最多 ${staged.advisorTimeoutSeconds} 秒`,
           children: [
-            { kind: "check", key: "advisorJevEnabled", label: "启用顾问建议检查（Jev）", hint: "顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥在下方 Jev API 配置中填写；关闭并保存会取消在途检查。" },
+            { kind: "check", key: "advisorDecisionEnabled", label: "启用顾问建议检查（Gemini Decision）", hint: "顾问回答后，把本次问题、背景和建议发给 Gemini Decisions API 对照检查，产生额外 API 用量。默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥在下方 Gemini Decision API 配置中填写；关闭并保存会取消在途检查。" },
             { kind: "number", key: "maxCallsPerTurn", label: "每个代理回合最多咨询几次", min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: "限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。" },
             { kind: "number", key: "advisorTimeoutSeconds", label: "顾问最多等多久（秒）", min: 10, max: 600, hint: "一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。" }
           ]
         },
         {
           kind: "group",
-          key: "jevApi",
-          label: "Jev API 配置",
+          key: "decisionApi",
+          label: "Gemini Decision API 配置",
           defaultOpen: true,
-          summarize: (staged) => staged.jevModel,
+          summarize: (staged) => staged.decisionModel,
           children: [
-            { kind: "secret", key: "jevApiKey", label: "Jev API Key", hint: "留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。" },
-            { kind: "text", key: "jevEndpoint", label: "Jev 接口地址", fallback: JEV_ENDPOINT, hint: "完整 HTTPS 地址（含 /v1/systemone 或代理对应路径），不会自动追加路径；必须兼容 TypeSafe systemone 协议，不是 OpenAI 接口。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送环境变量密钥。不允许 URL 内凭据、查询参数、片段或重定向。" },
-            { kind: "text", key: "jevModel", label: "Jev 模型 ID", fallback: JEV_MODEL, hint: "默认 jev-1.13.0，可填写接口支持的其他模型 ID；不经过「设置 → 模型」路由。保存后下一次 Jev 检查使用，正在进行的请求不变。" }
+            { kind: "secret", key: "decisionApiKey", label: "Gemini API Key", hint: "留空保留原值；输入新值会替换。清除覆盖后继承 DSH 凭据（GEMINI_API_KEY / GOOGLE_API_KEY）；自定义接口地址永不继承宿主或环境凭据。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。" },
+            { kind: "text", key: "decisionEndpoint", label: "Decision 接口地址", fallback: DECISION_ENDPOINT, hint: "完整 HTTPS 地址，不会自动追加路径；仅支持 Gemini Developer API 的 v1beta/decisions（Vertex 通道不支持）。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送宿主或环境凭据。不允许 URL 内凭据、查询参数、片段或重定向。" },
+            { kind: "text", key: "decisionModel", label: "Decision 模型 ID", fallback: DECISION_MODEL, hint: "默认 gemini-decision-1，可填写接口支持的其他 Decision 模型 ID；不经过「设置 → 模型」路由。保存后下一次检查使用，正在进行的请求不变。" }
           ]
         },
         {
@@ -972,22 +1009,22 @@
           strokeLinejoin: "round"
         }));
       }
-      function FieldHead({ htmlFor, label, overridden, disabled, onReset }) {
+      function FieldHead({ htmlFor, label: label2, overridden, disabled, onReset }) {
         return h(
           "div",
           { style: css.head, "data-ciel-setting-head": "" },
-          h(htmlFor ? "label" : "span", { htmlFor, style: css.label }, label),
+          h(htmlFor ? "label" : "span", { htmlFor, style: css.label }, label2),
           overridden ? h(
             "span",
             { style: css.badges },
             h(Tag, { tone: "neutral" }, "已覆盖"),
-            h("button", { type: "button", className: "ciel-reset-button", disabled, onClick: onReset, "aria-label": `重置${label}`, title: `重置${label}` }, "重置")
+            h("button", { type: "button", className: "ciel-reset-button", disabled, onClick: onReset, "aria-label": `重置${label2}`, title: `重置${label2}` }, "重置")
           ) : null
         );
       }
       const SHORT_HINTS = {
         enabled: "保存后生效；停用时已有结果仍可查看。",
-        advisorJevEnabled: "独立检查建议与本次背景是否一致；会产生额外 API 用量。",
+        advisorDecisionEnabled: "独立检查建议与本次背景是否一致；会产生额外 API 用量。",
         maxCallsPerTurn: "每个代理回合最多咨询次数，包含追问。",
         advisorTimeoutSeconds: "等待上限，不是费用上限。"
       };
@@ -1071,8 +1108,8 @@
         );
         const value = snap.value || {};
         const section = settingsDescribe?.getSnapshot?.().view?.namespaces?.find((row) => row.ns === "advisor");
-        const secretSlot = (section?.secrets || snap.secrets)?.find((row) => row.path?.length === 1 && row.path[0] === "jevApiKey");
-        const jevSettingsReady = secretSlot !== void 0 && typeof value.jevEndpoint === "string" && typeof value.jevModel === "string";
+        const secretSlot = (section?.secrets || snap.secrets)?.find((row) => row.path?.length === 1 && row.path[0] === "decisionApiKey");
+        const decisionSettingsReady = secretSlot !== void 0 && typeof value.decisionEndpoint === "string" && typeof value.decisionModel === "string";
         const user = snap.user && typeof snap.user === "object" ? snap.user : {};
         const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key);
         const staged = drafts || {
@@ -1085,11 +1122,11 @@
           planReminderEnabled: Boolean(value.planReminderEnabled),
           reasoningEffort: String(value.reasoningEffort ?? "provider"),
           guidanceEnabled: Boolean(value.guidanceEnabled),
-          advisorJevEnabled: Boolean(value.advisorJevEnabled ?? false),
-          jevApiKey: "",
+          advisorDecisionEnabled: Boolean(value.advisorDecisionEnabled ?? false),
+          decisionApiKey: "",
           // Never copy a saved secret (even from a legacy snapshot).
-          jevEndpoint: String(value.jevEndpoint ?? JEV_ENDPOINT),
-          jevModel: String(value.jevModel ?? JEV_MODEL),
+          decisionEndpoint: String(value.decisionEndpoint ?? DECISION_ENDPOINT),
+          decisionModel: String(value.decisionModel ?? DECISION_MODEL),
           enabled: Boolean(value.enabled ?? true),
           advisorTimeoutSeconds: String(value.advisorTimeoutSeconds ?? "")
         };
@@ -1101,7 +1138,7 @@
           const invalid2 = staged[def.key].trim() === "" || !Number.isInteger(parsed) || parsed < def.min || parsed > def.max;
           return { parsed, invalid: invalid2 };
         };
-        const textInvalid = (key) => key === "jevEndpoint" ? !validJevEndpoint(staged[key]) : key === "jevModel" ? !validJevModel(staged[key]) : key === "jevApiKey" && Boolean(staged[key]) && !validJevKey(staged[key]);
+        const textInvalid = (key) => key === "decisionEndpoint" ? !validDecisionEndpoint(staged[key]) : key === "decisionModel" ? !validDecisionModel(staged[key]) : key === "decisionApiKey" && Boolean(staged[key]) && !validDecisionKey(staged[key]);
         const dirtyKey = (key) => {
           if (resets[key]) return true;
           const def = FIELD_DEF_BY_KEY[key];
@@ -1147,7 +1184,7 @@
         };
         const invalidField = (key) => {
           const def = FIELD_DEF_BY_KEY[key];
-          return def.kind === "number" && numState(def).invalid || def.kind === "paths" && pathsState(key).invalid || textInvalid(key) || ["jevApiKey", "jevEndpoint", "jevModel"].includes(key) && !jevSettingsReady && dirtyKey(key);
+          return def.kind === "number" && numState(def).invalid || def.kind === "paths" && pathsState(key).invalid || textInvalid(key) || ["decisionApiKey", "decisionEndpoint", "decisionModel"].includes(key) && !decisionSettingsReady && dirtyKey(key);
         };
         const save = async () => {
           if (editor.get("saving") || !snap.writable || FIELD_KEYS.some(invalidField)) return;
@@ -1210,7 +1247,7 @@
         };
         const advisorEffort = effortOptionsFor("provider", "model");
         const selectStyle = { ...css.input, appearance: "auto" };
-        const routeField = (key, label, hint, options) => {
+        const routeField = (key, label2, hint, options) => {
           const fieldId = "ciel-setting-" + key;
           const selectOptions = options.some((option) => option.value === staged[key]) ? options : [...options, { value: staged[key], label: `${staged[key]}（自定义）` }];
           return h(
@@ -1218,7 +1255,7 @@
             { key, "data-ciel-setting": key, "data-ciel-setting-kind": "route", style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
               htmlFor: fieldId,
-              label,
+              label: label2,
               overridden: overridden(key) && !resets[key],
               disabled,
               onReset: () => resetField(key)
@@ -1260,14 +1297,14 @@
             )
           );
         };
-        const checkField = (key, label, hint) => {
+        const checkField = (key, label2, hint) => {
           const fieldId = "ciel-setting-" + key;
           return h(
             "div",
             { key, "data-ciel-setting": key, "data-ciel-setting-kind": "check", style: { ...css.field, ...key === "enabled" ? {} : css.fieldBorder } },
             h(FieldHead, {
               htmlFor: fieldId,
-              label,
+              label: label2,
               overridden: overridden(key) && !resets[key],
               disabled,
               onReset: () => resetField(key)
@@ -1277,7 +1314,7 @@
               { style: css.checkRow, "data-ciel-setting-control": "", role: "group", "aria-describedby": "ciel-setting-hint-" + key },
               h(Switch, {
                 id: fieldId,
-                label,
+                label: label2,
                 title: hint,
                 checked: Boolean(staged[key]),
                 disabled,
@@ -1288,7 +1325,7 @@
             settingHelp(key, hint)
           );
         };
-        const effortField = (key, label, opts, hintReady, hintFallback) => {
+        const effortField = (key, label2, opts, hintReady, hintFallback) => {
           const fieldId = "ciel-setting-" + key;
           const options = opts.options.some((option) => option.value === staged[key]) ? opts.options : [...opts.options, { value: staged[key], label: `${staged[key]}（自定义）` }];
           const hint = catalog.status === "ready" ? opts.declared.length > 0 ? hintReady : "所选模型未声明思考档位；显式选择不支持的档位会在运行时报错。" : hintFallback;
@@ -1297,7 +1334,7 @@
             { key, style: { ...css.field, ...css.fieldBorder } },
             h(FieldHead, {
               htmlFor: fieldId,
-              label,
+              label: label2,
               overridden: overridden(key) && !resets[key],
               disabled,
               onReset: () => resetField(key)
@@ -1313,13 +1350,13 @@
             h("p", { id: "ciel-setting-hint-" + key, style: css.hint }, hint)
           );
         };
-        const textField = ({ key, label, hint, kind, fallback }) => {
+        const textField = ({ key, label: label2, hint, kind, fallback }) => {
           const fieldId = "ciel-setting-" + key;
           const secret = kind === "secret", invalid2 = textInvalid(key);
           return h(
             "div",
             { key, "data-ciel-setting": key, style: { ...css.field, ...css.fieldBorder } },
-            h(FieldHead, { htmlFor: fieldId, label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+            h(FieldHead, { htmlFor: fieldId, label: label2, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !decisionSettingsReady, onReset: () => resetField(key) }),
             h("input", {
               id: fieldId,
               style: css.input,
@@ -1330,13 +1367,13 @@
               autoComplete: secret ? "new-password" : "off",
               spellCheck: false,
               placeholder: secret ? "留空保留；输入以替换" : fallback,
-              disabled: disabled || !jevSettingsReady,
+              disabled: disabled || !decisionSettingsReady,
               onChange: (event) => edit(key, event.target.value)
             }),
-            secret ? h("p", { role: "status", style: css.hint }, !jevSettingsReady ? "宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。" : resets[key] ? "待保存：清除密钥覆盖" : staged[key] ? "待保存：替换密钥" : secretSlot.set ? "已配置密钥（原值不回传）" : "未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。") : null,
-            secret ? h("button", { type: "button", className: "ciel-reset-button", disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), "aria-label": `清除${label}覆盖`, title: `清除${label}覆盖` }, "清除密钥覆盖") : null,
-            !secret && key === "jevEndpoint" && staged[key] !== JEV_ENDPOINT ? h("p", { role: "status", style: css.hint }, "自定义服务将收到密钥和原文；请另填该服务的 API Key。") : null,
-            invalid2 ? h("p", { role: "alert", style: css.hint }, secret ? "密钥须为 1–4096 个可打印 ASCII 字符，不含空白。" : key === "jevEndpoint" ? "请输入完整 HTTPS 地址，不含凭据、查询参数或片段。" : "请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。") : null,
+            secret ? h("p", { role: "status", style: css.hint }, !decisionSettingsReady ? "宿主尚未提供 Gemini Decision API 安全配置，请更新并重启 DSH 后刷新页面。" : resets[key] ? "待保存：清除密钥覆盖" : staged[key] ? "待保存：替换密钥" : secretSlot.set ? "已配置密钥（原值不回传）" : "未在设置中配置；官方接口将尝试 DSH 凭据与 GEMINI_API_KEY / GOOGLE_API_KEY，是否可用由检查结果确认。") : null,
+            secret ? h("button", { type: "button", className: "ciel-reset-button", disabled: disabled || !decisionSettingsReady || resets[key], onClick: () => resetField(key), "aria-label": `清除${label2}覆盖`, title: `清除${label2}覆盖` }, "清除密钥覆盖") : null,
+            !secret && key === "decisionEndpoint" && staged[key] !== DECISION_ENDPOINT ? h("p", { role: "status", style: css.hint }, "自定义服务将收到密钥和原文；请另填该服务的 API Key，宿主与环境凭据不会发送。") : null,
+            invalid2 ? h("p", { role: "alert", style: css.hint }, secret ? "密钥须为 1–4096 个可打印 ASCII 字符，不含空白。" : key === "decisionEndpoint" ? "请输入完整 HTTPS 地址，不含凭据、查询参数或片段。" : "请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。") : null,
             settingHelp(key, hint)
           );
         };
@@ -1500,11 +1537,11 @@
         ".adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}",
         ".adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}",
         ".adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary);font-family:ui-monospace,monospace;flex:none}",
-        // Summary, Jev and model metadata share the card's content edge. Keep
-        // these selectors card-scoped: sidebars own their spacing.
+        // Summary, Gemini Decision and model metadata share the card's content
+        // edge. Keep these selectors card-scoped: sidebars own their spacing.
         ".adv-card .adv-head[data-ciel-summary-head]{padding-inline:var(--ciel-advisor-inset)}",
-        ".adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}",
-        ".adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}",
+        ".adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-decision-summary],.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}",
+        ".adv-card>[data-ciel-advisor-decision-summary],.adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}",
         ".adv-body{padding:4px var(--ciel-advisor-inset) 12px}",
         ".adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid var(--dsw-alias-border-l2);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}",
         ".adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}",
@@ -1555,12 +1592,12 @@
         }
         return chips.length > 0 ? h("span", { className: "adv-chips" }, chips) : null;
       }
-      function AdvField({ label, value }) {
+      function AdvField({ label: label2, value }) {
         if (!value) return null;
         return h(
           "div",
           { className: "adv-frow" },
-          h("span", { className: "adv-flabel" }, label),
+          h("span", { className: "adv-flabel" }, label2),
           h("span", { className: "adv-fval" }, String(value))
         );
       }
@@ -1632,7 +1669,7 @@
                 setNavigationError(result?.ok === false ? String(result.error || "侧栏暂不可用") : "");
               } }, "在侧栏查看")
             ),
-            meta?.jev ? h("p", { "data-ciel-advisor-jev-summary": "" }, advisorJevSummary(meta.jev)) : null,
+            meta?.decision ?? meta?.jev ? h("p", { "data-ciel-advisor-decision-summary": "", "data-ciel-advisor-legacy": meta?.decision === void 0 ? "" : void 0 }, advisorDecisionSummary(meta?.decision ?? meta?.jev, { legacy: meta?.decision === void 0 })) : null,
             h("div", { className: "ciel-model-usage" }, modelLabel),
             navigationError ? h("p", { role: "status", className: "adv-navigation-error" }, navigationError) : null
           );
@@ -1662,7 +1699,7 @@
           open ? h(
             "div",
             { id: bodyId, className: "adv-body" },
-            advisorJevPanel(h, meta?.jev),
+            advisorDecisionPanel(h, meta?.decision ?? meta?.jev, { legacy: meta?.decision === void 0 }),
             question !== "" ? h("div", { className: "adv-q" }, "咨询：" + clipAdv(question, 300)) : null,
             isError ? h("div", { className: "adv-err" }, body !== "" ? body : "（无错误详情）") : items.length > 0 ? items.map((item, i) => h(AdvisorItem, { key: i, item })) : h("div", { className: "adv-raw" }, body !== "" ? body : "（空回复）"),
             issues.length > 0 ? h("div", { className: "adv-issues" }, "解析问题：" + issues.join("；")) : null,
@@ -1674,39 +1711,6 @@
             ) : null
           ) : null
         );
-      }
-      function parseAdvisorItems(text) {
-        const heads = [];
-        const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm;
-        let m;
-        while ((m = re.exec(text)) !== null) {
-          heads.push({ tier: m[1], title: (m[2] || "").trim(), at: m.index, end: re.lastIndex });
-        }
-        if (heads.length === 0) return { items: [], issues: [] };
-        const issues = [];
-        if (heads.length > 6) issues.push("item count " + heads.length + " exceeds the 6-item cap");
-        const FIELD_NAMES = ["framing", "pitfalls", "verification_target"];
-        const items = [];
-        for (let i = 0; i < heads.length; i += 1) {
-          const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length);
-          const field = (name) => {
-            const match = new RegExp(
-              "(?:^|\\n)[ \\t]*" + name + "[ \\t]*:[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:" + FIELD_NAMES.join("|") + ")[ \\t]*:|$)"
-            ).exec(body);
-            return match ? match[1].trim() : "";
-          };
-          const item = {
-            tier: heads[i].tier,
-            title: heads[i].title.slice(0, 120),
-            framing: field("framing").slice(0, 1200),
-            pitfalls: field("pitfalls").slice(0, 1200),
-            verificationTarget: field("verification_target").slice(0, 600)
-          };
-          if (item.framing === "") issues.push("item " + (i + 1) + ' ("' + item.title + '") lacks framing');
-          if (item.verificationTarget === "") issues.push("item " + (i + 1) + ' ("' + item.title + '") lacks verification_target');
-          items.push(item);
-        }
-        return { items, issues };
       }
       function mountClient(ctx, settingsForm) {
         settingsEditor = createSettingsEditor();
@@ -1854,8 +1858,29 @@
         fieldKeys: FIELD_KEYS.slice()
       };
       exports.apply = (ctx) => {
-        ctx.inject(["configForms"], (child) => mountClient(child, child.configForms.get("advisor")));
-        ctx.inject(["settingsScope"], (child) => mountClient(child, child.settingsScope.bind({ namespace: "ciel" })));
+        let mounted = false;
+        const mountOnce = (child, form) => {
+          if (mounted || form === void 0 || form === null) return false;
+          mounted = true;
+          mountClient(child, form);
+          child.effect?.(() => () => {
+            mounted = false;
+          }, "Ciel: mount guard reset");
+          return true;
+        };
+        ctx.inject(["configForms"], (child) => {
+          if (mountOnce(child, child.configForms?.get?.("advisor"))) return () => {
+            mounted = false;
+          };
+          return void 0;
+        });
+        ctx.inject(["settingsScope"], (child) => {
+          if (mounted) return void 0;
+          if (mountOnce(child, child.settingsScope?.bind?.({ namespace: "ciel" }))) return () => {
+            mounted = false;
+          };
+          return void 0;
+        });
       };
       exports.inject = ["slots", "resources", "sidebarRightTabs", "sidebarRight"];
       return module.exports;

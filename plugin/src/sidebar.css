@@ -224,6 +224,7 @@
   cursor: pointer;
 }
 
+[data-ciel-advisor-decision],
 [data-ciel-advisor-jev] {
   flex-shrink: 0;
   min-width: 0;

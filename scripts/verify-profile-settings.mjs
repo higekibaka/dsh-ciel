@@ -9,16 +9,27 @@ import { pathToFileURL } from 'node:url'
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT is required (built 0.1.7 checkout)')
 const requireTarget = createRequire(join(checkout, 'packages/core/tools/package.json'))
-const shared = Object.fromEntries(['@deepseek-ai/cordis', '@deepseek-ai/schemastery'].map(name => [name, requireTarget.resolve(name)]))
-shared['@deepseek-ai/dsh-typert-protocol'] = join(checkout, 'packages/typert/protocol/lib/index.js')
+// Cordis comes from the target so the booted app, the ConfigEditor and the
+// Settings service are the TARGET's. The other two shared packages are
+// deliberately NOT hooked: plugin/runtime.js owns which copy the plugin loads,
+// and hooking a second (CommonJS) build here would hand the booted settings
+// stack the CJS Schema while the plugin holds the ESM one — the exact identity
+// split this verification exists to catch. The assertions below hold that line.
+const shared = { '@deepseek-ai/cordis': requireTarget.resolve('@deepseek-ai/cordis') }
 const hooks = registerHooks({ resolve(specifier, context, next) {
   return shared[specifier] ? { url: pathToFileURL(shared[specifier]).href, shortCircuit: true } : next(specifier, context)
 } })
+const { hostSchemastery, describeHostModule } = await import('../plugin/runtime.js')
+const hostSchema = hostSchemastery()
 const load = path => import(pathToFileURL(join(checkout, path, 'lib/index.js')).href)
 const [{ boot, initProfile, readProfilePatches }, { default: ConfigEditor }, { default: Settings }, ciel] = await Promise.all([
   load('packages/boot/app-boot'), load('packages/boot/config-editor'), load('packages/settings/settings'), import('../plugin/index.js'),
 ])
-const plugins = [['advisor', ciel, { guidanceEnabled: false }, { advisorJevEnabled: true, enabled: false, jevApiKey: 'settings-fixture-secret', jevEndpoint: 'https://proxy.invalid/systemone', jevModel: 'jev-test' }]]
+// One shared Schema identity: the form the Settings service validates is the
+// very class the plugin built its config from, and it came from the checkout.
+assert.ok(describeHostModule('@deepseek-ai/schemastery').source.startsWith('DSH_CHECKOUT'), '@deepseek-ai/schemastery must come from the DSH_CHECKOUT host copy')
+assert.ok(ciel.Config instanceof hostSchema, 'the plugin builds its config with the host Schema class')
+const plugins = [['advisor', ciel, { guidanceEnabled: false }, { advisorDecisionEnabled: true, enabled: false, decisionApiKey: 'settings-fixture-secret', decisionEndpoint: 'https://proxy.invalid/decisions', decisionModel: 'decision-test' }]]
 if (process.env.GLASS_PLUGIN) {
   const glass = await import(pathToFileURL(resolve(process.env.GLASS_PLUGIN, 'lib/index.js')).href)
   plugins.push(['endfield-glass', glass, {}, { motion: 'static', frameRate: 60 }])
@@ -63,25 +74,25 @@ try {
     assert.ok(changed > 0, `${id}: owner received volatile update`)
     if (id === 'advisor') {
       const wire = ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === id)
-      assert.equal(wire.value.jevApiKey, undefined)
-      assert.equal(wire.user.jevApiKey, undefined)
-      assert.equal(wire.secrets.find(row => row.path.join('.') === 'jevApiKey').set, true)
+      assert.equal(wire.value.decisionApiKey, undefined)
+      assert.equal(wire.user.decisionApiKey, undefined)
+      assert.equal(wire.secrets.find(row => row.path.join('.') === 'decisionApiKey').set, true)
       assert.ok(!JSON.stringify(wire).includes('settings-fixture-secret'))
-      await ctx.settings.update(id, { jevModel: 'jev-test' })
-      assert.equal(refs.jevApiKey.get(), 'settings-fixture-secret', 'unrelated writes preserve the secret')
+      await ctx.settings.update(id, { decisionModel: 'decision-test' })
+      assert.equal(refs.decisionApiKey.get(), 'settings-fixture-secret', 'unrelated writes preserve the secret')
     }
     await assert.rejects(ctx.settings.update(id, { enabled: 'invalid' }))
   }
   const persisted = await readFile(profile.patchPath, 'utf8')
-  assert.ok(persisted.includes('advisorJevEnabled'))
+  assert.ok(persisted.includes('advisorDecisionEnabled'))
   await ctx.fiber.dispose(); ctx = await start()
   for (const [id, , , updates] of plugins) {
     const value = ctx.settings.describe().find(row => row.ns === id).value
     for (const [key, expected] of Object.entries(updates)) assert.equal(value[key], expected, `${id}: restored ${key}`)
   }
-  await ctx.settings.mutate('advisor', [{ op: 'unset', path: ['jevApiKey'] }])
+  await ctx.settings.mutate('advisor', [{ op: 'unset', path: ['decisionApiKey'] }])
   const cleared = ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === 'advisor')
-  assert.equal(cleared.secrets.find(row => row.path.join('.') === 'jevApiKey').set, false)
+  assert.equal(cleared.secrets.find(row => row.path.join('.') === 'decisionApiKey').set, false)
   assert.ok(!(await readFile(profile.patchPath, 'utf8')).includes('settings-fixture-secret'))
   console.log(JSON.stringify({ passed: true, entries: plugins.map(([id]) => id), checks: ['volatile form discovery', 'custom-page policy', 'persistent live edits', 'same fiber and config references', 'owner notifications', 'invalid input rejection', 'restored after restart', 'secret wire redaction', 'unrelated edit preserves secret', 'explicit key removal'], modelCalls: 0, networkRequests: 0 }))
 } finally {

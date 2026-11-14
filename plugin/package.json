@@ -1,6 +1,6 @@
 {
   "name": "dsh-ciel",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "description": "夏尔 Ciel — DeepSeek Harness 的规划前顾问：第二个知识广博的模型在动手前提供方向、先例、陷阱与验证清单（主意，不是步骤）。命名灵感：转生史莱姆的大贤者夏尔。Settings → 夏尔 Ciel 独立页面可配。",
   "license": "MIT",
   "repository": {
@@ -14,15 +14,18 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./runtime": "./runtime.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "LICENSE",
     "README.md",
     "index.js",
     "client.js",
+    "runtime.js",
     "advisor-content.js",
     "advisor-operation.js",
     "advisor-repository.js",
@@ -30,13 +33,15 @@
     "advisor-service.js",
     "advisor-state.js",
     "sensitive-text.js",
-    "jev-client.js",
-    "jev-advisor.js",
-    "jev-config.js",
+    "decision-client.js",
+    "decision-advisor.js",
+    "decision-config.js",
     "record-store.js",
     "model-usage.js",
     "cordis.patch.yml",
-    "icon.svg"
+    "icon.svg",
+    "locale/en.json",
+    "locale/zh.json"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -51,16 +56,17 @@
     "second-model",
     "plugin"
   ],
-  "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.3"
-  },
   "peerDependencies": {
+    "@deepseek-ai/schemastery": ">=3.18.3",
     "@deepseek-ai/dsh-subagent": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-0 || >=0.2.3-0 || >=0.2.4-0 || >=0.2.5-0 || >=0.3.0-0",
     "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-0 || >=0.2.3-0 || >=0.2.4-0 || >=0.2.5-0 || >=0.3.0-0",
     "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-0 || >=0.2.3-0 || >=0.2.4-0 || >=0.2.5-0 || >=0.3.0-0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 || >=0.2.1-rc.2 || >=0.2.2-0 || >=0.2.3-0 || >=0.2.4-0 || >=0.2.5-0 || >=0.3.0-0"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-subagent": {
       "optional": true
     },
@@ -69,11 +75,15 @@
     },
     "@deepseek-ai/dsh-tools": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.3"
   },
   "dsh": {
     "client": {

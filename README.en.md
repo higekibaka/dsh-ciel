@@ -8,15 +8,15 @@ An advisor-only plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 ## Install and use
 
-Current release: **[0.22.1](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.22.1)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.22.1).
+Current release: **[0.23.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.23.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.23.0).
 
-This release requires **DSH >=0.2.0-rc.2** (compatible with `0.2.1` and `0.2.2-rc.1+`) and Node.js `^22.19.0 || >=24.0.0`. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.22.1` through `plugin_manager`. CLI users select the intended profile explicitly:
+This release requires **DSH >=0.2.0-rc.2** (compatible with `0.2.1` and `0.2.2-rc.1+`) and Node.js `^22.19.0 || >=24.0.0`. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.23.0` through `plugin_manager`. CLI users select the intended profile explicitly:
 
 ```sh
-dsh plugin --profile <target-profile> add dsh-ciel@0.22.1
+dsh plugin --profile <target-profile> add dsh-ciel@0.23.0
 ```
 
-After a package update, follow the installation result's restart requirement and refresh the UI; hot updates are not guaranteed. **0.21.0+ removes annotation review and the inbox; old review files remain but cannot be opened by this version.** Defer upgrading if you still need those features. Keep a profile configuration backup before upgrading. This version does not automatically clean up old review settings; do not delete the shared Jev connection settings. See [upgrade and compatibility notes](docs/compatibility-017.md).
+After a package update, follow the installation result's restart requirement and refresh the UI; hot updates are not guaranteed. **0.21.0+ removes annotation review and the inbox; old review files remain but cannot be opened by this version.** Defer upgrading if you still need those features. Keep a profile configuration backup before upgrading. This version does not automatically clean up old review settings; do not delete the shared Gemini Decision connection settings. See [upgrade and compatibility notes](docs/compatibility-017.md).
 
 Install the matching package in your intended DSH profile; do not start a second Web profile alongside Desktop. Choose the advisor's registered provider and model under **Settings → 夏尔 Ciel**, then save. Route defaults do not register credentials or providers.
 
@@ -30,7 +30,7 @@ Each consultation creates one tool-free child. **The Host provider policy owns n
 
 ## Current scope and retained data
 
-Ciel provides `ask_advisor`, consultation guidance/reminders, settings, model provenance, optional Jev checks, tool cards and the native advice sidebar. The only business RPCs are `cielAdvisor.readAdvice` and `cielAdvisor.callModelUsage`; history reads do not call models.
+Ciel provides `ask_advisor`, consultation guidance/reminders, settings, model provenance, optional Gemini Decision checks, tool cards and the native advice sidebar. The only business RPCs are `cielAdvisor.readAdvice` and `cielAdvisor.callModelUsage`; history reads do not call models.
 
 Annotation review, critic execution, evidence capture, review inbox, feedback drafts and the private review/PTC runtime have been removed. The old `/advise` command is not registered. Existing review/evidence/feedback/inbox files are **retained inert**: this version neither reads, migrates nor deletes them. Existing addressable advice and tool-call usage records remain readable; retired command-usage lookup is not exposed. There is no history listing or automatic retention cleanup. The historical changelog describes older releases, not current features.
 
@@ -51,16 +51,20 @@ Changes are staged until explicit Save. Revision fencing rejects stale writes, a
 | `planReminderEnabled` | `true` | One planning reminder when not yet consulted. |
 | `guidanceEnabled` | `true` | Inject the advisor-use protocol. |
 | `advisorTimeoutSeconds` | `180` | Total consultation deadline (10–600 seconds). |
-| `advisorJevEnabled` | `false` | Optional provided-context consistency check. |
-| `jevApiKey` | unset | Native secret setting; never returned in settings reads. |
-| `jevEndpoint` | `https://api.typesafe.ai/v1/systemone` | Trusted HTTPS TypeSafe-compatible endpoint. |
-| `jevModel` | `jev-1.13.0` | Jev model ID. |
+| `advisorDecisionEnabled` | `false` | Optional provided-context consistency check. |
+| `decisionApiKey` | unset | Native secret setting; never returned in settings reads. |
+| `decisionEndpoint` | `https://generativelanguage.googleapis.com/v1beta/decisions` | Trusted HTTPS Gemini Decisions-compatible endpoint. |
+| `decisionModel` | `gemini-decision-1` | Gemini Decision model ID. |
 
-## Optional Jev check
+## Optional Gemini Decision check
 
-Off by default. Jev receives the supplied question, context and at most six complete original structured sections selected for checking, not necessarily the entire answer. The serialized question/context/selected-items state is capped at 24 KiB; missing or oversized sections are skipped, and suspected sensitive input skips the check, with explicit reasons. It checks only their relationship to that context; it does not independently verify the world or rewrite the advice. At most one optional batch is sent; failures keep the original answer and return a labeled status. Saved results are displayed without rechecking.
+Off by default. The check calls the Gemini Decisions API (`gemini-decision-1` on the Gemini Developer API `v1beta/decisions` endpoint) with the supplied question, context and at most six complete original structured sections selected for checking, not necessarily the entire answer. The question/context/selected-items state is serialized into one JSON `input` string capped at 24 KiB; missing or oversized sections are skipped, and suspected sensitive input skips the check, with explicit reasons. It checks only their relationship to that context; it does not independently verify the world or rewrite the advice. At most one optional batch is sent; failures (including safety blocks) keep the original answer and return a labeled status. Saved results are displayed without rechecking. Decisions produce zero output tokens, so the usage line may show input tokens only.
 
-Custom endpoints receive your configured key and text. Only the exact official default endpoint can use `TYPESAFE_API_KEY` as a fallback. HTTPS is required; credential-bearing URLs, query strings, fragments and redirects are rejected. Local configuration storage is not an encrypted vault. See [Security](SECURITY.md).
+Custom endpoints receive your configured key and text. Only the exact official default endpoint falls back to the DSH credential store (`GEMINI_API_KEY`, then `GOOGLE_API_KEY`), launchEnvironment, and process environment; a custom endpoint never inherits those credentials. HTTPS is required; credential-bearing URLs, query strings, fragments and redirects are rejected. Local configuration storage is not an encrypted vault. See [Security](SECURITY.md).
+
+### Upgrading from the retired JEV check
+
+The optional check now runs against Google's Gemini Decisions API: this replaces the provider instead of renaming it. The four retired settings (`advisorJevEnabled`, `jevApiKey`, `jevEndpoint`, `jevModel`) are **not read, not migrated, and not deleted** from disk: they never become Gemini configuration and never act as credentials. A TypeSafe/JEV key is not a Gemini API key, so configure `decisionApiKey` again (or let DSH credentials provide `GEMINI_API_KEY` / `GOOGLE_API_KEY`); the check stays off by default and must be enabled again. Historical records carrying the old `jev` field stay readable and are labeled "historical JEV check (read-only)"; they never start a new check. Gemini Decisions API is in EAP: only the Gemini Developer API `v1beta/decisions` endpoint with `gemini-decision-1` is available, and without EAP access the check returns an explicit failure status while the advisor answer is unaffected.
 
 ## Development checks
 

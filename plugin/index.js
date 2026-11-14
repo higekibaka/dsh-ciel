@@ -1,11 +1,11 @@
 // Ciel: planning advisor, with optional context checks and read-only history.
 import { randomUUID } from 'node:crypto'
-import Schema from '@deepseek-ai/schemastery'
-import { ADVISOR_METHODS, advisorInvocation, ADVISOR_JEV_SCHEMA } from './advisor-protocol.js'
+import { hostSchemastery } from './runtime.js'
+import { ADVISOR_METHODS, advisorInvocation, ADVISOR_DECISION_SCHEMA } from './advisor-protocol.js'
 import { createAdvisorOperation } from './advisor-operation.js'
 import { detectSensitiveText } from './sensitive-text.js'
-import { prepareAdvisorJev, checkAdvisorWithJev, renderAdvisorJev } from './jev-advisor.js'
-import { JEV_MODEL, JEV_ENDPOINT, JEV_MODEL_PATTERN, JEV_KEY_PATTERN, JEV_ENDPOINT_PATTERN, jevConnection } from './jev-config.js'
+import { prepareAdvisorDecision, checkAdvisorWithDecision, renderAdvisorDecision } from './decision-advisor.js'
+import { DECISION_MODEL, DECISION_ENDPOINT, DECISION_MODEL_PATTERN, DECISION_KEY_PATTERN, DECISION_ENDPOINT_PATTERN, resolveDecisionConnection } from './decision-config.js'
 import { AdvisorService } from './advisor-service.js'
 import { MODEL_USAGE_SCHEMA, createModelUsage, modelUsageSnapshot, captureModelUsage } from './model-usage.js'
 import { outputText, childErrorDetail, parseAdvisorItems, toolEventView } from './advisor-content.js'
@@ -61,6 +61,10 @@ export function configValues(config) {
   return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key,
     value && typeof value.get === 'function' ? value.get() : value]))
 }
+// One Schema identity with the Harness process: cordis and the settings service
+// validate this plugin's config with the copy they imported, not a second one.
+const Schema = hostSchemastery()
+
 const configFields = {
   enabled: Schema.boolean().default(true)
     .description('允许 Ciel 顾问咨询。关闭取消本插件在途模型调用，不改变模型配置'),
@@ -85,14 +89,14 @@ const configFields = {
     .description('顾问思考深度：provider 跟随提供方默认；其余档位注入该次咨询的每个请求，模型不支持的档位会报错'),
   guidanceEnabled: Schema.boolean().default(true)
     .description('向系统提示词注入顾问使用协议（触发判据与追问预算）'),
-  jevApiKey: Schema.string().max(4096).pattern(JEV_KEY_PATTERN).role('secret')
-    .description('Jev API 密钥；保存在本机 DSH 配置，设置读取不回传原值。未配置时回退到 TYPESAFE_API_KEY（仅官方接口），不是加密保险库'),
-  jevEndpoint: Schema.string().max(2048).pattern(JEV_ENDPOINT_PATTERN).default(JEV_ENDPOINT)
-    .description('Jev 完整 HTTPS 接口地址，不追加路径；必须兼容 TypeSafe systemone 协议。自定义地址会收到密钥和检查原文，须另填密钥，不复用环境变量'),
-  jevModel: Schema.string().pattern(JEV_MODEL_PATTERN).default(JEV_MODEL)
-    .description('顾问建议检查的 Jev 模型 ID；保存后下次检查使用'),
-  advisorJevEnabled: Schema.boolean().default(false)
-    .description('顾问回答后用 Jev 对照本次问题和背景检查建议；将这些内容发送给 TypeSafe，产生额外 API 用量。独立开关，默认关闭；仅检查背景一致性，不独立核实事实，不改写建议。关闭取消在途检查'),
+  decisionApiKey: Schema.string().max(4096).pattern(DECISION_KEY_PATTERN).role('secret')
+    .description('Gemini API 密钥；保存在本机 DSH 配置，设置读取不回传原值。未配置时回退到 DSH 凭据服务与 GEMINI_API_KEY / GOOGLE_API_KEY（仅官方端点），不是加密保险库'),
+  decisionEndpoint: Schema.string().max(2048).pattern(DECISION_ENDPOINT_PATTERN).default(DECISION_ENDPOINT)
+    .description('Gemini Decisions API 完整 HTTPS 地址，不追加路径；仅支持 Gemini Developer API（v1beta/decisions）。自定义地址会收到密钥和检查原文，须另填密钥，不复用宿主或环境凭据'),
+  decisionModel: Schema.string().pattern(DECISION_MODEL_PATTERN).default(DECISION_MODEL)
+    .description('顾问建议检查的 Gemini Decision 模型 ID；默认 gemini-decision-1，保存后下次检查使用'),
+  advisorDecisionEnabled: Schema.boolean().default(false)
+    .description('顾问回答后用 Gemini Decisions API 对照本次问题和背景检查建议；将这些内容发送给 Google，产生额外 API 用量。独立开关，默认关闭；仅检查背景一致性，不独立核实事实，不改写建议。关闭取消在途检查'),
 }
 const LegacyConfig = Schema.object(configFields)
 export const Config = Schema.object(Object.fromEntries(Object.entries(configFields).map(([key, field]) => [key,
@@ -100,8 +104,8 @@ export const Config = Schema.object(Object.fromEntries(Object.entries(configFiel
 
 /**
  * ask_advisor keeps the raw prose unchanged. When enabled, the caller model
- * also receives a separately labeled Jev context check before that prose,
- * while the parsed structure rides tool/result.meta via presentationMeta.
+ * also receives a separately labeled Gemini Decision context check before that
+ * prose, while the parsed structure rides tool/result.meta via presentationMeta.
  */
 const advisorOutput = {
   schema: {
@@ -125,13 +129,13 @@ const advisorOutput = {
       },
       issues: { type: 'array', items: { type: 'string' } },
       modelUsage: MODEL_USAGE_SCHEMA,
-      jev: ADVISOR_JEV_SCHEMA,
+      decision: ADVISOR_DECISION_SCHEMA,
     },
     required: ['text', 'items', 'issues'],
     additionalProperties: false,
   },
-  render: (_args, value) => [{ type: 'text', text: (value.jev ? renderAdvisorJev(value.jev) + '\n\n' : '') + value.text }],
-  presentationMeta: (_args, value) => ({ v: 1, items: value.items, issues: value.issues, ...(value.modelUsage ? { modelUsage: modelUsageSnapshot(value.modelUsage) } : {}), ...(value.jev ? { jev: value.jev } : {}) }),
+  render: (_args, value) => [{ type: 'text', text: (value.decision ? renderAdvisorDecision(value.decision) + '\n\n' : '') + value.text }],
+  presentationMeta: (_args, value) => ({ v: 1, items: value.items, issues: value.issues, ...(value.modelUsage ? { modelUsage: modelUsageSnapshot(value.modelUsage) } : {}), ...(value.decision ? { decision: value.decision } : {}) }),
 }
 
 /** Flatten a subagent result's output blocks into one plain-text answer. */
@@ -194,16 +198,16 @@ export function apply(ctx, config) {
     } }
   }
   let resyncGuidance = () => {}
-  const advisorJevControllers = new Set()
+  const advisorDecisionControllers = new Set()
   const settingsChanged = () => {
     resyncGuidance()
     if (current().enabled === false) for (const operation of activeOperations) operation.cancel('Ciel disabled')
-    if (current().advisorJevEnabled !== true) for (const controller of advisorJevControllers) controller.abort()
+    if (current().advisorDecisionEnabled !== true) for (const controller of advisorDecisionControllers) controller.abort()
   }
   ctx.on('loader/volatile-update', settingsChanged)
   ctx.inject(['settings'], (sctx) => {
     if (typeof sctx.settings.configure === 'function') {
-      if (!Config.dict.advisorJevEnabled.meta.volatile) throw new Error('Ciel settings on DSH 0.1.7 require @deepseek-ai/schemastery >=3.18.3')
+      if (!Config.dict.advisorDecisionEnabled.meta.volatile) throw new Error('Ciel settings on DSH 0.1.7 require @deepseek-ai/schemastery >=3.18.3')
       sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber))
       return
     }
@@ -294,6 +298,15 @@ export function apply(ctx, config) {
     if (!agent || childState.configuredAgent === agent) return
     childState.configuredAgent = agent
     childState.localAgent = agent
+    const selection = childState.requestedSelection
+    if (selection?.reasoningEffort !== undefined && typeof agent.model?.select === 'function') {
+      const currentSelection = typeof agent.model.current === 'function' ? agent.model.current() : undefined
+      if (currentSelection?.reasoningEffort !== selection.reasoningEffort) {
+        try {
+          agent.model.select(selection)
+        } catch {}
+      }
+    }
     const childTools = agent.ctx?.get?.('tools')
     if (typeof childTools?.presentAs === 'function') childTools.presentAs('native')
     if (typeof childTools?.restrict === 'function') childTools.restrict({ allow: [] })
@@ -330,42 +343,12 @@ export function apply(ctx, config) {
     })
   })
 
-  // ── Models-page presence: one dormant directory entry so the deployment's
-  // provider directory lists the advisor route beside the real providers
-  // (settings namespaces themselves need no such help since every registered
-  // namespace is served to configuration pages). The llm service is a sibling
-  // row whose registration order is not ours to know, so this waits for it
-  // through ctx.inject instead of reading it eagerly.
-  ctx.inject(['llm'], (lctx) => {
-    try {
-      const directory = lctx.llm.registerConfigurableProviders([
-        {
-          provider: 'ciel',
-          displayName: '夏尔 Ciel · 顾问（规划前咨询）',
-          settingsNs: 'ciel',
-          settingsPath: [],
-        },
-      ])
-      lctx.effect(() => directory, 'dsh-ciel: configurable provider directory')
-    } catch (error) {
-      ctx.logger?.warn(
-        'dsh-ciel: configurable provider registration failed: %s',
-        error && error.message ? error.message : String(error),
-      )
-    }
-  })
-
-  // ── reasoning-effort injection. AgentOptions carries no effort field, so a
-  // child built with an explicit provider/model selection runs at the
-  // provider's default thinking behavior — which is what made
-  // google/gemini-3.7-flash fail (pi-ai maps "no effort" to a MINIMAL
-  // thinkingLevel; per the official thinking docs 3.7-flash supports only
-  // low/medium/high and minimal returns an error, default On (medium)).
-  // The `agent/request` waterfall reaches
-  // every agent from this host scope and its payload carries the subject
-  // agent, so one listener can pin the configured effort onto exactly the
-  // live advisor children tracked below. `provider` (or an empty value)
-  // leaves the request untouched.
+  // ── reasoning-effort & pre-request admission. DSH 0.2.2+ fixes the step's
+  // reasoningEffort from AgentOptions / agent.model.select() BEFORE step
+  // preparation and rejects any post-lock mutation inside `agent/request`.
+  // Older 0.2.0/0.2.1 hosts lack `agent.model.select` and ignore
+  // `AgentOptions.reasoningEffort`, so `agent/request` remains the fallback
+  // only when `agent.model.select` is absent.
   ctx.on('agent/request', async (payload, next) => {
     const agent = payload && payload.agent
     const childState = agent && liveAdvisorChildren.get(agent.id)
@@ -373,7 +356,8 @@ export function apply(ctx, config) {
     const { operation } = childState
     if (current().enabled === false) operation.cancel('Ciel disabled')
     operation.beforeRequest()
-    const effort = current().reasoningEffort
+    if (typeof agent?.model?.select === 'function') return next()
+    const effort = childState.requestedSelection !== undefined ? childState.requestedSelection.reasoningEffort : current().reasoningEffort
     if (effort === undefined || effort === '' || effort === 'provider') return next()
     const resolved = await next()
     return { ...resolved, reasoningEffort: effort }
@@ -432,38 +416,51 @@ export function apply(ctx, config) {
         const cfg = current()
         const modelUsage = createModelUsage(cfg.provider, cfg.model)
         try {
-        if (cfg.enabled === false) throw new Error('Ciel disabled')
-        if (!advisorGuardAvailable) throw new Error('Ciel requires tools.guard() before model calls')
+        if (cfg.enabled === false) {
+          throw new Error('[ciel:gate:disabled] Ciel is disabled; enable it in Settings → Ciel advisor before consulting')
+        }
+        if (!advisorGuardAvailable) {
+          throw new Error('[ciel:gate:guard_unavailable] Ciel needs the host tools.guard() hook before it may start a model call')
+        }
+        // Admission-level route check: a self-referential or empty route would
+        // burn the phase budget on a provider error, so it is rejected here and
+        // never counted as a settled consultation (see GATE_REJECTION_HEAD).
+        if (typeof cfg.provider !== 'string' || cfg.provider.trim() === '' || cfg.provider.trim() === 'ciel'
+          || typeof cfg.model !== 'string' || cfg.model.trim() === '') {
+          throw new Error('[ciel:gate:invalid_route] invalid advisor route: configure a valid provider and model (provider cannot be "ciel")')
+        }
         // ── Mechanized negative gates (prompt text advises; these decide).
         // Gate order is cheapest-first; each error teaches the remedy.
         if (typeof args.context !== 'string' || args.context.trim() === '') {
           throw new Error(
-            'context is required: pass the facts already established in the ' +
+            '[ciel:gate:empty_context] context is required: pass the facts already established in the ' +
               'environment (explore first — ungrounded questions get generic answers)',
           )
         }
-        if (detectSensitiveText(String(args.question || '')) || detectSensitiveText(args.context)) throw new Error('咨询输入含疑似凭据，未发送给顾问；请先去除敏感内容')
+        if (detectSensitiveText(String(args.question || '')) || detectSensitiveText(args.context)) {
+          throw new Error('[ciel:gate:sensitive_input] sensitive input blocked: the question or context looks like it carries a credential, so it was not sent to the advisor; remove the secret and retry')
+        }
         const facts = gateFacts(parent)
         if (facts === undefined) {
-          throw new Error('advisor telemetry unavailable; refusing an unmetered consultation')
+          throw new Error('[ciel:gate:telemetry_unavailable] advisor telemetry unavailable; refusing an unmetered consultation')
         } else {
           if (cfg.requireExploration && !facts.explorationDone) {
             throw new Error(
-              'explore first: no non-advisor tool call has run in this session yet. ' +
+              '[ciel:gate:explore_first] explore first: no non-advisor tool call has run in this session yet. ' +
                 'Inspect the environment (read/search/run) before consulting, then ' +
                 'pass what you found in context',
             )
           }
           if (facts.settledThisTurn >= cfg.maxCallsPerTurn) {
             throw new Error(
-              `advisor budget for this planning phase is exhausted ` +
+              `[ciel:gate:budget_exhausted] advisor budget for this planning phase is exhausted ` +
                 `(${facts.settledThisTurn}/${cfg.maxCallsPerTurn} consultations settled this turn). ` +
                 'Work independently now; consult again in a later turn if genuinely new facts surface',
             )
           }
           if (cfg.enforceFollowupGap && facts.settledThisTurn > 0 && !facts.workSinceLast) {
             throw new Error(
-              'follow-ups must be driven by NEW facts: run at least one independent ' +
+              '[ciel:gate:followup_gap] follow-ups must be driven by NEW facts: run at least one independent ' +
                 'step (read/search/run) since the last consultation before calling again',
             )
           }
@@ -471,8 +468,17 @@ export function apply(ctx, config) {
         const consultation = `Established facts and constraints:\n${args.context.trim()}\n\nQuestion:\n${args.question}`
         const release = consultationGate.reserve(parent, facts, cfg.maxCallsPerTurn)
         const owned = beginAdvisorCall(exec.signal)
+        const requestedEffort =
+          cfg.reasoningEffort !== undefined && cfg.reasoningEffort !== '' && cfg.reasoningEffort !== 'provider'
+            ? cfg.reasoningEffort
+            : undefined
+        const requestedSelection = {
+          provider: cfg.provider,
+          model: cfg.model,
+          ...(requestedEffort !== undefined ? { reasoningEffort: requestedEffort } : {}),
+        }
         const childId = randomUUID()
-        const childState = { id: childId, operation: owned.operation, modelUsage, localAgent: undefined, configuredAgent: undefined }
+        const childState = { id: childId, operation: owned.operation, modelUsage, requestedSelection, localAgent: undefined, configuredAgent: undefined }
         liveAdvisorChildren.set(childId, childState)
         let run
         let disposalPromise
@@ -486,31 +492,33 @@ export function apply(ctx, config) {
         }
         try {
           owned.operation.check()
+          const startRequest = {
+            parent,
+            prompt: [{ type: 'text', text: consultation }],
+            agentOptions: {
+              ...requestedSelection,
+              maxTokens: cfg.maxTokens,
+            },
+            // Absolute delegation-depth cap: each start requires the child's
+            // computed depth (caller depth + 1) <= maxDepth. 0 forbids ANY
+            // delegation from a top-level session ("child depth 1 exceeds
+            // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
+            // the advisor's own children (depth 2).
+            maxDepth: 1,
+          }
           run = await tctx.subagents.startActivation({
             provider: 'spawn',
             label: 'advisor',
             childId,
             delivery: 'caller',
             signal: owned.operation.signal,
-            request: {
-              parent,
-              prompt: [{ type: 'text', text: consultation }],
-              agentOptions: {
-                provider: cfg.provider,
-                model: cfg.model,
-                maxTokens: cfg.maxTokens,
-              },
-              // Absolute delegation-depth cap: each start requires the child's
-              // computed depth (caller depth + 1) <= maxDepth. 0 forbids ANY
-              // delegation from a top-level session ("child depth 1 exceeds
-              // maxDepth 0"); 1 admits the advisor (depth 1) while forbidding
-              // the advisor's own children (depth 2).
-              maxDepth: 1,
-            },
+            ...startRequest,
+            request: startRequest,
           })
           if (run?.childId && run.childId !== childId) liveAdvisorChildren.set(run.childId, childState)
           if (run?.id && run.id !== childId) liveAdvisorChildren.set(run.id, childState)
-          if (run?.localAgent) configureAdvisorChildAgent(run.localAgent, childState)
+          const resolvedChildAgent = run?.localAgent ?? ctx.get?.('agents')?.get?.(run?.childId ?? childId)
+          if (resolvedChildAgent) configureAdvisorChildAgent(resolvedChildAgent, childState)
           owned.operation.signal.addEventListener('abort', onAbort, { once: true })
           if (owned.operation.signal.aborted) onAbort()
           if (!run || typeof run.result?.then !== 'function') {
@@ -530,25 +538,28 @@ export function apply(ctx, config) {
           const answer = text === '' ? 'The advisor returned an empty answer.' : text
           const parsed = parseAdvisorItems(answer)
           captureModelUsage(modelUsage, childState)
-          let jev
-          if (cfg.advisorJevEnabled === true) {
+          let decision
+          if (cfg.advisorDecisionEnabled === true) {
             const controller = new AbortController()
-            advisorJevControllers.add(controller)
+            advisorDecisionControllers.add(controller)
             try {
-              jev = await checkAdvisorWithJev({
-                ...jevConnection(current()),
-                prepared: prepareAdvisorJev({ question: args.question, context: args.context, text: answer, items: parsed.items }),
-                enabled: current().advisorJevEnabled === true && current().enabled !== false,
+              decision = await checkAdvisorWithDecision({
+                prepared: prepareAdvisorDecision({ question: args.question, context: args.context, text: answer, items: parsed.items }),
+                enabled: current().advisorDecisionEnabled === true && current().enabled !== false,
+                // Resolved inside checkDecisionBatch's own deadline and
+                // cancellation boundary: a hanging credential store degrades
+                // the optional check, never the consultation.
+                resolveConnection: () => resolveDecisionConnection(current(), { ctx }),
                 signal: AbortSignal.any([owned.operation.signal, controller.signal]),
                 timeoutMs: Math.min(10000, owned.operation.remainingMs() - 1000),
                 beforeRequest: () => owned.operation.check(),
               })
-            } finally { advisorJevControllers.delete(controller) }
+            } finally { advisorDecisionControllers.delete(controller) }
             owned.operation.check()
           }
-          try { await persistAdvice(parent.id, 'tool', exec.callId, answer, modelUsage, owned.operation, jev) }
+          try { await persistAdvice(parent.id, 'tool', exec.callId, answer, modelUsage, owned.operation, decision) }
           catch { owned.operation.check(); ctx.logger?.warn('Ciel: advisor sidebar record could not be saved') }
-          return { text: answer, items: parsed.items, issues: parsed.issues, modelUsage: modelUsageSnapshot(modelUsage), ...(jev ? { jev } : {}) }
+          return { text: answer, items: parsed.items, issues: parsed.issues, modelUsage: modelUsageSnapshot(modelUsage), ...(decision ? { decision } : {}) }
         } finally {
           try {
             owned.operation.signal.removeEventListener('abort', onAbort)

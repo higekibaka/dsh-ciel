@@ -1,6 +1,6 @@
 /** Durable advisor records in the native resource/right-sidebar integration.
  * Reads never invoke a model; failures never display a stale successful value. */
-import { advisorJevPanel } from './advisor-jev.js'
+import { advisorDecisionPanel } from './advisor-decision.js'
 
 export const CIEL_ADVICE = 'ciel-advice'
 const TAB_ID = 'dsh-ciel/sidebar-advice'
@@ -314,7 +314,7 @@ export function createCielSidebar({ React, Tag }) {
         formatTime(advice.createdAt) === '' ? null : h('span', { key: 'time', 'data-ciel-advice-time': '' }, formatTime(advice.createdAt)),
         usage === '' ? null : h('span', { key: 'usage', 'data-ciel-advice-usage': '' }, '模型：' + usage)),
       h('p', { key: 'disclaimer', 'data-ciel-advice-disclaimer': '' }, '以下是顾问的观点与方向，不是核实过的证据；采用前请自行验证。'),
-      advisorJevPanel(h, advice.jev),
+      advisorDecisionPanel(h, advice.decision ?? advice.jev, { legacy: advice.decision === undefined && advice.jev !== undefined }),
       // Structured ideas when the Host parsed them; the raw reply then lives
       // behind one collapsed disclosure instead of repeating the full text.
       items.length === 0

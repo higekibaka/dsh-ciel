@@ -55,8 +55,8 @@ try {
   const remote = { $mount: async () => {}, $on: () => () => {} }
   const rpc = { readAdvice: async () => ({ ok: false, error: 'fixture missing' }), callModelUsage: async () => ({ modelUsage: null }) }
   const ctx = {
-    configForms: { describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }] } }) }), get(entryId) { assert.equal(entryId, 'advisor'); return {
-      getSnapshot: () => ({ status: 'ready', mode: 'host', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision }),
+    configForms: { describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['decisionApiKey'], set: Boolean(value.decisionApiKey) }] }] } }) }), get(entryId) { assert.equal(entryId, 'advisor'); return {
+      getSnapshot: () => ({ status: 'ready', mode: 'host', writable: true, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'decisionApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'decisionApiKey')), revision }),
       subscribe(fn) { scopeListeners.add(fn); return () => scopeListeners.delete(fn) },
       async mutate(ops, expected) {
         assert.equal(expected, revision)
@@ -142,18 +142,18 @@ try {
     assert.ok(doc.activeElement === control, caption + ': clicking label focuses its editor')
     return control
   }
-  const jevCaption = '启用顾问建议检查（Jev）'
-  assert.equal((await clickLabel(jevCaption, 'advisorJevEnabled', 'BUTTON')).getAttribute('aria-checked'), 'true')
-  assert.equal(value.advisorJevEnabled, false, 'label click is staged, not persisted')
+  const decisionCaption = '启用顾问建议检查（Gemini Decision）'
+  assert.equal((await clickLabel(decisionCaption, 'advisorDecisionEnabled', 'BUTTON')).getAttribute('aria-checked'), 'true')
+  assert.equal(value.advisorDecisionEnabled, false, 'label click is staged, not persisted')
   assert.equal(findInputByLabel('启用 Ciel').getAttribute('aria-checked'), 'true', 'label toggles only its own switch')
-  assert.equal((await clickLabel(jevCaption, 'advisorJevEnabled', 'BUTTON')).getAttribute('aria-checked'), 'false')
+  assert.equal((await clickLabel(decisionCaption, 'advisorDecisionEnabled', 'BUTTON')).getAttribute('aria-checked'), 'false')
   await click(doc.querySelector('[data-ciel-settings-group="advisor"] [data-ciel-settings-group-head]'))
   for (const [caption, key, tag] of [
     ['每个代理回合最多咨询几次', 'maxCallsPerTurn', 'INPUT'],
     ['顾问时限（秒）', 'advisorTimeoutSeconds', 'INPUT'],
-    ['Jev API Key', 'jevApiKey', 'INPUT'],
-    ['Jev 接口地址', 'jevEndpoint', 'INPUT'],
-    ['Jev 模型 ID', 'jevModel', 'INPUT'],
+    ['Gemini API Key', 'decisionApiKey', 'INPUT'],
+    ['Decision 接口地址', 'decisionEndpoint', 'INPUT'],
+    ['Decision 模型 ID', 'decisionModel', 'INPUT'],
     ['提供方路由', 'provider', 'INPUT'],
     ['顾问模型', 'model', 'INPUT'],
     ['思考深度', 'reasoningEffort', 'SELECT'],
@@ -169,8 +169,8 @@ try {
 
   const sw = () => findInputByLabel('启用 Ciel')
   assert.equal(sw().getAttribute('aria-checked'), 'true')
-  const advisorJevSwitch = () => findInputByLabel('启用顾问建议检查（Jev）')
-  assert.equal(advisorJevSwitch().getAttribute('aria-checked'), 'false')
+  const advisorDecisionSwitch = () => findInputByLabel('启用顾问建议检查（Gemini Decision）')
+  assert.equal(advisorDecisionSwitch().getAttribute('aria-checked'), 'false')
   await click(sw())
   assert.equal(sw().getAttribute('aria-checked'), 'false')
   assert.equal(value.enabled, true, 'toggle is staged, not persisted')
@@ -183,20 +183,20 @@ try {
   assert.equal(sw().getAttribute('aria-checked'), 'false', 'draft survives section remount')
   await click(button('放弃'))
   assert.equal(sw().getAttribute('aria-checked'), 'true')
-  await click(advisorJevSwitch())
-  assert.equal(value.advisorJevEnabled, false, 'Jev stays off until Save')
+  await click(advisorDecisionSwitch())
+  assert.equal(value.advisorDecisionEnabled, false, 'Gemini Decision stays off until Save')
   await click(sw())
   await click(button('保存'))
   assert.equal(value.enabled, false)
-  assert.equal(value.advisorJevEnabled, true)
+  assert.equal(value.advisorDecisionEnabled, true)
   assert.equal(writes.length, 1)
-  assert.equal(doc.querySelector('[aria-label="启用 Jev 证据检查"]'), null)
+  assert.equal(doc.querySelector('[aria-label="启用 Gemini Decision 证据检查"]'), null)
   assert.equal(doc.querySelector('[aria-label="允许评审时查文件"]'), null)
   assert.match(doc.body.textContent, /当前已停用/)
-  await click(advisorJevSwitch())
+  await click(advisorDecisionSwitch())
   await click(button('保存'))
-  assert.equal(value.advisorJevEnabled, false)
-  const keyInput = () => findInputByLabel('Jev API Key')
+  assert.equal(value.advisorDecisionEnabled, false)
+  const keyInput = () => findInputByLabel('Gemini API Key')
   assert.equal(keyInput().type, 'password')
   assert.equal(keyInput().disabled, false, 'secret metadata comes from the native describe mirror')
   const change = async (node, next) => { await act(async () => {
@@ -204,19 +204,19 @@ try {
     node.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
   }) }
   await change(keyInput(), 'native-fixture-secret')
-  await change(findInputByLabel('Jev 模型 ID'), 'jev-native')
+  await change(findInputByLabel('Decision 模型 ID'), 'decision-native')
   await click(button('保存'))
-  assert.equal(value.jevApiKey, 'native-fixture-secret')
-  assert.equal(value.jevModel, 'jev-native')
+  assert.equal(value.decisionApiKey, 'native-fixture-secret')
+  assert.equal(value.decisionModel, 'decision-native')
   assert.equal(keyInput().value, '', 'saved key is not reflected back into the input')
   assert.match(doc.body.textContent, /已配置密钥/)
   assert.ok(!doc.body.innerHTML.includes('native-fixture-secret'))
-  await change(findInputByLabel('Jev 接口地址'), 'http://invalid.test')
+  await change(findInputByLabel('Decision 接口地址'), 'http://invalid.test')
   assert.equal(button('保存').disabled, true)
   await click(button('放弃'))
   await click(button('清除密钥覆盖'))
   await click(button('保存'))
-  assert.equal(value.jevApiKey, '')
+  assert.equal(value.decisionApiKey, '')
   await click([...doc.querySelectorAll('button')].find(n => n.textContent === '关闭设置'))
   assert.equal(scopeListeners.size, 0)
 

@@ -6,6 +6,26 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-15
+
+### Breaking changes: JEV → Gemini Decisions API
+
+- 可选背景一致性检查提供方由 TypeSafe JEV 切换为 Google **Gemini Decisions API**（默认接口 `https://generativelanguage.googleapis.com/v1beta/decisions`，默认模型 `gemini-decision-1`，采用 `x-goog-api-key` 头部鉴权与 24 KiB JSON `input` 预算，兼容缺省 `model`/`usage` 并将安全拒绝映射为 `safety-blocked`）。
+- 移除旧版 4 个配置项（`advisorJevEnabled`、`jevApiKey`、`jevEndpoint`、`jevModel`），替换为 `advisorDecisionEnabled`（默认 `false`）、`decisionApiKey`、`decisionEndpoint`、`decisionModel`。旧配置与密钥**不再读取、不自动迁移、也不从磁盘删除**；官方接口按设置密钥 → 宿主 `credentials`（`GEMINI_API_KEY` → `GOOGLE_API_KEY`，凭据仓异常时直接安全降级不跨级跌落环境变量）→ `launchEnvironment` → 进程环境变量解析，自定义接口绝不继承宿主或环境凭据。详见[升级与兼容说明](docs/compatibility-017.md)。
+- 磁盘上已保存的历史 `advice.jev` / `meta.jev` 记录保持只读兼容，界面显式标注为「历史 Jev 顾问建议检查（旧版，仅只读）」，不误标为 Gemini，也不重新发起检查。
+
+### Architecture, runtime and metadata
+
+- **零外部运行时依赖与宿主实例共享**：新增同步 ESM 模块 `plugin/runtime.js`，按固定锚点顺序（`DSH_CIEL_HOST_MODULES` → `DSH_CHECKOUT` → `DSH_INSTALL_DIR` → 桌面版 Electron `process.resourcesPath` `app.asar/dsh` → `process.argv[1]` → 本地开发依赖）解析并复用宿主的 `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-typert-protocol` ESM 实例，移除包级运行时 `dependencies`，退役 `scripts/link-harness-peers.mjs`，并统一四份宿主集成回放脚本的身份断言。
+- **插件架构收口**：移除 `index.js` 对 `llm.registerConfigurableProviders` 注册悬空伪 Provider `ciel` 的遗留调用；在扣减咨询配额前前置拦截空白路由或 `provider === "ciel"` 自环配置；修复前端 `configForms` / `settingsScope` 双入口挂载竞态与卸载复位，并消除客户端内联复制的 `parseAdvisorItems`。
+- **包级双语元数据与结构化错误码**：新增并导出 `locale/en.json` 与 `locale/zh.json`（供宿主插件管理器未激活时读取 `meta.title` / `meta.description`）；全部 12 处准入拒绝统一冠以 `[ciel:gate:<code>]` 稳定机器前缀并统一模型侧英文协议报错，同时完整保留历史中英文前缀回放兼容；`AdvisorService` 失败响应补齐稳定机器码（`CIEL_ADVICE_NOT_FOUND`、`CIEL_ADVICE_SENSITIVE`、`CIEL_ADVICE_UNAVAILABLE`、`CIEL_USAGE_UNAVAILABLE`）。
+
+### Host compatibility and reliability
+
+- 修复 **DSH 0.2.2-rc.1+** 下 `ask_advisor` 配置非 `provider` 思考深度时触发 `agent/request proposed reasoning effort ... after step preparation fixed "adapter default"` 报错的问题：改为在 `startActivation` 的 `agentOptions.reasoningEffort`（及 `agent/created` 的 `agent.model.select()` 兜底）阶段提前锁定思考深度，仅在无 `agent.model.select` 的旧版宿主上保留 `agent/request` 注入回退。
+- 修复 Windows NTFS 下同键并发 `atomicWriteFile` 替换目标记录文件时偶发瞬态 `EPERM` / `EACCES` / `EBUSY` 的问题，并在每次重试前重新执行同步取消栅栏 `beforeCommit`。
+- 新增无 `git` 子进程依赖的离线文档与发布隐私校验辅助脚本 `scripts/verify-offline.mjs`。
+
 ## [0.22.1] - 2026-11-05
 
 ### Host compatibility & accessibility

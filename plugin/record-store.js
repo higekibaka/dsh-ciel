@@ -227,8 +227,23 @@ async function atomicWriteFile(path, serialized, beforeCommit) {
     await handle.close()
     handle = undefined
     // Synchronous terminal fence: no await may separate it from publication.
-    beforeCommit?.()
-    await rename(temp, path)
+    // On Windows NTFS, concurrent MoveFileExW replacements on the same target
+    // transiently surface EPERM/EACCES/EBUSY; re-check beforeCommit right
+    // before each retry so cancellation still gates publication synchronously.
+    for (let attempt = 0; ; attempt++) {
+      beforeCommit?.()
+      try {
+        await rename(temp, path)
+        break
+      } catch (renameErr) {
+        const transientWinLock =
+          process.platform === 'win32' &&
+          attempt < 6 &&
+          (renameErr?.code === 'EPERM' || renameErr?.code === 'EACCES' || renameErr?.code === 'EBUSY')
+        if (!transientWinLock) throw renameErr
+        await new Promise((resolve) => setTimeout(resolve, 5 * (2 ** attempt)))
+      }
+    }
   } catch (error) {
     if (handle !== undefined) await handle.close().catch(() => {})
     await unlink(temp).catch(() => {})

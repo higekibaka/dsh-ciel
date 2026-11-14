@@ -1,7 +1,8 @@
 import { ADVISOR_REMOTE } from '../advisor-protocol.js'
 import { createCielSidebar } from './sidebar.js'
-import { advisorJevPanel, advisorJevSummary } from './advisor-jev.js'
-import { JEV_MODEL, JEV_ENDPOINT, validJevEndpoint, validJevModel, validJevKey } from '../jev-config.js'
+import { advisorDecisionPanel, advisorDecisionSummary } from './advisor-decision.js'
+import { DECISION_MODEL, DECISION_ENDPOINT, validDecisionEndpoint, validDecisionModel, validDecisionKey } from '../decision-config.js'
+import { parseAdvisorItems } from '../advisor-content.js'
 import SIDEBAR_CSS from './sidebar.css'
 import SETTINGS_CSS from './settings.css'
 
@@ -74,10 +75,10 @@ window.__ModuleLoader__.load({
       planReminderEnabled: true,
       reasoningEffort: 'provider',
       guidanceEnabled: true,
-      advisorJevEnabled: false,
-      jevApiKey: '',
-      jevEndpoint: JEV_ENDPOINT,
-      jevModel: JEV_MODEL,
+      advisorDecisionEnabled: false,
+      decisionApiKey: '',
+      decisionEndpoint: DECISION_ENDPOINT,
+      decisionModel: DECISION_MODEL,
       enabled: true,
       advisorTimeoutSeconds: 180,
     }
@@ -118,18 +119,18 @@ window.__ModuleLoader__.load({
         kind: 'group', key: 'common', label: '常用设置', defaultOpen: true,
         summarize: (staged) => `每回合最多 ${staged.maxCallsPerTurn} 次 · 最多 ${staged.advisorTimeoutSeconds} 秒`,
         children: [
-          { kind: 'check', key: 'advisorJevEnabled', label: '启用顾问建议检查（Jev）', hint: '顾问回答后，把本次问题、背景和建议发给 TypeSafe 对照检查，产生额外 API 用量。默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥在下方 Jev API 配置中填写；关闭并保存会取消在途检查。' },
+          { kind: 'check', key: 'advisorDecisionEnabled', label: '启用顾问建议检查（Gemini Decision）', hint: '顾问回答后，把本次问题、背景和建议发给 Gemini Decisions API 对照检查，产生额外 API 用量。默认关闭；仅检查背景一致性，不独立查证事实。结果一起返回主模型并保存在顾问详情；最多额外等待10秒，计入咨询总时限。密钥在下方 Gemini Decision API 配置中填写；关闭并保存会取消在途检查。' },
           { kind: 'number', key: 'maxCallsPerTurn', label: '每个代理回合最多咨询几次', min: MAX_CALLS_MIN, max: MAX_CALLS_MAX, hint: '限制主代理在一个实际 turn（代理回合）内调用 ask_advisor 的次数，包含追问；不等于一个语义上的规划阶段。咨询太频繁时调低，需要更多追问时调高；超过后会拒绝调用。' },
           { kind: 'number', key: 'advisorTimeoutSeconds', label: '顾问最多等多久（秒）', min: 10, max: 600, hint: '一次 ask_advisor 从开始到结束的总等待时间；经常等不到回复时可调高，想更快结束等待时调低。超时会中断，不是费用上限，已发生的调用仍可能计费。' },
         ],
       },
       {
-        kind: 'group', key: 'jevApi', label: 'Jev API 配置', defaultOpen: true,
-        summarize: staged => staged.jevModel,
+        kind: 'group', key: 'decisionApi', label: 'Gemini Decision API 配置', defaultOpen: true,
+        summarize: staged => staged.decisionModel,
         children: [
-          { kind: 'secret', key: 'jevApiKey', label: 'Jev API Key', hint: '留空保留原值；输入新值会替换。清除覆盖后继承部署配置，未配置时仅官方接口回退到 TYPESAFE_API_KEY。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。' },
-          { kind: 'text', key: 'jevEndpoint', label: 'Jev 接口地址', fallback: JEV_ENDPOINT, hint: '完整 HTTPS 地址（含 /v1/systemone 或代理对应路径），不会自动追加路径；必须兼容 TypeSafe systemone 协议，不是 OpenAI 接口。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送环境变量密钥。不允许 URL 内凭据、查询参数、片段或重定向。' },
-          { kind: 'text', key: 'jevModel', label: 'Jev 模型 ID', fallback: JEV_MODEL, hint: '默认 jev-1.13.0，可填写接口支持的其他模型 ID；不经过「设置 → 模型」路由。保存后下一次 Jev 检查使用，正在进行的请求不变。' },
+          { kind: 'secret', key: 'decisionApiKey', label: 'Gemini API Key', hint: '留空保留原值；输入新值会替换。清除覆盖后继承 DSH 凭据（GEMINI_API_KEY / GOOGLE_API_KEY）；自定义接口地址永不继承宿主或环境凭据。密钥保存在本机 DSH 配置（不是加密保险库），不回传原值；草稿只留在当前页面内存。' },
+          { kind: 'text', key: 'decisionEndpoint', label: 'Decision 接口地址', fallback: DECISION_ENDPOINT, hint: '完整 HTTPS 地址，不会自动追加路径；仅支持 Gemini Developer API 的 v1beta/decisions（Vertex 通道不支持）。自定义地址将收到 API Key 和检查原文，请只填写可信服务；不自动发送宿主或环境凭据。不允许 URL 内凭据、查询参数、片段或重定向。' },
+          { kind: 'text', key: 'decisionModel', label: 'Decision 模型 ID', fallback: DECISION_MODEL, hint: '默认 gemini-decision-1，可填写接口支持的其他 Decision 模型 ID；不经过「设置 → 模型」路由。保存后下一次检查使用，正在进行的请求不变。' },
         ],
       },
       {
@@ -329,7 +330,7 @@ window.__ModuleLoader__.load({
 
     const SHORT_HINTS = {
       enabled: '保存后生效；停用时已有结果仍可查看。',
-      advisorJevEnabled: '独立检查建议与本次背景是否一致；会产生额外 API 用量。',
+      advisorDecisionEnabled: '独立检查建议与本次背景是否一致；会产生额外 API 用量。',
       maxCallsPerTurn: '每个代理回合最多咨询次数，包含追问。',
       advisorTimeoutSeconds: '等待上限，不是费用上限。',
     }
@@ -422,8 +423,8 @@ window.__ModuleLoader__.load({
         h('p', { role: 'status' }, snap.status === 'loading' ? '正在加载 Ciel 设置…' : 'Ciel 设置暂不可用，请检查连接或插件状态。'))
       const value = snap.value || {}
       const section = settingsDescribe?.getSnapshot?.().view?.namespaces?.find(row => row.ns === 'advisor')
-      const secretSlot = (section?.secrets || snap.secrets)?.find(row => row.path?.length === 1 && row.path[0] === 'jevApiKey')
-      const jevSettingsReady = secretSlot !== undefined && typeof value.jevEndpoint === 'string' && typeof value.jevModel === 'string'
+      const secretSlot = (section?.secrets || snap.secrets)?.find(row => row.path?.length === 1 && row.path[0] === 'decisionApiKey')
+      const decisionSettingsReady = secretSlot !== undefined && typeof value.decisionEndpoint === 'string' && typeof value.decisionModel === 'string'
       const user = snap.user && typeof snap.user === 'object' ? snap.user : {}
       const overridden = (key) => Object.prototype.hasOwnProperty.call(user, key)
 
@@ -439,10 +440,10 @@ window.__ModuleLoader__.load({
         planReminderEnabled: Boolean(value.planReminderEnabled),
         reasoningEffort: String(value.reasoningEffort ?? 'provider'),
         guidanceEnabled: Boolean(value.guidanceEnabled),
-        advisorJevEnabled: Boolean(value.advisorJevEnabled ?? false),
-        jevApiKey: '', // Never copy a saved secret (even from a legacy snapshot).
-        jevEndpoint: String(value.jevEndpoint ?? JEV_ENDPOINT),
-        jevModel: String(value.jevModel ?? JEV_MODEL),
+        advisorDecisionEnabled: Boolean(value.advisorDecisionEnabled ?? false),
+        decisionApiKey: '', // Never copy a saved secret (even from a legacy snapshot).
+        decisionEndpoint: String(value.decisionEndpoint ?? DECISION_ENDPOINT),
+        decisionModel: String(value.decisionModel ?? DECISION_MODEL),
         enabled: Boolean(value.enabled ?? true),
         advisorTimeoutSeconds: String(value.advisorTimeoutSeconds ?? ''),
       }
@@ -460,9 +461,9 @@ window.__ModuleLoader__.load({
         return { parsed, invalid }
       }
 
-      const textInvalid = key => key === 'jevEndpoint' ? !validJevEndpoint(staged[key])
-        : key === 'jevModel' ? !validJevModel(staged[key])
-          : key === 'jevApiKey' && Boolean(staged[key]) && !validJevKey(staged[key])
+      const textInvalid = key => key === 'decisionEndpoint' ? !validDecisionEndpoint(staged[key])
+        : key === 'decisionModel' ? !validDecisionModel(staged[key])
+          : key === 'decisionApiKey' && Boolean(staged[key]) && !validDecisionKey(staged[key])
       const dirtyKey = (key) => {
         if (resets[key]) return true
         const def = FIELD_DEF_BY_KEY[key]
@@ -511,7 +512,7 @@ window.__ModuleLoader__.load({
         const def = FIELD_DEF_BY_KEY[key]
         return (def.kind === 'number' && numState(def).invalid)
           || (def.kind === 'paths' && pathsState(key).invalid) || textInvalid(key)
-          || (['jevApiKey', 'jevEndpoint', 'jevModel'].includes(key) && !jevSettingsReady && dirtyKey(key))
+          || (['decisionApiKey', 'decisionEndpoint', 'decisionModel'].includes(key) && !decisionSettingsReady && dirtyKey(key))
       }
       const save = async () => {
         if (editor.get('saving') || !snap.writable || FIELD_KEYS.some(invalidField)) return
@@ -706,19 +707,19 @@ window.__ModuleLoader__.load({
         const fieldId = 'ciel-setting-' + key
         const secret = kind === 'secret', invalid = textInvalid(key)
         return h('div', { key, 'data-ciel-setting': key, style: { ...css.field, ...css.fieldBorder } },
-          h(FieldHead, { htmlFor: fieldId, label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !jevSettingsReady, onReset: () => resetField(key) }),
+          h(FieldHead, { htmlFor: fieldId, label, overridden: !secret && overridden(key) && !resets[key], disabled: disabled || !decisionSettingsReady, onReset: () => resetField(key) }),
           h('input', { id: fieldId, style: css.input, type: secret ? 'password' : 'text', value: staged[key],
             'aria-invalid': invalid, 'aria-describedby': 'ciel-setting-hint-' + key,
             autoComplete: secret ? 'new-password' : 'off', spellCheck: false,
             placeholder: secret ? '留空保留；输入以替换' : fallback,
-            disabled: disabled || !jevSettingsReady, onChange: event => edit(key, event.target.value) }),
-          secret ? h('p', { role: 'status', style: css.hint }, !jevSettingsReady ? '宿主尚未提供 Jev API 安全配置，请更新并重启 DSH 后刷新页面。'
+            disabled: disabled || !decisionSettingsReady, onChange: event => edit(key, event.target.value) }),
+          secret ? h('p', { role: 'status', style: css.hint }, !decisionSettingsReady ? '宿主尚未提供 Gemini Decision API 安全配置，请更新并重启 DSH 后刷新页面。'
             : resets[key] ? '待保存：清除密钥覆盖' : staged[key] ? '待保存：替换密钥'
-              : secretSlot.set ? '已配置密钥（原值不回传）' : '未在设置中配置；官方接口将尝试环境变量，是否可用由检查结果确认。') : null,
-          secret ? h('button', { type: 'button', className: 'ciel-reset-button', disabled: disabled || !jevSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
-          !secret && key === 'jevEndpoint' && staged[key] !== JEV_ENDPOINT ? h('p', { role: 'status', style: css.hint }, '自定义服务将收到密钥和原文；请另填该服务的 API Key。') : null,
+              : secretSlot.set ? '已配置密钥（原值不回传）' : '未在设置中配置；官方接口将尝试 DSH 凭据与 GEMINI_API_KEY / GOOGLE_API_KEY，是否可用由检查结果确认。') : null,
+          secret ? h('button', { type: 'button', className: 'ciel-reset-button', disabled: disabled || !decisionSettingsReady || resets[key], onClick: () => resetField(key), 'aria-label': `清除${label}覆盖`, title: `清除${label}覆盖` }, '清除密钥覆盖') : null,
+          !secret && key === 'decisionEndpoint' && staged[key] !== DECISION_ENDPOINT ? h('p', { role: 'status', style: css.hint }, '自定义服务将收到密钥和原文；请另填该服务的 API Key，宿主与环境凭据不会发送。') : null,
           invalid ? h('p', { role: 'alert', style: css.hint }, secret ? '密钥须为 1–4096 个可打印 ASCII 字符，不含空白。'
-            : key === 'jevEndpoint' ? '请输入完整 HTTPS 地址，不含凭据、查询参数或片段。' : '请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。') : null,
+            : key === 'decisionEndpoint' ? '请输入完整 HTTPS 地址，不含凭据、查询参数或片段。' : '请输入 1–128 位模型 ID（字母、数字、点、下划线、冒号、斜杠或连字符）。') : null,
           settingHelp(key, hint))
       }
 
@@ -870,11 +871,11 @@ window.__ModuleLoader__.load({
       '.adv-head-note{margin-left:auto;font-size:11px;opacity:.5;font-family:ui-monospace,monospace;flex:none}',
       '.adv-head-q{margin-left:auto;font-size:12px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
       '.adv-head-issues{font-size:11px;color:var(--dsw-alias-state-warn-primary);font-family:ui-monospace,monospace;flex:none}',
-      // Summary, Jev and model metadata share the card's content edge. Keep
-      // these selectors card-scoped: sidebars own their spacing.
+      // Summary, Gemini Decision and model metadata share the card's content
+      // edge. Keep these selectors card-scoped: sidebars own their spacing.
       '.adv-card .adv-head[data-ciel-summary-head]{padding-inline:var(--ciel-advisor-inset)}',
-      '.adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}',
-      '.adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}',
+      '.adv-card>.ciel-model-usage,.adv-card>[data-ciel-advisor-decision-summary],.adv-card>[data-ciel-advisor-jev-summary]{padding:6px var(--ciel-advisor-inset)}',
+      '.adv-card>[data-ciel-advisor-decision-summary],.adv-card>[data-ciel-advisor-jev-summary]{margin:0;font-size:12px;overflow-wrap:anywhere}',
       '.adv-body{padding:4px var(--ciel-advisor-inset) 12px}',
       '.adv-q{margin:8px 0 4px;padding:6px 10px;border-left:2px solid var(--dsw-alias-border-l2);font-size:12px;opacity:.72;font-style:italic;white-space:pre-wrap;word-break:break-word}',
       '.adv-item{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2)}',
@@ -1011,7 +1012,7 @@ window.__ModuleLoader__.load({
               const result = sidebar.openAdvice(props.sessionId, callId)
               setNavigationError(result?.ok === false ? String(result.error || '侧栏暂不可用') : '')
             } }, '在侧栏查看')),
-          meta?.jev ? h('p', { 'data-ciel-advisor-jev-summary': '' }, advisorJevSummary(meta.jev)) : null,
+          (meta?.decision ?? meta?.jev) ? h('p', { 'data-ciel-advisor-decision-summary': '', 'data-ciel-advisor-legacy': meta?.decision === undefined ? '' : undefined }, advisorDecisionSummary(meta?.decision ?? meta?.jev, { legacy: meta?.decision === undefined })) : null,
           h('div', { className: 'ciel-model-usage' }, modelLabel),
           navigationError ? h('p', { role: 'status', className: 'adv-navigation-error' }, navigationError) : null)
       }
@@ -1035,7 +1036,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'ciel-model-usage' }, modelLabel),
         open
           ? h('div', { id: bodyId, className: 'adv-body' },
-              advisorJevPanel(h, meta?.jev),
+              advisorDecisionPanel(h, meta?.decision ?? meta?.jev, { legacy: meta?.decision === undefined }),
               question !== '' ? h('div', { className: 'adv-q' }, '咨询：' + clipAdv(question, 300)) : null,
               isError
                 ? h('div', { className: 'adv-err' }, body !== '' ? body : '（无错误详情）')
@@ -1053,41 +1054,8 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    // PTC tool results lack presentationMeta; recover the structured advisor
-    // items from their rendered text using the host Markdown contract.
-    function parseAdvisorItems(text) {
-      const heads = []
-      const re = /^## \[(high|mid|low)\][ \t]*(.*)$/gm
-      let m
-      while ((m = re.exec(text)) !== null) {
-        heads.push({ tier: m[1], title: (m[2] || '').trim(), at: m.index, end: re.lastIndex })
-      }
-      if (heads.length === 0) return { items: [], issues: [] }
-      const issues = []
-      if (heads.length > 6) issues.push('item count ' + heads.length + ' exceeds the 6-item cap')
-      const FIELD_NAMES = ['framing', 'pitfalls', 'verification_target']
-      const items = []
-      for (let i = 0; i < heads.length; i += 1) {
-        const body = text.slice(heads[i].end, i + 1 < heads.length ? heads[i + 1].at : text.length)
-        const field = (name) => {
-          const match = new RegExp(
-            '(?:^|\\n)[ \\t]*' + name + '[ \\t]*:[ \\t]*([\\s\\S]*?)(?=\\n[ \\t]*(?:' + FIELD_NAMES.join('|') + ')[ \\t]*:|$)',
-          ).exec(body)
-          return match ? match[1].trim() : ''
-        }
-        const item = {
-          tier: heads[i].tier,
-          title: heads[i].title.slice(0, 120),
-          framing: field('framing').slice(0, 1200),
-          pitfalls: field('pitfalls').slice(0, 1200),
-          verificationTarget: field('verification_target').slice(0, 600),
-        }
-        if (item.framing === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks framing')
-        if (item.verificationTarget === '') issues.push('item ' + (i + 1) + ' ("' + item.title + '") lacks verification_target')
-        items.push(item)
-      }
-      return { items, issues }
-    }
+    // PTC results carry rendered content but no presentationMeta: reuse the host
+    // parser instead of keeping a second copy of the Markdown contract.
 
     function mountClient(ctx, settingsForm) {
       settingsEditor = createSettingsEditor()
@@ -1212,9 +1180,33 @@ window.__ModuleLoader__.load({
       defaults: { ...DEFAULTS },
       fieldKeys: FIELD_KEYS.slice(),
     }
+    // A host may expose both settings seams at once; mount exactly once per
+    // apply instance so the module singletons (scope, sidebar, editor, remote
+    // reader) are never double-registered. The flag is per apply and resets
+    // when the owning injection is disposed, so a later remount works again.
+    // configForms wins when both are present.
     exports.apply = (ctx) => {
-      ctx.inject(['configForms'], child => mountClient(child, child.configForms.get('advisor')))
-      ctx.inject(['settingsScope'], child => mountClient(child, child.settingsScope.bind({ namespace: 'ciel' })))
+      let mounted = false
+      const mountOnce = (child, form) => {
+        if (mounted || form === undefined || form === null) return false
+        mounted = true
+        mountClient(child, form)
+        // Reset with the child's lifetime as well, so disposing the injection
+        // (or the whole plugin) never leaves the guard stuck for a later apply.
+        child.effect?.(() => () => { mounted = false }, 'Ciel: mount guard reset')
+        return true
+      }
+      ctx.inject(['configForms'], child => {
+        if (mountOnce(child, child.configForms?.get?.('advisor'))) return () => { mounted = false }
+        return undefined
+      })
+      ctx.inject(['settingsScope'], child => {
+        // Check the guard BEFORE binding: a modern host that exposes both seams
+        // may not register the legacy `ciel` namespace, and `bind` can throw.
+        if (mounted) return undefined
+        if (mountOnce(child, child.settingsScope?.bind?.({ namespace: 'ciel' }))) return () => { mounted = false }
+        return undefined
+      })
     }
     exports.inject = ['slots', 'resources', 'sidebarRightTabs', 'sidebarRight']
     // The module system materializes the factory's RETURN VALUE as the plugin

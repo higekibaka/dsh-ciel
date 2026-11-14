@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRuntime } from './advisor-ui.harness.js'
 
-test('advisor header, Jev summary, body and model line share one card-local inset', async t => {
+test('advisor header, Gemini Decision summary, body and model line share one card-local inset', async t => {
   const styles = []
   const document = {
     createElement: () => ({ textContent: '', remove() {} }),
@@ -13,7 +13,9 @@ test('advisor header, Jev summary, body and model line share one card-local inse
   assert.match(css, /\.adv-card\{--ciel-advisor-inset:14px;/)
   assert.match(css, /\.adv-head\{padding:9px var\(--ciel-advisor-inset\);/)
   assert.match(css, /\.adv-card \.adv-head\[data-ciel-summary-head\]\{padding-inline:var\(--ciel-advisor-inset\)\}/)
-  assert.match(css, /\.adv-card>\.ciel-model-usage,\.adv-card>\[data-ciel-advisor-jev-summary\]\{padding:6px var\(--ciel-advisor-inset\)\}/)
-  assert.match(css, /\.adv-card>\[data-ciel-advisor-jev-summary\]\{margin:0;/)
+  // The legacy `data-ciel-advisor-jev-summary` selector is kept beside the new
+  // one so historical cards keep the same inset.
+  assert.match(css, /\.adv-card>\.ciel-model-usage,\.adv-card>\[data-ciel-advisor-decision-summary\],\.adv-card>\[data-ciel-advisor-jev-summary\]\{padding:6px var\(--ciel-advisor-inset\)\}/)
+  assert.match(css, /\.adv-card>\[data-ciel-advisor-decision-summary\],\.adv-card>\[data-ciel-advisor-jev-summary\]\{margin:0;/)
   assert.match(css, /\.adv-body\{padding:4px var\(--ciel-advisor-inset\) 12px\}/)
 })

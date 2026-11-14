@@ -14,16 +14,19 @@ import { writeRecord } from '../plugin/record-store.js'
 const checkout = process.env.DSH_CHECKOUT
 if (!checkout) throw new Error('DSH_CHECKOUT must point to the current built DSH checkout')
 const requireTarget = createRequire(join(checkout, 'packages/core/tools/package.json'))
-const shared = {
-  '@deepseek-ai/cordis': requireTarget.resolve('@deepseek-ai/cordis'),
-  '@deepseek-ai/schemastery': requireTarget.resolve('@deepseek-ai/schemastery'),
-  '@deepseek-ai/dsh-typert-protocol': join(checkout, 'packages/typert/protocol/lib/index.js'),
-}
+// Cordis comes from the target so the Gateway under test is the TARGET's. The
+// other two shared packages are deliberately NOT hooked: plugin/runtime.js owns
+// which copy the plugin loads, and hooking a second (CommonJS) build here would
+// compare two different instances. The identity assertions below hold that line.
+const shared = { '@deepseek-ai/cordis': requireTarget.resolve('@deepseek-ai/cordis') }
 const hooks = registerHooks({ resolve(specifier, context, next) {
   return shared[specifier] ? { url: pathToFileURL(shared[specifier]).href, shortCircuit: true } : next(specifier, context)
 } })
 const { ADVISOR_REMOTE, ADVISOR_METHODS } = await import('../plugin/advisor-protocol.js')
+const { hostTypertProtocol, describeHostModule } = await import('../plugin/runtime.js')
+const hostProtocol = hostTypertProtocol()
 const { Config, apply } = await import('../plugin/index.js')
+const { AdvisorService } = await import('../plugin/advisor-service.js')
 const { Context } = await import(pathToFileURL(shared['@deepseek-ai/cordis']).href)
 const { default: Registry } = await import(pathToFileURL(join(checkout, 'packages/typert/registry/lib/index.js')).href)
 const { default: Gateway } = await import(pathToFileURL(join(checkout, 'packages/api/gateway/lib/index.js')).href)
@@ -50,6 +53,11 @@ try {
   owned.push(ctx.plugin({name:'ciel-protocol-under-test',apply:c=>apply(c,Config({}))}));await owned.at(-1).await()
   assert.deepEqual(ADVISOR_METHODS,['readAdvice','callModelUsage'])
   assert.equal(ADVISOR_REMOTE.descriptors.length,2)
+  // One shared identity: the service base class the plugin extends is the very
+  // object the host build provides, and it came from the checkout, not the
+  // plugin workspace copy.
+  assert.ok(describeHostModule('@deepseek-ai/dsh-typert-protocol').source.startsWith('DSH_CHECKOUT'))
+  assert.equal(Object.getPrototypeOf(AdvisorService), hostProtocol.TypertRemoteService)
   assert.deepEqual((await invoke('callModelUsage',{sessionId:'s',kind:'tool',id:'missing'})),{modelUsage:null})
   assert.equal((await invoke('readAdvice',{sessionId:'s',callId:'missing'})).ok,false)
   await assert.rejects(invoke('readAdvice',{sessionId:'s',callId:{invalid:true}}),{code:'gateway/input-invalid'})

@@ -8,15 +8,15 @@
 
 ## 安装与使用
 
-当前版本：**[0.22.1](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.22.1)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.22.1)。
+当前版本：**[0.23.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.23.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.23.0)。
 
-本版要求 **DSH >=0.2.0-rc.2**（兼容 `0.2.1` 与 `0.2.2-rc.1+`），Node.js 为 `^22.19.0 || >=24.0.0`。桌面版可在当前 GUI 中要求代理通过 `plugin_manager` 安装 `dsh-ciel@0.22.1`。CLI 用户在目标 profile 执行：
+本版要求 **DSH >=0.2.0-rc.2**（兼容 `0.2.1` 与 `0.2.2-rc.1+`），Node.js 为 `^22.19.0 || >=24.0.0`。桌面版可在当前 GUI 中要求代理通过 `plugin_manager` 安装 `dsh-ciel@0.23.0`。CLI 用户在目标 profile 执行：
 
 ```sh
-dsh plugin --profile <目标-profile> add dsh-ciel@0.22.1
+dsh plugin --profile <目标-profile> add dsh-ciel@0.23.0
 ```
 
-包更新后按安装结果提示重启 DSH 并刷新界面；不承诺自动热更新。**0.21.0+ 移除了批注评审及收件箱，旧评审文件保留但本版不能打开**；需要这些功能时先不要升级。升级前保留 profile 配置备份；本版不会自动清理旧评审配置，也不要删除共用的 Jev 连接配置。详见[升级与兼容说明](docs/compatibility-017.md)。
+包更新后按安装结果提示重启 DSH 并刷新界面；不承诺自动热更新。**0.21.0+ 移除了批注评审及收件箱，旧评审文件保留但本版不能打开**；需要这些功能时先不要升级。升级前保留 profile 配置备份；本版不会自动清理旧评审配置，也不要删除共用的 Gemini Decision 连接配置。详见[升级与兼容说明](docs/compatibility-017.md)。
 
 在目标 DSH profile 中安装匹配的插件包；使用桌面版时不要并行启动另一个 Web profile。在 **设置 → 夏尔 Ciel** 选择已经注册的顾问提供方和模型并保存。默认路由不会自动配置提供方或凭据。
 
@@ -30,7 +30,7 @@ dsh plugin --profile <目标-profile> add dsh-ciel@0.22.1
 
 ## 当前范围与旧数据
 
-保留 `ask_advisor`、咨询协议与提醒、设置、模型来源、可选 Jev 检查、工具卡片和原生建议侧栏。业务 RPC 仅有 `cielAdvisor.readAdvice` 与 `cielAdvisor.callModelUsage`；历史读取不调用模型。
+保留 `ask_advisor`、咨询协议与提醒、设置、模型来源、可选 Gemini Decision 检查、工具卡片和原生建议侧栏。业务 RPC 仅有 `cielAdvisor.readAdvice` 与 `cielAdvisor.callModelUsage`；历史读取不调用模型。
 
 批注评审、批评者执行、证据抓取、评审收件箱、批注草稿与私有评审/PTC 运行时均已移除。旧 `/advise` 命令不再注册。磁盘上的旧 review/evidence/feedback/inbox 数据 **保留但不再使用**：本版不读取、不迁移、不删除。已有可寻址的建议和工具调用用量记录仍可读取；不提供旧命令用量查询；不提供历史列表或自动清理。历史变更记录只描述旧版本，不代表当前功能。
 
@@ -51,16 +51,20 @@ dsh plugin --profile <目标-profile> add dsh-ciel@0.22.1
 | `planReminderEnabled` | `true` | 尚未咨询时，在开始规划后提醒一次。 |
 | `guidanceEnabled` | `true` | 注入顾问使用协议。 |
 | `advisorTimeoutSeconds` | `180` | 单次咨询总时限（10–600 秒）。 |
-| `advisorJevEnabled` | `false` | 可选的已提供背景一致性检查。 |
-| `jevApiKey` | 未设置 | 原生秘密设置；设置读取不回传密钥。 |
-| `jevEndpoint` | `https://api.typesafe.ai/v1/systemone` | 可信且兼容 TypeSafe 的 HTTPS 接口。 |
-| `jevModel` | `jev-1.13.0` | Jev 模型 ID。 |
+| `advisorDecisionEnabled` | `false` | 可选的已提供背景一致性检查。 |
+| `decisionApiKey` | 未设置 | 原生秘密设置；设置读取不回传密钥。 |
+| `decisionEndpoint` | `https://generativelanguage.googleapis.com/v1beta/decisions` | 可信且兼容 Gemini Decisions 的 HTTPS 接口。 |
+| `decisionModel` | `gemini-decision-1` | Gemini Decision 模型 ID。 |
 
-## 可选 Jev 检查
+## 可选 Gemini Decision 检查
 
-默认关闭。Jev 接收本次问题、背景和最多六条符合结构、可检查的建议原始完整段落，不保证整份回答均已检查。问题、背景和已选段落的 JSON 合计上限为 24 KiB；无有效结构或超限条目会跳过，发现疑似敏感输入则跳过本次检查，并返回明确原因。它仅检查建议与已提供背景的一致性；不独立查证外部事实，不改写建议。至多发送一次可选批量请求；失败保留原回答并返回明确状态。历史结果只展示，不重新检查。
+默认关闭。检查通过 Gemini Decisions API（`gemini-decision-1`，Gemini Developer API 的 `v1beta/decisions` 端点）分析本次问题、背景和最多六条符合结构、可检查的建议原始完整段落，不保证整份回答均已检查。问题、背景和已选段落序列化为一个 JSON 字符串作为 `input`，合计上限 24 KiB；无有效结构或超限条目会跳过，发现疑似敏感输入则跳过本次检查，并返回明确原因。它仅检查建议与已提供背景的一致性；不独立查证外部事实，不改写建议。至多发送一次可选批量请求；失败保留原回答并返回明确状态（含安全策略拦截）。历史结果只展示，不重新检查。检查不计入输出 token，UI 的 token 统计可能只显示输入。
 
-自定义接口会收到所配置的密钥和原文。只有完整匹配默认官方接口时才允许回退到 `TYPESAFE_API_KEY`。必须使用 HTTPS；带用户名密码、查询参数或片段的 URL 及重定向会被拒绝。本地配置不是加密保险库，详见[安全说明](SECURITY.md)。
+自定义接口会收到所配置的密钥和原文。只有完整匹配默认官方接口时才会按 DSH 凭据（`GEMINI_API_KEY` → `GOOGLE_API_KEY`）、launchEnvironment、进程环境变量的顺序回退；自定义接口永不继承这些凭据。必须使用 HTTPS；带用户名密码、查询参数或片段的 URL 及重定向会被拒绝。本地配置不是加密保险库，详见[安全说明](SECURITY.md)。
+
+### 从旧版（Jev）升级
+
+本版起顾问建议检查改由 Google Gemini Decisions API 提供，这是更换服务提供方而不是改名。旧的 4 个配置项（`advisorJevEnabled`、`jevApiKey`、`jevEndpoint`、`jevModel`）**不再被读取，也不会自动迁移或从磁盘删除**：它们不会变成 Gemini 配置，也不会被当作凭据使用。TypeSafe / Jev 密钥与 Gemini API Key 互不通用，需要重新填写 `decisionApiKey`（或让 DSH 凭据提供 `GEMINI_API_KEY` / `GOOGLE_API_KEY`），并且检查默认关闭、需要重新开启。历史顾问记录中旧的 `jev` 字段仍可只读查看，界面会标注为「历史 Jev 顾问建议检查（旧版，仅只读）」，不会据此重新发起检查。Gemini Decisions API 目前处于 EAP 阶段，仅 Gemini Developer API 的 `v1beta/decisions` 与 `gemini-decision-1` 可用；没有 EAP 权限时检查返回明确的失败状态，不影响顾问原文。
 
 ## 开发检查
 

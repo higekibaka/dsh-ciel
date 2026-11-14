@@ -98,7 +98,7 @@ test('records live at hashed filenames and never expose the opaque id as a path'
   assert.deepEqual(await readRecord('calls', sessionId, slashId, { home }), { b: 2 })
 })
 
-test('directory mode is 0700 and record file mode is 0600', async () => {
+test('directory mode is 0700 and record file mode is 0600', { skip: process.platform === 'win32' }, async () => {
   const home = await tempHome()
   await writeRecord('advice', 'sess-mode', 'k', { ok: 1 }, { home })
   assert.equal((await stat(join(home, 'ciel'))).mode & 0o777, 0o700)

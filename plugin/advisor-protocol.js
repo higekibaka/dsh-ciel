@@ -11,42 +11,44 @@ const route = value => object(value) && string(value.provider, 256) && string(va
 const usage = value => object(value) && optional(value.requested, route) && array(value.used, route, 32)
 const probability = value => Number.isFinite(value) && value >= 0 && value <= 1
 const relation = enumOf('supports', 'contradicts', 'insufficient')
-const jevReason = enumOf('disabled', 'no-eligible-claims', 'invalid-config', 'missing-key', 'time-unavailable', 'cancelled', 'timeout', 'http-error', 'invalid-response', 'transport-error', 'no-exact-claim', 'sensitive-input', 'no-source-evidence', 'limited-evidence', 'input-too-large')
-const advisorJevCheck = value => object(value) && /^a[1-6]$/.test(value.id)
-  && (value.status === 'skipped' ? jevReason(value.reason) : value.status === 'completed'
+// Historical reasons stay accepted so old records remain readable; new writes
+// add 'safety-blocked' for Gemini Decisions input-filter refusals.
+const decisionReason = enumOf('disabled', 'no-eligible-claims', 'invalid-config', 'missing-key', 'time-unavailable', 'cancelled', 'timeout', 'http-error', 'invalid-response', 'transport-error', 'safety-blocked', 'no-exact-claim', 'sensitive-input', 'no-source-evidence', 'limited-evidence', 'input-too-large')
+const advisorDecisionCheck = value => object(value) && /^a[1-6]$/.test(value.id)
+  && (value.status === 'skipped' ? decisionReason(value.reason) : value.status === 'completed'
     && relation(value.relation) && probability(value.confidence) && object(value.probabilities)
     && Object.keys(value.probabilities).length === 3
     && ['supports', 'contradicts', 'insufficient'].every(key => probability(value.probabilities[key]))
     && Math.abs(Object.values(value.probabilities).reduce((a, b) => a + b, 0) - 1) <= 0.001)
-export const isAdvisorJev = value => object(value) && value.mode === 'shadow' && value.scope === 'provided-context'
+export const isAdvisorDecision = value => object(value) && value.mode === 'shadow' && value.scope === 'provided-context'
   && string(value.requestedModel, 128) && enumOf('completed', 'partial', 'skipped', 'error', 'cancelled')(value.status)
   && integer(value.requestCount, 1) && integer(value.elapsedMs) && integer(value.omittedChecks)
-  && array(value.checks, advisorJevCheck, 6) && new Set(value.checks.map(row => row.id)).size === value.checks.length
-  && optional(value.reason, jevReason) && optional(value.model, model => string(model, 128))
+  && array(value.checks, advisorDecisionCheck, 6) && new Set(value.checks.map(row => row.id)).size === value.checks.length
+  && optional(value.reason, decisionReason) && optional(value.model, model => string(model, 128))
   && optional(value.usage, tokens => object(tokens) && integer(tokens.inputTokens) && integer(tokens.outputTokens))
 
 // DSH's tool schema subset excludes numeric bounds, patterns and maxItems.
-// Transport parsing and isAdvisorJev enforce those constraints at the boundary.
-const jevCountSchema = { type: 'integer' }
-const jevProbabilitySchema = { type: 'number' }
-export const ADVISOR_JEV_SCHEMA = {
+// Transport parsing and isAdvisorDecision enforce those constraints at the boundary.
+const decisionCountSchema = { type: 'integer' }
+const decisionProbabilitySchema = { type: 'number' }
+export const ADVISOR_DECISION_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['mode', 'scope', 'requestedModel', 'status', 'requestCount', 'elapsedMs', 'omittedChecks', 'checks'],
   properties: {
     mode: { type: 'string', enum: ['shadow'] }, scope: { type: 'string', enum: ['provided-context'] },
     requestedModel: { type: 'string' }, model: { type: 'string' }, reason: { type: 'string' },
     status: { type: 'string', enum: ['completed', 'partial', 'skipped', 'error', 'cancelled'] },
-    requestCount: { ...jevCountSchema, enum: [0, 1] }, elapsedMs: jevCountSchema, omittedChecks: jevCountSchema,
+    requestCount: { ...decisionCountSchema, enum: [0, 1] }, elapsedMs: decisionCountSchema, omittedChecks: decisionCountSchema,
     usage: { type: 'object', additionalProperties: false, required: ['inputTokens', 'outputTokens'],
-      properties: { inputTokens: jevCountSchema, outputTokens: jevCountSchema } },
+      properties: { inputTokens: decisionCountSchema, outputTokens: decisionCountSchema } },
     checks: { type: 'array', items: {
       type: 'object', additionalProperties: false, required: ['id', 'status'],
       properties: {
         id: { type: 'string', enum: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'] }, status: { type: 'string', enum: ['completed', 'skipped'] },
         reason: { type: 'string' }, relation: { type: 'string', enum: ['supports', 'contradicts', 'insufficient'] },
-        confidence: jevProbabilitySchema,
+        confidence: decisionProbabilitySchema,
         probabilities: { type: 'object', additionalProperties: false, required: ['supports', 'contradicts', 'insufficient'],
-          properties: { supports: jevProbabilitySchema, contradicts: jevProbabilitySchema, insufficient: jevProbabilitySchema } },
+          properties: { supports: decisionProbabilitySchema, contradicts: decisionProbabilitySchema, insufficient: decisionProbabilitySchema } },
       },
     } },
   },
@@ -76,7 +78,7 @@ export function parseAdvisorResult(method, value) {
   return value
  }
  const valid = method === 'callModelUsage' ? value.modelUsage === null || usage(value.modelUsage)
-  : value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === 'string' && optional(value.advice.modelUsage, usage) && optional(value.advice.jev, isAdvisorJev)
+  : value.ok === true && object(value.advice) && session(value.advice.sessionId) && string(value.advice.callId) && typeof value.advice.text === 'string' && optional(value.advice.modelUsage, usage) && optional(value.advice.decision, isAdvisorDecision) && optional(value.advice.jev, isAdvisorDecision)
  if (!valid) invalid(method, 'response')
  return value
 }

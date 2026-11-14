@@ -282,14 +282,23 @@ test('unstructured legacy advice displays original text without a duplicate disc
  assert.equal(tree.all(n=>n.props['data-ciel-advice-text']!==undefined).length,1)
  assert.equal(tree.find(n=>n.type==='details'),undefined)
 })
-test('saved Jev advice shows limited context and incomplete checks without rechecking',()=>{
+test('saved Gemini Decision advice shows limited context and incomplete checks without rechecking',()=>{
  const harness=createRenderer(),sidebar=createSidebar(harness),mock=createMockContext()
- sidebar.install(mock.ctx,{call:async()=>assert.fail('no Jev history requests')})
- const jev={mode:'shadow',scope:'provided-context',requestedModel:'jev-fixture',status:'partial',requestCount:1,elapsedMs:5,omittedChecks:1,usage:{inputTokens:30,outputTokens:4},checks:[{id:'a1',status:'completed',relation:'contradicts',confidence:0.8,probabilities:{supports:0.1,contradicts:0.8,insufficient:0.1}},{id:'a2',status:'skipped',reason:'input-too-large'}]}
- const {tree}=mountBody(harness,mock,CIEL_ADVICE,{snapshot:live(adviceAddress('s','tool:c'),{advice:{text:'Original reply',jev}})})
+ sidebar.install(mock.ctx,{call:async()=>assert.fail('no Gemini Decision history requests')})
+ const decision={mode:'shadow',scope:'provided-context',requestedModel:'decision-fixture',status:'partial',requestCount:1,elapsedMs:5,omittedChecks:1,usage:{inputTokens:30,outputTokens:4},checks:[{id:'a1',status:'completed',relation:'contradicts',confidence:0.8,probabilities:{supports:0.1,contradicts:0.8,insufficient:0.1}},{id:'a2',status:'skipped',reason:'input-too-large'}]}
+ const {tree}=mountBody(harness,mock,CIEL_ADVICE,{snapshot:live(adviceAddress('s','tool:c'),{advice:{text:'Original reply',decision}})})
  assert.match(tree.text,/仅对照本次传入的背景/)
  assert.match(tree.text,/建议 1：背景冲突/)
  assert.match(tree.text,/建议 2：未检查.*大小限制/)
  assert.match(tree.text,/另有 1 条建议未检查/)
  assert.ok(tree.text.includes("输入 30 / 输出 4 tokens"))
+})
+test('legacy jev records render with a historical provenance label and never as Gemini',()=>{
+ const harness=createRenderer(),sidebar=createSidebar(harness),mock=createMockContext()
+ sidebar.install(mock.ctx,{call:async()=>assert.fail('no legacy history requests')})
+ const jev={mode:'shadow',scope:'provided-context',requestedModel:'jev-fixture',status:'completed',requestCount:1,elapsedMs:5,omittedChecks:0,checks:[{id:'a1',status:'completed',relation:'supports',confidence:0.9,probabilities:{supports:0.9,contradicts:0.05,insufficient:0.05}}]}
+ const {tree}=mountBody(harness,mock,CIEL_ADVICE,{snapshot:live(adviceAddress('s','tool:c'),{advice:{text:'Legacy reply',jev}})})
+ assert.match(tree.text,/历史 Jev 顾问建议检查/)
+ assert.doesNotMatch(tree.text,/Gemini Decision 顾问建议检查/)
+ assert.match(tree.text,/建议 1：背景支持/)
 })

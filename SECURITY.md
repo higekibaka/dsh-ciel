@@ -14,11 +14,11 @@ Advice and call-usage records are written under `$DSH_HOME/ciel/v1/<kind>/<sessi
 
 Old review/evidence/feedback/inbox records are retained inert, not read, migrated or deleted. Legacy `dsh-advisor` JSONL files are not migrated. Native DSH session persistence is separate and may retain advisor prompts and tool results. Ciel makes no trace-free promise and does not change Host retention policy.
 
-## Jev data egress and secrets
+## Gemini Decision data egress and secrets
 
-Jev is opt-in. It sends the question, provided context and at most six complete original structured advice sections selected for checking to the configured TypeSafe-compatible endpoint. The serialized question/context/selected-items state is capped at 24 KiB; missing or oversized sections are skipped, and suspected sensitive input skips the check. The result does not certify that the entire answer was checked. It checks consistency with supplied context, not independently verified truth. Failure is explicit and keeps the original advice.
+The Gemini Decision check is opt-in. It sends the question, provided context and at most six complete original structured advice sections selected for checking to the configured Gemini Decisions-compatible endpoint. The question/context/selected-items state is serialized into one JSON `input` string capped at 24 KiB; missing or oversized sections are skipped, and suspected sensitive input skips the check. The result does not certify that the entire answer was checked. It checks consistency with supplied context, not independently verified truth. Failure, including a Gemini safety block, is explicit and keeps the original advice.
 
-Custom endpoints receive the configured key and text and must be trusted. Only the exact default official endpoint may use `TYPESAFE_API_KEY` fallback. HTTPS is mandatory; URLs containing credentials, query parameters or fragments and redirects are rejected. These checks are not a complete SSRF/network-isolation guarantee.
+Custom endpoints receive the configured key and text and must be trusted. Only the exact default official endpoint resolves the DSH credential store (`GEMINI_API_KEY`, then `GOOGLE_API_KEY`), launchEnvironment, or process environment; a custom endpoint never inherits those credentials, and a credential-store failure never falls through to the environment. HTTPS is mandatory; URLs containing credentials, query parameters or fragments and redirects are rejected. API keys travel in the `x-goog-api-key` header, never in a query string. These checks are not a complete SSRF/network-isolation guarantee.
 
 The key draft reaches the Host only on explicit Save. Settings reads redact secret values and expose only configured/unconfigured state; revision checks fence stale writes. Local configuration is not an encrypted vault. Provider credentials belong in DSH's provider configuration, never source, fixtures or logs.
 

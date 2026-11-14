@@ -32,8 +32,10 @@ jobs:
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
+          node --check plugin/runtime.js
           node --check plugin/advisor-protocol.js
           node --check plugin/advisor-service.js
+          node --check plugin/advisor-state.js
       - name: Unit tests
         run: node --test
         working-directory: plugin
@@ -42,7 +44,8 @@ jobs:
         working-directory: plugin
 
   # Offline integration against pinned DSH releases.
-  # No --live and no paid model calls; linked peers share the host registry.
+  # No --live and no paid model calls; each replay resolves the target's own
+  # shared modules through plugin/runtime.js, so there is no peer-linking step.
   integration:
     strategy:
       fail-fast: false
@@ -76,10 +79,8 @@ jobs:
       - name: Build DSH target libraries
         working-directory: .dsh-target
         run: pnpm build:lib
-      - name: Link shared DSH peers
-        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/link-harness-peers.mjs
       - name: Offline DSH execution-chain replay
-        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target CIEL_VERIFY_NATIVE_PEERS=1 node scripts/verify-runtime.mjs
+        run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-runtime.mjs
       - name: Offline advisor transport retry regression
         run: DSH_CHECKOUT=$GITHUB_WORKSPACE/.dsh-target node scripts/verify-retry.mjs
       - name: Offline DSH protocol verification

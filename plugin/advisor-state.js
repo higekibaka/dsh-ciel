@@ -15,7 +15,13 @@ import { sessionEvents } from './advisor-content.js'
  * surprises return `undefined`; new consultations fail closed rather than
  * spending against an unknown budget.
  */
-const GATE_REJECTION_HEAD = /^(?:Error: )?(?:context is required:|explore first:|follow-ups must be driven by NEW facts:|advisor budget for this planning phase is exhausted|advisor consultation already in flight|advisor telemetry unavailable|咨询输入含疑似凭据|Ciel disabled|Ciel requires tools\.guard)/
+// New refusals open with a stable `[ciel:gate:<code>] ` machine prefix so a
+// caller, a test or a UI can branch on the reason instead of matching prose.
+// The historical English and Chinese heads stay accepted verbatim: they are the
+// only thing old session logs contain, and replaying an old log must not start
+// charging those refusals to the consultation budget.
+const GATE_REJECTION_HEAD =
+  /^(?:Error: )?(?:\[ciel:gate:[a-z0-9_]+\]|context is required:|explore first:|follow-ups must be driven by NEW facts:|advisor budget for this planning phase is exhausted|advisor consultation already in flight|advisor telemetry unavailable|invalid advisor route:|咨询输入含疑似凭据|Ciel disabled|Ciel requires tools\.guard)/
 
 function gateFacts(parent) {
   try {
@@ -130,15 +136,15 @@ function createConsultationGate() {
   const entries = new WeakMap()
   return {
     reserve(parent, facts, limit) {
-      if (!facts) throw new Error('advisor telemetry unavailable; refusing an unmetered consultation')
+      if (!facts) throw new Error('[ciel:gate:telemetry_unavailable] advisor telemetry unavailable; refusing an unmetered consultation')
       let entry = entries.get(parent)
-      if (entry?.active) throw new Error('advisor consultation already in flight for this session')
+      if (entry?.active) throw new Error('[ciel:gate:in_flight] advisor consultation already in flight for this session')
       if (!entry || entry.turnKey !== facts.turnKey) {
         entry = { turnKey: facts.turnKey, spent: facts.settledThisTurn, active: false }
         entries.set(parent, entry)
       }
       entry.spent = Math.max(entry.spent, facts.settledThisTurn)
-      if (entry.spent >= limit) throw new Error('advisor budget for this planning phase is exhausted')
+      if (entry.spent >= limit) throw new Error('[ciel:gate:budget_exhausted] advisor budget for this planning phase is exhausted')
       entry.spent += 1
       entry.active = true
       return () => { entry.active = false }

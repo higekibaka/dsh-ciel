@@ -43,7 +43,7 @@ async function createHostHarness(configOverrides = {}) {
     planReminderEnabled: true,
     reasoningEffort: 'high',
     guidanceEnabled: true,
-    advisorJevEnabled: false,
+    advisorDecisionEnabled: false,
     ...configOverrides,
   }
   const subagents = {
@@ -226,11 +226,14 @@ test('ask_advisor uses 0.2.1-rc.2 subagents.startActivation with caller delivery
   assert.equal(capturedSpec.label, 'advisor')
   assert.equal(capturedSpec.delivery, 'caller')
   assert.equal(typeof capturedSpec.childId, 'string')
+  assert.equal(capturedSpec.parent, parent)
+  assert.equal(capturedSpec.maxDepth, 1)
   assert.equal(capturedSpec.request.parent, parent)
   assert.equal(capturedSpec.request.maxDepth, 1)
   assert.deepEqual(capturedSpec.request.agentOptions, {
     provider: 'test-provider',
     model: 'test-model',
+    reasoningEffort: 'high',
     maxTokens: 2048,
   })
   assert.equal(presentAsArg, 'native')
@@ -345,4 +348,177 @@ test('ask_advisor disposes active subagent activation on caller abort, tool guar
     ),
     /advisor consultation ended with "error": upstream model 503/,
   )
+})
+
+test('ask_advisor pins reasoningEffort before DSH 0.2.2+ step preparation lock without mutating agent/request', async (t) => {
+  const harness = await createHostHarness({ reasoningEffort: 'low' })
+  t.after(() => harness.dispose())
+
+  let selectedBeforeStep = null
+  let preparedConfig = null
+  harness.setStartActivation(async (spec) => {
+    let fixedSelection = {
+      provider: spec.request.agentOptions.provider,
+      model: spec.request.agentOptions.model,
+      reasoningEffort: spec.request.agentOptions.reasoningEffort,
+    }
+    const childAgent = {
+      id: spec.childId,
+      model: {
+        current: () => ({ ...fixedSelection }),
+        select: (nextSel) => {
+          selectedBeforeStep = nextSel
+          fixedSelection = { ...fixedSelection, ...nextSel }
+        },
+      },
+      ctx: { get: () => undefined },
+      session: { snapshotEvents: () => [] },
+    }
+    harness.emitAgentCreated(childAgent)
+
+    // Simulate DSH 0.2.2+ ReactLoopAgent.prepareRequest strict lock check
+    const seed = { ...fixedSelection, maxTokens: spec.request.agentOptions.maxTokens }
+    const proposed = await harness.runAgentRequest(childAgent, seed)
+    if (proposed.reasoningEffort !== fixedSelection.reasoningEffort) {
+      throw new Error(
+        `agent "${childAgent.id}": agent/request proposed reasoning effort "${proposed.reasoningEffort ?? 'adapter default'}" after step preparation fixed "${fixedSelection.reasoningEffort ?? 'adapter default'}"; use agent.model.select() before step preparation`,
+      )
+    }
+    preparedConfig = proposed
+    return {
+      childId: spec.childId,
+      localAgent: childAgent,
+      messageId: 'msg-022',
+      result: Promise.resolve({
+        stopReason: 'completed',
+        output: [{ type: 'text', text: '## [high] Pin effort via AgentOptions\nframing: Pass reasoningEffort before step preparation.\npitfalls: Mutating agent/request after lock.\nverification_target: Run prepareRequest lock assertion.' }],
+      }),
+      async dispose() {},
+    }
+  })
+
+  const out = await harness.tool.execute(
+    { question: 'How does DSH 0.2.2 lock reasoning effort?', context: 'ReactLoopAgent.prepareRequest checks selection equality.' },
+    { agent: createParentAgent('parent-022'), callId: 'call-022-1' },
+  )
+  assert.equal(out.items.length, 1)
+  assert.equal(preparedConfig?.reasoningEffort, 'low')
+  assert.equal(selectedBeforeStep, null)
+
+  // Verify configureAdvisorChildAgent fallback calls agent.model.select() if initial selection lacked reasoningEffort
+  harness.setStartActivation(async (spec) => {
+    let fixedSelection = {
+      provider: spec.request.agentOptions.provider,
+      model: spec.request.agentOptions.model,
+      reasoningEffort: undefined,
+    }
+    const childAgent = {
+      id: spec.childId,
+      model: {
+        current: () => ({ ...fixedSelection }),
+        select: (nextSel) => {
+          selectedBeforeStep = nextSel
+          fixedSelection = { ...fixedSelection, ...nextSel }
+        },
+      },
+      ctx: { get: () => undefined },
+      session: { snapshotEvents: () => [] },
+    }
+    harness.emitAgentCreated(childAgent)
+    const proposed = await harness.runAgentRequest(childAgent, { ...fixedSelection })
+    assert.equal(proposed.reasoningEffort, 'low')
+    return {
+      childId: spec.childId,
+      localAgent: childAgent,
+      messageId: 'msg-022-sel',
+      result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: '[high] Select fallback — Verification: ok.' }] }),
+      async dispose() {},
+    }
+  })
+  await harness.tool.execute(
+    { question: 'What if startActivation strips effort?', context: 'Independent step ran; testing select() fallback.' },
+    {
+      agent: {
+        id: 'parent-022-sel',
+        session: {
+          snapshotEvents: () => [
+            { type: 'turn/start', data: { turn: 1 } },
+            { type: 'tool/call', data: { name: 'read', callId: 'read-sel-1' } },
+          ],
+        },
+      },
+      callId: 'call-022-sel',
+    },
+  )
+  assert.deepEqual(selectedBeforeStep, {
+    provider: 'test-provider',
+    model: 'test-model',
+    reasoningEffort: 'low',
+  })
+
+  // Also verify 'provider' leaves effort unset
+  const defaultHarness = await createHostHarness({ reasoningEffort: 'provider' })
+  t.after(() => defaultHarness.dispose())
+  let providerAgentOpts = null
+  defaultHarness.setStartActivation(async (spec) => {
+    providerAgentOpts = spec.request.agentOptions
+    const fixedSelection = {
+      provider: spec.request.agentOptions.provider,
+      model: spec.request.agentOptions.model,
+      reasoningEffort: spec.request.agentOptions.reasoningEffort,
+    }
+    const childAgent = {
+      id: spec.childId,
+      model: { current: () => ({ ...fixedSelection }), select: () => {} },
+      ctx: { get: () => undefined },
+      session: { snapshotEvents: () => [] },
+    }
+    defaultHarness.emitAgentCreated(childAgent)
+    const proposed = await defaultHarness.runAgentRequest(childAgent, { ...fixedSelection })
+    assert.equal(proposed.reasoningEffort, undefined)
+    return {
+      childId: spec.childId,
+      localAgent: childAgent,
+      messageId: 'msg-022-def',
+      result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: '## [mid] Default effort\nframing: ok.\npitfalls: none.\nverification_target: check.' }] }),
+      async dispose() {},
+    }
+  })
+  await defaultHarness.tool.execute(
+    { question: 'Provider default?', context: 'Testing provider default effort.' },
+    { agent: createParentAgent('parent-022-def'), callId: 'call-022-2' },
+  )
+  assert.equal('reasoningEffort' in providerAgentOpts, false)
+
+  // Legacy host (no agent.model.select): mid-flight change from 'provider' -> 'high' must NOT pollute in-flight call
+  let legacyRequestCfg = null
+  defaultHarness.setStartActivation(async (spec) => {
+    const legacyChild = { id: spec.childId, ctx: { get: () => undefined }, session: { snapshotEvents: () => [] } }
+    defaultHarness.emitAgentCreated(legacyChild)
+    defaultHarness.cfg.reasoningEffort = 'high'
+    defaultHarness.emitVolatileUpdate()
+    legacyRequestCfg = await defaultHarness.runAgentRequest(legacyChild, { model: 'test-model' })
+    return {
+      childId: spec.childId,
+      messageId: 'msg-legacy-freeze',
+      result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: '## [mid] Frozen default\nframing: ok.\npitfalls: drift.\nverification_target: check.' }] }),
+      async dispose() {},
+    }
+  })
+  await defaultHarness.tool.execute(
+    { question: 'Legacy mid-flight mutation?', context: 'Independent step ran before follow-up.' },
+    {
+      agent: {
+        id: 'parent-legacy-freeze',
+        session: {
+          snapshotEvents: () => [
+            { type: 'turn/start', data: { turn: 1 } },
+            { type: 'tool/call', data: { name: 'read', callId: 'read-lf-1' } },
+          ],
+        },
+      },
+      callId: 'call-legacy-freeze',
+    },
+  )
+  assert.equal('reasoningEffort' in legacyRequestCfg, false)
 })

@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import vm from 'node:vm'
 import { ADVISOR_REMOTE } from '../advisor-protocol.js'
 import { createCielSidebar, adviceAddress, parseCielAddress } from '../src/sidebar.js'
-import { advisorJevPanel, advisorJevSummary } from '../src/advisor-jev.js'
-import { JEV_MODEL, JEV_ENDPOINT, validJevEndpoint, validJevModel, validJevKey } from '../jev-config.js'
+import { advisorDecisionPanel, advisorDecisionSummary } from '../src/advisor-decision.js'
+import { DECISION_MODEL, DECISION_ENDPOINT, validDecisionEndpoint, validDecisionModel, validDecisionKey } from '../decision-config.js'
+import { parseAdvisorItems } from '../advisor-content.js'
 
 const source = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8')
 const css = name => readFileSync(new URL('../src/' + name, import.meta.url), 'utf8')
@@ -38,14 +39,14 @@ const input = (tree, label) => {
 }
 const json = value => JSON.parse(JSON.stringify(value))
 const usage = { requested: { provider: 'requested', model: 'planned' }, used: [{ provider: 'actual', model: 'executed' }] }
-const jev = { mode: 'shadow', scope: 'provided-context', requestedModel: 'jev-fixture', status: 'completed', requestCount: 1, elapsedMs: 7, omittedChecks: 0,
+const decision = { mode: 'shadow', scope: 'provided-context', requestedModel: 'decision-fixture', status: 'completed', requestCount: 1, elapsedMs: 7, omittedChecks: 0,
   checks: [{ id: 'a1', status: 'completed', relation: 'supports', confidence: 0.9, probabilities: { supports: 0.9, contradicts: 0.05, insufficient: 0.05 } }] }
 const idea = { tier: 'high', title: 'Keep boundaries explicit', framing: 'Read durable records', pitfalls: 'Avoid stale state', verificationTarget: 'Verify identity' }
-const advice = { sessionId: 's1', callId: 'tool:c1', kind: 'tool', createdAt: 1, text: 'original advice', items: [idea], issues: [], modelUsage: usage, jev }
+const advice = { sessionId: 's1', callId: 'tool:c1', kind: 'tool', createdAt: 1, text: 'original advice', items: [idea], issues: [], modelUsage: usage, decision }
 
-function harness({ mount = true, sidebar = true, configForms = false, overrides = {}, api: suppliedApi, mountRemote } = {}) {
+function harness({ mount = true, sidebar = true, configForms = false, both = false, overrides = {}, api: suppliedApi, mountRemote } = {}) {
   let state = [], cursor = 0, revision = 1, secretReady = true, writable = true, refused = false
-  const cleanups = [], registrations = [], providers = [], tabs = [], opens = [], mounts = [], writes = [], events = new Map(), styles = []
+  const cleanups = [], injectCleanups = [], registrations = [], providers = [], tabs = [], opens = [], mounts = [], writes = [], events = new Map(), styles = []
   const React = { Fragment: 'fragment', createElement: element,
     useState(initial) { const at = cursor++; if (!(at in state)) state[at] = typeof initial === 'function' ? initial() : initial; return [state[at], next => { state[at] = typeof next === 'function' ? next(state[at]) : next }] },
     useEffect() {}, useRef: value => ({ current: value }),
@@ -54,16 +55,16 @@ function harness({ mount = true, sidebar = true, configForms = false, overrides 
   const window = { __ModuleLoader__: { load: module => { factory = module.factory } }, addEventListener() {}, removeEventListener() {} }
   const document = { createElement: () => ({ textContent: '', remove() { styles.splice(styles.indexOf(this), 1) } }), head: { appendChild: node => styles.push(node) } }
   vm.runInNewContext(source.replace(/^import .+\n/gm, ''), {
-    window, document, ADVISOR_REMOTE, createCielSidebar, advisorJevPanel, advisorJevSummary,
-    JEV_MODEL, JEV_ENDPOINT, validJevEndpoint, validJevModel, validJevKey,
+    window, document, ADVISOR_REMOTE, createCielSidebar, advisorDecisionPanel, advisorDecisionSummary,
+    DECISION_MODEL, DECISION_ENDPOINT, validDecisionEndpoint, validDecisionModel, validDecisionKey, parseAdvisorItems,
     SIDEBAR_CSS: css('sidebar.css'), SETTINGS_CSS: css('settings.css'),
   }, { filename: 'advisor-only-client.js' })
   const plugin = factory(name => { assert.equal(name, 'react', 'no Harness client package imports'); return React })
   const value = { ...plugin.__test.defaults, ...overrides }, user = { ...overrides }
   const form = {
-    getSnapshot: () => ({ status: 'ready', writable, revision, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')),
-      user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')),
-      ...(secretReady ? { secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] } : {}) }),
+    getSnapshot: () => ({ status: 'ready', writable, revision, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'decisionApiKey')),
+      user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'decisionApiKey')),
+      ...(secretReady ? { secrets: [{ path: ['decisionApiKey'], set: Boolean(value.decisionApiKey) }] } : {}) }),
     subscribe: () => () => {},
     async mutate(ops, expected) {
       assert.equal(expected, revision)
@@ -78,20 +79,29 @@ function harness({ mount = true, sidebar = true, configForms = false, overrides 
   }
   const api = suppliedApi || { readAdvice: async request => ({ ok: true, value: { ok: true, advice: { ...advice, ...request } } }), callModelUsage: async () => ({ ok: true, value: { ok: true, modelUsage: usage } }) }
   const remote = { async $mount(descriptor) { mounts.push(descriptor); return mountRemote ? mountRemote() : () => {} } }
+  const configFormsService = { get: () => form, describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['decisionApiKey'], set: true }] }] } }) }) }
+  // When both seams exist the legacy one must never be used: touching it throws.
+  const settingsScopeService = both ? { bind: () => { throw new Error('legacy settingsScope bind must not be called') } } : { bind: () => form }
   const ctx = {
-    [configForms ? 'configForms' : 'settingsScope']: configForms ? { get: () => form, describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'advisor', secrets: [{ path: ['jevApiKey'], set: true }] }] } }) }) } : { bind: () => form },
+    ...(both ? { configForms: configFormsService, settingsScope: settingsScopeService }
+      : configForms ? { configForms: configFormsService } : { settingsScope: settingsScopeService }),
     resources: { register(provider) { providers.push(provider); return () => { providers.splice(providers.indexOf(provider), 1) } } },
     sidebarRightTabs: { register(tab) { tabs.push(tab); return () => { tabs.splice(tabs.indexOf(tab), 1) } } },
     sidebarRight: { openResource(address, options) { opens.push({ address, options }) } },
     slots: { inject(_name, setup) { return setup() }, register(def, Body) { registrations.push({ def, Body }); return () => {} } },
-    inject(names, setup) { if (names.every(name => name in ctx) && (sidebar || !names.includes('resources'))) setup(ctx) },
+    inject(names, setup) {
+      if (!names.every(name => name in ctx) || (!sidebar && names.includes('resources'))) return
+      const cleanup = setup(ctx)
+      if (typeof cleanup === 'function') injectCleanups.push(cleanup)
+    },
     effect(setup) { let done = false; const cleanup = setup(); const dispose = async () => { if (done) return; done = true; await cleanup?.() }; cleanups.push(dispose); return dispose },
     on(name, callback) { events.set(name, callback); return () => events.delete(name) },
     get(name) { if (name === 'remote') return remote; if (name === 'remote.cielAdvisor') return api; return ctx[name] },
   }
   if (mount) plugin.apply(ctx)
   return {
-    plugin, value, writes, registrations, providers, tabs, opens, mounts, styles, ctx, events,
+    plugin, value, writes, registrations, providers, tabs, opens, mounts, styles, ctx, events, injectCleanups,
+    runInjectCleanups() { for (const cleanup of injectCleanups.splice(0)) cleanup() },
     render() { cursor = 0; return plugin.__test.CielSettingsSection() },
     card(props) { cursor = 0; return plugin.__test.AdvisorToolView(props) },
     remount() { state = []; cursor = 0 },
@@ -100,14 +110,14 @@ function harness({ mount = true, sidebar = true, configForms = false, overrides 
   }
 }
 
-const settled = { sessionId: 's1', callId: 'c1', block: { kind: 'tool', call: { argsRaw: JSON.stringify({ question: 'Question?', context: 'Known facts' }) }, meta: { v: 1, items: [idea], issues: [], modelUsage: usage, jev }, content: [{ type: 'text', text: 'raw advice' }], callTime: 1, time: 1001 } }
+const settled = { sessionId: 's1', callId: 'c1', block: { kind: 'tool', call: { argsRaw: JSON.stringify({ question: 'Question?', context: 'Known facts' }) }, meta: { v: 1, items: [idea], issues: [], modelUsage: usage, decision }, content: [{ type: 'text', text: 'raw advice' }], callTime: 1, time: 1001 } }
 
 test('source tree contains no review, inbox, annotation, composer or private client-module integration', () => {
   const files = readdirSync(new URL('../src/', import.meta.url))
-  assert.deepEqual(files.sort(), ['advisor-jev.js', 'client.js', 'settings.css', 'sidebar.css', 'sidebar.js'])
+  assert.deepEqual(files.sort(), ['advisor-decision.js', 'client.js', 'settings.css', 'sidebar.css', 'sidebar.js'])
   for (const file of files) {
     const body = readFileSync(new URL('../src/' + file, import.meta.url), 'utf8')
-    assert.doesNotMatch(body, /advisorReview|review[-A-Z_]|critic[A-Z]|\bjevEnabled\b|inbox|annotation|triage|prepareFeedback|composer|slash\/input|MutationObserver|setInterval|dsh-client-ui-primitives|react-dom|批注|评审/i, file)
+    assert.doesNotMatch(body, /advisorReview|review[-A-Z_]|critic[A-Z]|\bjevEnabled\b|inbox|annotation|triage|prepareFeedback|composer|slash\/input|MutationObserver|setInterval|dsh-client-ui-primitives|react-dom|批注|评审|TYPESAFE_API_KEY|api\.typesafe\.ai/i, file)
   }
 })
 
@@ -128,14 +138,14 @@ test('mount registers only advisor settings, tool card and ciel-advice resource'
 test('switches stage changes across remount and save one revision-fenced transaction', async t => {
   const rt = harness(); t.after(() => rt.dispose())
   input(rt.render(), '启用 Ciel').props.onClick()
-  input(rt.render(), '启用顾问建议检查（Jev）').props.onClick()
+  input(rt.render(), '启用顾问建议检查（Gemini Decision）').props.onClick()
   assert.deepEqual(rt.writes, [])
   rt.remount()
   assert.equal(input(rt.render(), '启用 Ciel').props['aria-checked'], false)
   assert.match(text(rt.render()), /当前已启用.*待保存/s)
   await button(rt.render(), '保存').props.onClick()
   assert.equal(rt.writes.length, 1)
-  assert.deepEqual(rt.writes[0], [{ op: 'set', path: ['enabled'], value: false }, { op: 'set', path: ['advisorJevEnabled'], value: true }])
+  assert.deepEqual(rt.writes[0], [{ op: 'set', path: ['enabled'], value: false }, { op: 'set', path: ['advisorDecisionEnabled'], value: true }])
   input(rt.render(), '启用 Ciel').props.onClick()
   rt.externalEdit()
   await button(rt.render(), '保存').props.onClick()
@@ -146,28 +156,28 @@ test('switches stage changes across remount and save one revision-fenced transac
 })
 
 test('saved API keys stay redacted; replacement, validation and explicit unset survive', async t => {
-  const rt = harness({ overrides: { jevApiKey: 'saved-secret' } }); t.after(() => rt.dispose())
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  const rt = harness({ overrides: { decisionApiKey: 'saved-secret' } }); t.after(() => rt.dispose())
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
   assert.doesNotMatch(JSON.stringify(rt.render()), /saved-secret/)
-  input(rt.render(), 'Jev 模型 ID').props.onChange({ target: { value: 'jev-next' } })
+  input(rt.render(), 'Decision 模型 ID').props.onChange({ target: { value: 'decision-next' } })
   await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.jevApiKey, 'saved-secret')
-  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'new-secret' } })
+  assert.equal(rt.value.decisionApiKey, 'saved-secret')
+  input(rt.render(), 'Gemini API Key').props.onChange({ target: { value: 'new-secret' } })
   rt.remount()
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'new-secret')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, 'new-secret')
   await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.jevApiKey, 'new-secret')
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  assert.equal(rt.value.decisionApiKey, 'new-secret')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
   button(rt.render(), '清除密钥覆盖').props.onClick()
   await button(rt.render(), '保存').props.onClick()
-  assert.deepEqual(rt.writes.at(-1), [{ op: 'unset', path: ['jevApiKey'] }])
-  for (const [label, value] of [['Jev API Key', 'bad key'], ['Jev 接口地址', 'http://example.invalid'], ['Jev 模型 ID', 'bad model']]) {
+  assert.deepEqual(rt.writes.at(-1), [{ op: 'unset', path: ['decisionApiKey'] }])
+  for (const [label, value] of [['Gemini API Key', 'bad key'], ['Decision 接口地址', 'http://example.invalid'], ['Decision 模型 ID', 'bad model']]) {
     input(rt.render(), label).props.onChange({ target: { value } })
     assert.equal(button(rt.render(), '保存').props.disabled, true)
     button(rt.render(), '放弃').props.onClick()
   }
   rt.legacySecrets()
-  assert.equal(input(rt.render(), 'Jev API Key').props.disabled, true)
+  assert.equal(input(rt.render(), 'Gemini API Key').props.disabled, true)
 })
 
 test('catalog selection resets only advisor model/effort and explicit reset remains staged', async t => {
@@ -187,11 +197,11 @@ test('catalog selection resets only advisor model/effort and explicit reset rema
 
 test('read-only and refused saves preserve safe local control behavior', async t => {
   const rt = harness(); t.after(() => rt.dispose())
-  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'draft-key' } })
+  input(rt.render(), 'Gemini API Key').props.onChange({ target: { value: 'draft-key' } })
   rt.refuse()
   await button(rt.render(), '保存').props.onClick()
   assert.match(text(rt.render()), /保存未确认/)
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'draft-key')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, 'draft-key')
   rt.readOnly()
   assert.equal(input(rt.render(), '启用 Ciel').props.disabled, true)
   const before = input(rt.render(), '启用 Ciel').props['aria-checked']
@@ -199,10 +209,46 @@ test('read-only and refused saves preserve safe local control behavior', async t
   assert.equal(input(rt.render(), '启用 Ciel').props['aria-checked'], before)
 })
 
+test('dual settings seams mount the client exactly once', async t => {
+  const rt = harness({ both: true }); t.after(() => rt.dispose())
+  assert.equal(rt.registrations.filter(row => row.def.name === 'settings.section').length, 1)
+  assert.equal(rt.registrations.filter(row => row.def.name === 'settings.action').length, 1)
+  assert.equal(rt.styles.length, 1)
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
+})
+
+test('historical Jev metadata keeps a legacy provenance label', () => {
+  const rt = harness({ mount: false })
+  const legacyBlock = { ...settled.block, meta: JSON.parse(JSON.stringify({ ...settled.block.meta, decision: undefined, jev: decision })) }
+  const tree = rt.card({ ...settled, block: legacyBlock })
+  assert.match(text(tree), /历史 Jev 顾问建议检查/)
+  assert.doesNotMatch(text(tree), /Gemini Decision 顾问建议检查/)
+})
+
+test('the mount guard resets with its settings injection and a fresh apply', async t => {
+  const rt = harness({ both: true }); t.after(() => rt.dispose())
+  const sections = () => rt.registrations.filter(row => row.def.name === 'settings.section').length
+  assert.equal(sections(), 1)
+  rt.runInjectCleanups()
+  rt.plugin.apply(rt.ctx)
+  assert.equal(sections(), 2)
+})
+
+test('build artifact and package manifest stay internally consistent', () => {
+  const artifact = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  assert.match(artifact, /^\/\/ Generated by scripts\/build-client\.mjs/)
+  assert.match(artifact, /data-ciel-advisor-decision-summary/)
+  assert.doesNotMatch(artifact, /AIza[0-9A-Za-z_-]{30,}|TYPESAFE_API_KEY/)
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  for (const file of manifest.files) statSync(new URL('../' + file, import.meta.url))
+  assert.equal(manifest.files.includes('decision-config.js'), true)
+  assert.equal(manifest.files.includes('jev-config.js'), false)
+})
+
 test('configForms namespace preserves redacted secret and advisor settings', async t => {
   const rt = harness({ configForms: true }); t.after(() => rt.dispose())
   assert.match(text(rt.render()), /已配置密钥/)
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
   assert.equal(rt.registrations.filter(row => row.def.name === 'settings.section').length, 1)
 })
 
@@ -212,7 +258,7 @@ test('advisor cards retain live/error/raw/structured rendering and keyboard disc
   let tree = rt.card(settled)
   assert.match(text(tree), /Keep boundaries explicit/)
   assert.match(text(tree), /actual \/ executed/)
-  assert.match(text(tree), /Jev 顾问建议检查/)
+  assert.match(text(tree), /Gemini Decision 顾问建议检查/)
   const disclosure = nodes(tree).find(node => node.type === 'button' && node.props['aria-expanded'] === true)
   disclosure.props.onClick()
   assert.doesNotMatch(text(rt.card(settled)), /Read durable records/)
@@ -228,7 +274,7 @@ test('advisor cards retain live/error/raw/structured rendering and keyboard disc
 test('advisor card navigation opens the durable advice resource without invoking a model', async t => {
   const rt = harness(); t.after(() => rt.dispose())
   const tree = rt.card(settled)
-  assert.match(text(tree), /Jev 顾问建议检查/)
+  assert.match(text(tree), /Gemini Decision 顾问建议检查/)
   assert.doesNotMatch(text(tree), /Read durable records/)
   button(tree, '在侧栏查看').props.onClick()
   assert.equal(rt.opens[0].address, adviceAddress('s1', 'tool:c1'))

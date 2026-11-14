@@ -57,8 +57,10 @@ jobs:
         run: |
           node --check plugin/index.js
           node --check plugin/client.js
+          node --check plugin/runtime.js
           node --check plugin/advisor-protocol.js
           node --check plugin/advisor-service.js
+          node --check plugin/advisor-state.js
       - name: Unit tests
         run: node --test
         working-directory: plugin

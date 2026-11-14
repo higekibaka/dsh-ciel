@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { loadClientFactory } from './advisor-ui.harness.js'
 
-const DEFAULTS = { provider: 'kimi-coding', model: 'kimi-for-coding', maxTokens: 4096, maxCallsPerTurn: 3, requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true, reasoningEffort: 'provider', guidanceEnabled: true, enabled: true, advisorJevEnabled: false, advisorTimeoutSeconds: 180, jevApiKey: '', jevEndpoint: 'https://api.typesafe.ai/v1/systemone', jevModel: 'jev-1.13.0' }
+const DEFAULTS = { provider: 'kimi-coding', model: 'kimi-for-coding', maxTokens: 4096, maxCallsPerTurn: 3, requireExploration: true, enforceFollowupGap: true, planReminderEnabled: true, reasoningEffort: 'provider', guidanceEnabled: true, enabled: true, advisorDecisionEnabled: false, advisorTimeoutSeconds: 180, decisionApiKey: '', decisionEndpoint: 'https://generativelanguage.googleapis.com/v1beta/decisions', decisionModel: 'gemini-decision-1' }
 
 function settingsCard(overrides = {}) {
   let state = []
@@ -29,8 +29,8 @@ function settingsCard(overrides = {}) {
   const cleanups = []
   plugin.apply({
     settingsScope: { bind: () => ({
-      getSnapshot: () => ({ status: 'ready', writable, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'jevApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'jevApiKey')), revision,
-        ...(legacy ? {} : { secrets: [{ path: ['jevApiKey'], set: Boolean(value.jevApiKey) }] }) }),
+      getSnapshot: () => ({ status: 'ready', writable, value: Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'decisionApiKey')), user: Object.fromEntries(Object.entries(user).filter(([key]) => key !== 'decisionApiKey')), revision,
+        ...(legacy ? {} : { secrets: [{ path: ['decisionApiKey'], set: Boolean(value.decisionApiKey) }] }) }),
       subscribe: () => () => {},
       async mutate(ops, expectedRevision) {
         assert.equal(expectedRevision, revision)
@@ -88,7 +88,7 @@ const input = (tree, label) => {
 function open(rt) { return rt.render() }
 
 test('reset, retry and secret-clear buttons share focus styling and contextual labels', t => {
-  const rt = settingsCard({ maxCallsPerTurn: 8, jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
+  const rt = settingsCard({ maxCallsPerTurn: 8, decisionApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
   const editor = rt.api.getSettingsEditor()
   editor.set('groupClosed', {})
   editor.set('catalog', { status: 'unavailable', groups: [] })
@@ -130,7 +130,7 @@ test('footer titles prioritize saving, then read-only, then invalid or clean dra
 
 test('invalid draft footer explains validation unless read-only takes precedence', t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
-  input(rt.render(), 'Jev 模型 ID').props.onChange({ target: { value: 'bad model' } })
+  input(rt.render(), 'Decision 模型 ID').props.onChange({ target: { value: 'bad model' } })
   assert.equal(button(rt.render(), '保存').props.title, '请先修正无效设置')
   assert.equal(button(rt.render(), '保存').props.disabled, true)
   assert.equal(button(rt.render(), '放弃').props.title, undefined)
@@ -138,36 +138,36 @@ test('invalid draft footer explains validation unless read-only takes precedence
   assert.equal(button(rt.render(), '保存').props.title, '当前设置为只读')
 })
 
-test('Jev API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
-  const rt = settingsCard({ jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
+test('Gemini Decision API edits preserve a redacted key, replace explicitly and clear only by intent', async t => {
+  const rt = settingsCard({ decisionApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
   let tree = open(rt)
-  assert.equal(input(tree, 'Jev API Key').props.type, 'password')
-  assert.equal(input(tree, 'Jev API Key').props.value, '')
+  assert.equal(input(tree, 'Gemini API Key').props.type, 'password')
+  assert.equal(input(tree, 'Gemini API Key').props.value, '')
   assert.match(text(tree), /已配置密钥/)
   assert.doesNotMatch(JSON.stringify(tree), /fixture-secret/)
-  input(tree, 'Jev 模型 ID').props.onChange({ target: { value: 'jev-next' } })
+  input(tree, 'Decision 模型 ID').props.onChange({ target: { value: 'decision-next' } })
   await button(rt.render(), '保存').props.onClick()
-  assert.deepEqual(rt.writes, [['set', 'jevModel', 'jev-next']])
-  assert.equal(rt.value.jevApiKey, 'fixture-secret')
-  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'replacement-fixture' } })
+  assert.deepEqual(rt.writes, [['set', 'decisionModel', 'decision-next']])
+  assert.equal(rt.value.decisionApiKey, 'fixture-secret')
+  input(rt.render(), 'Gemini API Key').props.onChange({ target: { value: 'replacement-fixture' } })
   rt.remount()
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'replacement-fixture')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, 'replacement-fixture')
   await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.jevApiKey, 'replacement-fixture')
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  assert.equal(rt.value.decisionApiKey, 'replacement-fixture')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
   button(rt.render(), '清除密钥覆盖').props.onClick()
   assert.match(text(rt.render()), /待保存：清除密钥覆盖/)
   button(rt.render(), '放弃').props.onClick()
-  assert.equal(rt.value.jevApiKey, 'replacement-fixture')
+  assert.equal(rt.value.decisionApiKey, 'replacement-fixture')
   button(rt.render(), '清除密钥覆盖').props.onClick()
   await button(rt.render(), '保存').props.onClick()
-  assert.deepEqual(rt.writes.at(-1), ['unset', 'jevApiKey'])
+  assert.deepEqual(rt.writes.at(-1), ['unset', 'decisionApiKey'])
   assert.match(text(rt.render()), /未在设置中配置/)
 })
 
-test('Jev API validation prevents writes and discard removes new secret drafts', async t => {
+test('Gemini Decision API validation prevents writes and discard removes new secret drafts', async t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
-  for (const [label, bad] of [['Jev 接口地址', 'http://proxy.invalid'], ['Jev 接口地址', 'https://u:p@proxy.invalid/v1'], ['Jev 模型 ID', 'bad model'], ['Jev API Key', 'key with spaces']]) {
+  for (const [label, bad] of [['Decision 接口地址', 'http://proxy.invalid'], ['Decision 接口地址', 'https://u:p@proxy.invalid/v1'], ['Decision 模型 ID', 'bad model'], ['Gemini API Key', 'key with spaces']]) {
     input(rt.render(), label).props.onChange({ target: { value: bad } })
     assert.equal(input(rt.render(), label).props['aria-invalid'], true)
     assert.equal(button(rt.render(), '保存').props.disabled, true)
@@ -175,21 +175,21 @@ test('Jev API validation prevents writes and discard removes new secret drafts',
     assert.deepEqual(rt.writes, [])
     button(rt.render(), '放弃').props.onClick()
   }
-  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'draft-fixture' } })
+  input(rt.render(), 'Gemini API Key').props.onChange({ target: { value: 'draft-fixture' } })
   button(rt.render(), '放弃').props.onClick()
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, '')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, '')
 })
 
 test('refused atomic save retains the secret draft and old hosts cannot accept secrets', async t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
-  input(rt.render(), 'Jev API Key').props.onChange({ target: { value: 'draft-fixture' } })
+  input(rt.render(), 'Gemini API Key').props.onChange({ target: { value: 'draft-fixture' } })
   rt.refuseWrites()
   await button(rt.render(), '保存').props.onClick()
   assert.match(text(rt.render()), /保存未确认/)
-  assert.equal(input(rt.render(), 'Jev API Key').props.value, 'draft-fixture')
+  assert.equal(input(rt.render(), 'Gemini API Key').props.value, 'draft-fixture')
   button(rt.render(), '放弃').props.onClick()
   rt.legacyHost()
-  assert.equal(input(rt.render(), 'Jev API Key').props.disabled, true)
+  assert.equal(input(rt.render(), 'Gemini API Key').props.disabled, true)
   assert.match(text(rt.render()), /重启 DSH/)
 })
 
@@ -311,19 +311,19 @@ test('global toggle and numeric edits stay staged, discard restores, one save wr
   assert.equal(button(rt.render(), '保存').props.disabled, true)
 })
 
-test('advisor Jev remains opt-in and survives staged remount and reset', async t => {
+test('advisor Gemini Decision remains opt-in and survives staged remount and reset', async t => {
   const rt = settingsCard(); t.after(() => rt.dispose())
-  const label = '启用顾问建议检查（Jev）'
+  const label = '启用顾问建议检查（Gemini Decision）'
   assert.equal(input(open(rt), label).props['aria-checked'], false)
   input(rt.render(), label).props.onClick(); rt.remount()
   assert.equal(input(rt.render(), label).props['aria-checked'], true)
   assert.deepEqual(rt.writes, [])
   await button(rt.render(), '保存').props.onClick()
-  assert.deepEqual(rt.writes, [['set', 'advisorJevEnabled', true]])
-  const field = nodes(rt.render()).find(n => n.props['data-ciel-setting'] === 'advisorJevEnabled')
+  assert.deepEqual(rt.writes, [['set', 'advisorDecisionEnabled', true]])
+  const field = nodes(rt.render()).find(n => n.props['data-ciel-setting'] === 'advisorDecisionEnabled')
   button(field, '重置').props.onClick()
   await button(rt.render(), '保存').props.onClick()
-  assert.equal(rt.value.advisorJevEnabled, false)
+  assert.equal(rt.value.advisorDecisionEnabled, false)
 })
 
 test('numeric reset stages a renderable default, can discard, and only unsets on save', async (t) => {
@@ -365,17 +365,17 @@ test('model route groups preserve their labels, defaults, catalog choices, and c
 
 test('provider change clears a previously staged model reset and saves the new model atomically',async t=>{
  const rt=settingsCard({model:'custom-old'});t.after(()=>rt.dispose())
- rt.api.getSettingsEditor().set('catalog',{status:'ready',groups:[{id:'kimi-coding',models:[{id:'kimi-for-coding'}]},{id:'google',models:[{id:'gemini-3.8-flash',name:'Gemini'}]}]})
+ rt.api.getSettingsEditor().set('catalog',{status:'ready',groups:[{id:'kimi-coding',models:[{id:'kimi-for-coding'}]},{id:'google',models:[{id:'gemini-4-hydrogen',name:'Gemini'}]}]})
  let tree=open(rt);nodes(tree).find(n=>n.type==='button'&&text(n).startsWith('顾问管道')).props.onClick();tree=rt.render()
  const modelField=nodes(tree).find(n=>n.props['data-ciel-setting']==='model');button(modelField,'重置').props.onClick()
  tree=rt.render();input(tree,'提供方路由').props.onChange({target:{value:'google'}})
  await button(rt.render(),'保存').props.onClick()
- assert.equal(rt.value.provider,'google');assert.equal(rt.value.model,'gemini-3.8-flash');assert.equal(rt.mutations.length,1)
+ assert.equal(rt.value.provider,'google');assert.equal(rt.value.model,'gemini-4-hydrogen');assert.equal(rt.mutations.length,1)
  assert.ok(rt.mutations[0].some(op=>op.op==='set'&&op.path[0]==='model'))
 })
 
 test('settings groups link aria-controls, repeated actions carry contextual labels, and disabled actions explain why', t => {
-  const rt = settingsCard({ maxCallsPerTurn: 8, jevApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
+  const rt = settingsCard({ maxCallsPerTurn: 8, decisionApiKey: 'fixture-secret' }); t.after(() => rt.dispose())
   let tree = open(rt)
   assert.equal(button(tree, '保存').props.title, '没有需要保存的修改')
   assert.equal(button(tree, '放弃').props.title, '没有需要放弃的修改')
@@ -394,7 +394,7 @@ test('settings groups link aria-controls, repeated actions carry contextual labe
   assert.equal(retryBtn.props['aria-label'], '重试加载模型目录')
   assert.equal(retryBtn.props.title, '重试加载模型目录')
   const clearSecret = button(tree, '清除密钥覆盖')
-  assert.equal(clearSecret.props['aria-label'], '清除Jev API Key覆盖')
-  assert.equal(clearSecret.props.title, '清除Jev API Key覆盖')
+  assert.equal(clearSecret.props['aria-label'], '清除Gemini API Key覆盖')
+  assert.equal(clearSecret.props.title, '清除Gemini API Key覆盖')
 })
 
