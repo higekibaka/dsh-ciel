@@ -10,12 +10,12 @@ An advisor-only plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dee
 
 ## Install and use
 
-Current release: **[0.23.0](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.23.0)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.23.0).
+Current release: **[0.23.1](https://github.com/higekibaka/dsh-ciel/releases/tag/v0.23.1)** · [npm](https://www.npmjs.com/package/dsh-ciel/v/0.23.1).
 
-This release requires **DSH >=0.2.0-rc.2** (compatible with `0.2.1` and `0.2.2-rc.1+`) and Node.js `^22.19.0 || >=24.0.0`. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.23.0` through `plugin_manager`. CLI users select the intended profile explicitly:
+This release requires **DSH >=0.2.0-rc.2** (compatible with `0.2.1` and `0.2.2-rc.1+`) and Node.js `^22.19.0 || >=24.0.0`. In Desktop, ask the agent in the current GUI to install `dsh-ciel@0.23.1` through `plugin_manager`. CLI users select the intended profile explicitly:
 
 ```sh
-dsh plugin --profile <target-profile> add dsh-ciel@0.23.0
+dsh plugin --profile <target-profile> add dsh-ciel@0.23.1
 ```
 
 After a package update, follow the installation result's restart requirement and refresh the UI; hot updates are not guaranteed. **0.21.0+ removes annotation review and the inbox; old review files remain but cannot be opened by this version.** Defer upgrading if you still need those features. Keep a profile configuration backup before upgrading. This version does not automatically clean up old review settings; do not delete the shared Gemini Decision connection settings. See [upgrade and compatibility notes](https://github.com/higekibaka/dsh-ciel/blob/main/docs/compatibility-017.md).

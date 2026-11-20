@@ -391,6 +391,7 @@ export function apply(ctx, config) {
   ctx.inject(['tools', 'subagents'], (tctx) => {
     tctx.tools.register({
       name: 'ask_advisor',
+      deferLoading: true,
       description: "Consult a second, knowledge-rich model BEFORE planning. USE WHEN exploring open design spaces (architecture, tech selection, data modeling, aesthetics with divergent routes), unfamiliar domains, irreversible decisions, or difficult diagnoses failing twice. SKIP mechanical, fully specified, or small-scope tasks—judge the decision space, not prompt length (a one-line prompt can hide an open design). Do NOT consult on spec errors: verify factual conflicts yourself and escalate tradeoff conflicts to the user. The advisor has no internet: inspect the environment and research unfamiliar domains and time-sensitive facts first, then pass the goal, established facts, and constraints to receive framings, prior art, pitfalls, and evaluation dimensions (ideas only, never steps). Budget: 1 consultation plus up to 2 targeted follow-ups per planning phase (each requiring new facts and a specific question; never draft plans). In your final plan, state which recommendations you adopted or rejected, and why.",
       parameters: {
         type: 'object',

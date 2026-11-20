@@ -522,3 +522,13 @@ test('ask_advisor pins reasoningEffort before DSH 0.2.2+ step preparation lock w
   )
   assert.equal('reasoningEffort' in legacyRequestCfg, false)
 })
+
+test('ask_advisor registers with deferLoading: true so routine turns avoid schema overhead', async () => {
+  const harness = await createHostHarness()
+  try {
+    assert.equal(harness.tool?.name, 'ask_advisor')
+    assert.equal(harness.tool?.deferLoading, true)
+  } finally {
+    await harness.dispose()
+  }
+})

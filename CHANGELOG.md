@@ -6,6 +6,12 @@ All notable changes to dsh-ciel are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-11-20
+
+### Tool Retrieval compatibility
+
+- 为 `ask_advisor` 工具声明 `deferLoading: true`：在支持 Tool Retrieval（如 Gemini API Interactions `tool_search`）的通道下按需检索召回，减少日常非规划轮次的上下文工具定义开销；其余常规通道由宿主自动剥离该标记、保持立即可见，零破坏性变更。
+
 ## [0.23.0] - 2026-11-15
 
 ### Breaking changes: JEV → Gemini Decisions API

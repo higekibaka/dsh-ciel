@@ -2,7 +2,7 @@
 
 <!-- ciel-doc: current -->
 
-Ciel 0.23.0 supports DSH >=0.2.0-rc.2 (including 0.2.1 and 0.2.2-rc.1+). Node.js must satisfy ^22.19.0 || >=24.0.0. Older-host code paths and the migration utility below are not a support promise for older DSH releases.
+Ciel 0.23.1 supports DSH >=0.2.0-rc.2 (including 0.2.1 and 0.2.2-rc.1+). Node.js must satisfy ^22.19.0 || >=24.0.0. Older-host code paths and the migration utility below are not a support promise for older DSH releases.
 
 The supported host exposes Profile-backed configuration through the advisor entry; earlier releases used the ciel settings namespace. The plugin resolves live references to plain values at operation boundaries. Changes are staged in the Client and saved explicitly with the expected revision, so an old draft cannot silently overwrite a newer configuration.
 
@@ -10,7 +10,7 @@ Gemini Decision API keys use native secret metadata. Settings reads omit the sec
 
 ## Upgrading from 0.20.1 / 0.21.0
 
-Back up the profile configuration before upgrading. Install 0.23.0 through DSH's bundle manager in the intended profile, follow any restart-required result, and refresh the UI. Do not run a second Web profile alongside Desktop to update its plugins.
+Back up the profile configuration before upgrading. Install 0.23.1 through DSH's bundle manager in the intended profile, follow any restart-required result, and refresh the UI. Do not run a second Web profile alongside Desktop to update its plugins.
 
 Annotation review, the inbox, review-only RPCs and the private PTC runtime/export are removed. Existing review files are left untouched but this version cannot open them; users who need those features should defer upgrading. Existing addressable advisor records remain readable. Review-only configuration keys are not automatically deleted; they no longer enable a capability. The retained advisor settings are still used; the retired JEV connection keys are left on disk untouched but are never read again (see the JEV → Gemini Decision section below).
 
